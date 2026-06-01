@@ -11,5 +11,6 @@ __debug_bin*
 # Cloned dependency source for browsing (see _deps/README.md).
 # Leading underscore so the go tool ignores it (keeps `go build ./...` clean).
 /_deps/*
+_deps/
 !/_deps/README.md
 !/_deps/repos.txt
