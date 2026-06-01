@@ -43,6 +43,24 @@ go run ./cmd/playground -prompt "your prompt here"
 
 Override model ids without recompiling: `OPENROUTER_MODEL`, `XAI_MODEL`.
 
+## Agent loop (with long-term memory)
+
+`cmd/agent` is a minimal think→act→observe agent over the sandbox tools. It has
+**persistent memory across runs** via [mneme](https://github.com/AccursedGalaxy/mneme):
+before thinking it recalls facts relevant to the task, and after answering it
+stores what it learned. So a second, related run starts already knowing the
+answer instead of re-exploring.
+
+```sh
+go run ./cmd/agent -task "What module path does this project declare?"
+go run ./cmd/agent -task "What is this project's module path?"  # recalls from run 1
+go run ./cmd/agent -memory=false ...                            # disable memory
+```
+
+Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored — delete to
+reset) and reuses `OPENROUTER_API_KEY`. It is best-effort: with no key the agent
+runs statelessly.
+
 ## Status
 
 Build order (see DESIGN.md, decision 11). **Done:** core types + registry, the
