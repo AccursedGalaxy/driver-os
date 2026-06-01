@@ -49,6 +49,31 @@ func TestReadAndList(t *testing.T) {
 	}
 }
 
+func TestReadFileLimit(t *testing.T) {
+	sb, root := newTest(t)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Under the limit: full content, not truncated.
+	data, trunc, err := sb.ReadFileLimit(context.Background(), "big.txt", 100)
+	if err != nil || trunc || string(data) != "0123456789" {
+		t.Errorf("under limit: data=%q trunc=%v err=%v", data, trunc, err)
+	}
+	// Over the limit: exactly the first max bytes, truncated=true.
+	data, trunc, err = sb.ReadFileLimit(context.Background(), "big.txt", 4)
+	if err != nil || !trunc || string(data) != "0123" {
+		t.Errorf("over limit: data=%q trunc=%v err=%v, want \"0123\" trunc=true", data, trunc, err)
+	}
+	// Limit exactly at file size is NOT truncation.
+	if _, trunc, _ := sb.ReadFileLimit(context.Background(), "big.txt", 10); trunc {
+		t.Errorf("limit == size reported truncated; want false")
+	}
+	// The fence still applies to the bounded path.
+	if _, _, err := sb.ReadFileLimit(context.Background(), "../escape.txt", 10); err == nil {
+		t.Errorf("ReadFileLimit escaped the fence")
+	}
+}
+
 func TestWriteRoundTrip(t *testing.T) {
 	sb, _ := newTest(t)
 	if err := sb.WriteFile(context.Background(), "data.txt", []byte("x"), 0o644); err != nil {

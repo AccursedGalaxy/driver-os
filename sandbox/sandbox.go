@@ -150,6 +150,24 @@ func (i Isolation) String() string {
 
 // ---- optional capabilities (discovered via type-assertion, like llm.Embedder) ----
 
+// LimitedReader is an OPTIONAL capability: a bounded ReadFile that never loads
+// more than max bytes into memory. The core ReadFile reads the whole file by
+// contract, which is an OOM waiting to happen for a tool pointed at a multi-
+// gigabyte path (Principle 4: bound everything — a tool that explodes freezes the
+// loop). A caller that would rather cap than trust the file's size discovers this
+// the same way as Sessioner:
+//
+//	if lr, ok := sb.(sandbox.LimitedReader); ok {
+//		data, truncated, err := lr.ReadFileLimit(ctx, path, 1<<20)
+//	}
+type LimitedReader interface {
+	// ReadFileLimit reads up to max bytes of path, confined to the sandbox root
+	// like ReadFile. If the file is longer it returns exactly the first max bytes
+	// with truncated=true and does NOT read the rest into memory. max <= 0 means
+	// "no limit", equivalent to ReadFile.
+	ReadFileLimit(ctx context.Context, path string, max int64) (data []byte, truncated bool, err error)
+}
+
 // Sessioner is an OPTIONAL capability a backend may add: opening a stateful
 // Session in which successive Exec calls share process state — working
 // directory, environment, and (for a real shell/REPL backend) defined variables

@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -30,8 +31,11 @@ type Sandbox struct {
 	root string // absolute, cleaned
 }
 
-// compile-time proof we satisfy the interface.
-var _ sandbox.Sandbox = (*Sandbox)(nil)
+// compile-time proof we satisfy the interface(s).
+var (
+	_ sandbox.Sandbox       = (*Sandbox)(nil)
+	_ sandbox.LimitedReader = (*Sandbox)(nil)
+)
 
 // New creates a local sandbox rooted at dir. dir must exist and be a directory;
 // it is resolved to an absolute, cleaned path that becomes the fence boundary.
@@ -135,6 +139,33 @@ func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 		return nil, err
 	}
 	return os.ReadFile(abs)
+}
+
+// ReadFileLimit implements sandbox.LimitedReader: a bounded read that never pulls
+// more than max bytes into memory (Principle 4). It reads max+1 bytes — one past
+// the limit — to detect whether the file continued, without copying the tail.
+func (s *Sandbox) ReadFileLimit(ctx context.Context, path string, max int64) ([]byte, bool, error) {
+	abs, err := s.resolve(path)
+	if err != nil {
+		return nil, false, err
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	if max <= 0 {
+		data, err := io.ReadAll(f) // "no limit" == ReadFile.
+		return data, false, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > max {
+		return data[:max], true, nil
+	}
+	return data, false, nil
 }
 
 // WriteFile writes a file within the fence (parent directories must already exist).
