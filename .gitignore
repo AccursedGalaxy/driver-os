@@ -1,5 +1,6 @@
 # secrets
 .env
+CLAUDE.md
 
 # Go
 /bin/
