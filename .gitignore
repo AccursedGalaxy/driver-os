@@ -1,1 +1,8 @@
+# secrets
 .env
+
+# Go
+/bin/
+*.out
+*.test
+__debug_bin*
