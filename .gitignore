@@ -8,6 +8,10 @@ CLAUDE.md
 *.test
 __debug_bin*
 
+# agent long-term memory (mneme sqlite store)
+*.db
+*.db-*
+
 # Cloned dependency source for browsing (see _deps/README.md).
 # Leading underscore so the go tool ignores it (keeps `go build ./...` clean).
 /_deps/*
