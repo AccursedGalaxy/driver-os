@@ -1,12 +1,12 @@
 .PHONY: deps-clone
 
-# Clone/update dependency repos listed in deps/repos.txt into deps/ for browsing.
+# Clone/update dependency repos listed in _deps/repos.txt into _deps/ for browsing.
 # Missing repos are shallow-cloned; existing ones are fast-forwarded.
 deps-clone:
 	@while read -r url ref _; do \
 		case "$$url" in ''|\#*) continue;; esac; \
 		name=$$(basename "$$url" .git); \
-		dir="deps/$$name"; \
+		dir="_deps/$$name"; \
 		if [ -d "$$dir/.git" ]; then \
 			echo ">> updating $$name"; \
 			git -C "$$dir" fetch --quiet --depth 1 origin "$${ref:-HEAD}" && \
@@ -20,5 +20,5 @@ deps-clone:
 				git clone --quiet --depth 1 "$$url" "$$dir"; \
 			fi; \
 		fi; \
-	done < deps/repos.txt
+	done < _deps/repos.txt
 	@echo "done."
