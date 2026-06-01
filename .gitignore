@@ -8,8 +8,8 @@ CLAUDE.md
 *.test
 __debug_bin*
 
-# Cloned dependency source for browsing (see deps/README.md)
+# Cloned dependency source for browsing (see _deps/README.md).
+# Leading underscore so the go tool ignores it (keeps `go build ./...` clean).
 /_deps/*
-_deps/
-!/deps/README.md
-!/deps/repos.txt
+!/_deps/README.md
+!/_deps/repos.txt
