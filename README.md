@@ -59,7 +59,26 @@ go run ./cmd/agent -memory=false ...                            # disable memory
 
 Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored — delete to
 reset) and reuses `OPENROUTER_API_KEY`. It is best-effort: with no key the agent
-runs statelessly.
+runs statelessly. Each mneme call is bounded by a 30s timeout.
+
+**Caveats (read before trusting recall):**
+
+- **Additive, never corrected.** mneme v1 has no update/delete pass — facts
+  *accumulate*. A fact about a mutable repo goes stale and is never overwritten:
+  bump the Go version and the store will hold *both* values, and may recall both.
+  Recalled facts are labelled possibly-stale in the prompt so the model verifies
+  with tools (Principle 4), but that is the only guardrail. Treat memory as a
+  hint, not a source of truth.
+- **Only tool-verified answers are stored.** To avoid amplifying a guess or a
+  stale recalled fact into a permanent one, the agent stores an answer *only* if
+  it observed real state via a tool that run. An answer given purely from recall
+  is not written back.
+- **The embedding model is pinned to the store.** Stored vectors and query
+  vectors must come from the same model. Changing `MNEME_EMBED_MODEL` after facts
+  exist silently degrades search (no error) — delete `.agent-memory.db` first.
+- **Storing is on the happy path.** After the answer prints, the store does a
+  synchronous extraction + embedding call before the run returns, so you see the
+  answer and then wait briefly.
 
 ## Status
 
