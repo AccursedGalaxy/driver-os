@@ -9,7 +9,7 @@ CLAUDE.md
 __debug_bin*
 
 # Cloned dependency source for browsing (see deps/README.md)
-/deps/*
-deps/
+/_deps/*
+_deps/
 !/deps/README.md
 !/deps/repos.txt
