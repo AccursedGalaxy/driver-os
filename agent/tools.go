@@ -22,7 +22,11 @@ import (
 // does, WHEN to use it over the overlapping alternatives, the exact ARG format,
 // and what it RETURNS — single-line, because buildSystemPrompt prints one line
 // per tool.
-func DefaultTools(sb sandbox.Sandbox) map[string]Tool {
+// runTimeout is threaded in (not a const) so a caller can lengthen it for a
+// longer-running build/test suite; it is interpolated into the `run` Desc below
+// so the model is told the REAL limit it is working against (P2 — the Desc is the
+// API; a stale "30s" would mislead it once the value is configurable).
+func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool {
 	return map[string]Tool{
 		"list_dir": {"list_dir",
 			"list the entries in ONE directory (not recursive). Use this to discover exact paths before read_file — never guess a path. ARG: a directory path relative to the sandbox root (\".\" or \"\" = root). RETURNS: one line per entry as \"dir <name>\" or \"file <name>\", directories first then files, name-sorted.",
@@ -31,11 +35,14 @@ func DefaultTools(sb sandbox.Sandbox) map[string]Tool {
 			"read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
 			func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) }},
 		"run": {"run",
-			"run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after 30s.",
-			func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg) }},
+			fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
+			func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) }},
 		"write_file": {"write_file",
 			"create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
 			func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) }},
+		"edit_file": {"edit_file",
+			"replace a RANGE OF LINES in an existing file — surgical, so you needn't rewrite the whole file (use this over write_file for a small change in a large file). Read the file FIRST: read_file prints absolute line numbers, and those are the numbers you edit by. ARG: a path, a line range \":<from>-<to>\" (1-based INCLUSIVE, e.g. \"main.go:40-42\"; \":40\" = one line; \":40-\" = line 40 to end), then a space, then the REPLACEMENT content on the SAME line (write a line break as \"\\n\", same escapes as write_file; do NOT wrap it in quotes). Omit the content to DELETE the range. RETURNS: a confirmation plus the edited region re-numbered so you can verify it. NOTE: every edit shifts the line numbers below it — re-read before your next edit.",
+			func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) }},
 	}
 }
 
@@ -360,16 +367,145 @@ func explainWriteErr(path string, err error) error {
 	return err
 }
 
+// toolEditFile replaces a 1-based inclusive line range with new content, or deletes
+// it (empty content) — a surgical alternative to rewriting a whole file with
+// write_file. It is fence-confined like every file tool, and unlike a hand-rolled
+// `run sed -i` it returns a structured, re-numbered echo of the edited region so the
+// model can verify the change and re-ground (P4) before its next edit.
+//
+// It reads the WHOLE file, splices in code, and writes it back — so it refuses a
+// file larger than the read fence (maxFileBytes): editing a truncated view would
+// silently drop everything past the cap (P4). Huge-file edits belong to `run`.
+func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
+	path, lo, hi, hasRange, content, badRange, badEscape := parseEditArg(arg)
+	if path == "" { // (P3) name the shape.
+		return "", fmt.Errorf("edit_file needs a path and line range, e.g. `edit_file main.go:40-42 new content` (omit the content to delete those lines)")
+	}
+	if badRange != "" {
+		return "", fmt.Errorf("invalid line range %q — use numbers, e.g. \"main.go:40-42\"", badRange)
+	}
+	if !hasRange { // a range is mandatory — you must say WHICH lines (unlike read_file).
+		return "", fmt.Errorf("edit_file needs a line range after the path, e.g. `%s:40-42` — read_file shows the line numbers to use", path)
+	}
+	if badEscape != "" {
+		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported", badEscape)
+	}
+	if n := len(content); n > writeByteCap {
+		return "", fmt.Errorf("replacement is %d bytes, over the %d-byte limit — split the edit, or generate the file with `run`", n, writeByteCap)
+	}
+
+	data, overMem, err := readBounded(ctx, sb, path)
+	if err != nil {
+		return "", explainPathErr(path, "file", err) // (P3) missing file -> list_dir.
+	}
+	if overMem { // (P4) see the doc comment: never write back a truncated read.
+		return "", fmt.Errorf("file %q exceeds %d KiB — too large to edit_file safely (it would truncate the rest); use `run` with sed/awk for an in-place edit", path, maxFileBytes>>10)
+	}
+
+	src := string(data)
+	hadTrailingNL := strings.HasSuffix(src, "\n")
+	lines := strings.Split(src, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1] // drop the phantom empty line a trailing newline yields (as read_file does).
+	}
+	total := len(lines)
+	if total == 0 {
+		return "", fmt.Errorf("file %q is empty — use write_file to create its contents", path)
+	}
+	if lo > total { // (P3) overshoot is recoverable, not a silent empty edit.
+		return "", fmt.Errorf("file %q has %d line(s); requested start %d is past the end — re-read and pick a line in range", path, total, lo)
+	}
+	if hi <= 0 || hi > total { // ":40-" (hi==0) means to EOF; an over-long end clamps to the last line.
+		hi = total
+	}
+	if hi < lo {
+		return "", fmt.Errorf("invalid range %d-%d: end is before start", lo, hi)
+	}
+
+	// Splice: keep [1..lo-1], drop [lo..hi], insert newLines, keep [hi+1..].
+	var newLines []string
+	if content != "" {
+		newLines = strings.Split(content, "\n")
+	} // empty content => delete: newLines stays nil.
+
+	out := make([]string, 0, (lo-1)+len(newLines)+(total-hi))
+	out = append(out, lines[:lo-1]...)
+	out = append(out, newLines...)
+	out = append(out, lines[hi:]...)
+
+	body := strings.Join(out, "\n")
+	if hadTrailingNL && body != "" {
+		body += "\n" // preserve the file's original trailing-newline convention.
+	}
+	if err := sb.WriteFile(ctx, path, []byte(body), 0o644); err != nil {
+		return "", explainWriteErr(path, err)
+	}
+
+	// (P4) Re-ground: report the change and echo the edited region with FRESH
+	// absolute numbers, so the model verifies the result and addresses its next edit
+	// against current line numbers — the mitigation for line-drift.
+	header := fmt.Sprintf("edited %s: replaced lines %d-%d (%d -> %d lines); file now %d line(s)",
+		path, lo, hi, hi-lo+1, len(newLines), len(out))
+	return header + "\n" + echoRegion(out, lo, len(newLines)), nil
+}
+
+// parseEditArg splits "<path>:<range> [content...]" into the path, its 1-based
+// inclusive range, and the replacement content (decoded with write_file's escapes).
+// It reuses parseReadArg for the "<path>:<range>" half so the range grammar is
+// IDENTICAL to read_file's — the safety property that lets the model edit the exact
+// numbers read_file showed it. No content token => delete (content ""). hasRange is
+// false when no range was given (edit_file requires one); badRange/badEscape carry
+// the teach-the-fix signals (P3).
+func parseEditArg(arg string) (path string, lo, hi int, hasRange bool, content, badRange, badEscape string) {
+	arg = strings.TrimSpace(arg)
+	spec := arg
+	if i := strings.IndexAny(arg, " \t"); i >= 0 {
+		spec = arg[:i]
+		content, badEscape = unescape(strings.TrimLeft(arg[i+1:], " \t"))
+	}
+	path, lo, hi, hasRange, badRange = parseReadArg(spec)
+	return path, lo, hi, hasRange, content, badRange, badEscape
+}
+
+// echoRegion renders a few lines of the post-edit file around the changed region,
+// with absolute line numbers (the read_file format), so the observation re-grounds
+// the model (P4) without echoing the whole file (P1). For a delete (count == 0) it
+// shows the seam where the lines were removed.
+func echoRegion(lines []string, start, count int) string {
+	const ctxLines = 2
+	from := start - ctxLines
+	if from < 1 {
+		from = 1
+	}
+	last := start + count - 1 // inclusive end of the inserted block...
+	if count == 0 {
+		last = start // ...or the seam, for a delete.
+	}
+	to := last + ctxLines
+	if to > len(lines) {
+		to = len(lines)
+	}
+	if to < from { // nothing left to show (file became empty).
+		return "(file is now empty)"
+	}
+	var b strings.Builder
+	width := len(strconv.Itoa(to))
+	for n := from; n <= to; n++ {
+		fmt.Fprintf(&b, "%*d| %s\n", width, n, lines[n-1])
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // toolRun is the "write & run hands": it executes a shell command inside the
 // sandbox. The fence covers file reads, NOT an arbitrary shell — on the local
 // backend (IsolationNone) this runs on the host. That is precisely why the local
 // backend is trusted-only; swapping in a container/microVM backend (same
 // interface) is what would make `run` safe for untrusted, model-authored code.
-func toolRun(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
+func toolRun(ctx context.Context, sb sandbox.Sandbox, arg string, timeout time.Duration) (string, error) {
 	res, err := sb.Exec(ctx, sandbox.Command{
 		Path:    "sh",
 		Args:    []string{"-c", arg},
-		Timeout: 30 * time.Second, // a runaway command is the sandbox's job to kill (P5).
+		Timeout: timeout, // a runaway command is the sandbox's job to kill (P5); caller-configurable.
 	})
 	if err != nil {
 		return "", err // couldn't start / canceled — dispatch turns it into an observation (P6).

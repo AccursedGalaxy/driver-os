@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AccursedGalaxy/mneme"
 
@@ -35,8 +36,16 @@ import (
 
 // ---- Principle 7: the control flow is yours. These are OUR dials, not the model's. ----
 const (
-	maxIterations = 8 // (P5) hard cap: non-negotiable, prevents infinite spend.
-	maxRepeats    = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
+	// DefaultMaxIterations is the (P5) hard cap when Config.MaxIterations is unset:
+	// non-negotiable termination, prevents infinite spend. Exported so the CLI can
+	// use it as a flag default. A longer/complex task raises this via Config.
+	DefaultMaxIterations = 8
+	// DefaultMaxTokens caps a single model turn's output when Config.MaxTokens is
+	// unset. Too low silently clips a long final answer — or a write_file/edit_file
+	// content block — mid-sentence (P7: our knob, not the model's).
+	DefaultMaxTokens = 1024
+
+	maxRepeats = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
 
 	// noProgressWindow is the wider net (P5). The exact-repeat detector misses the
 	// spiral dogfooding exposed: the model grinds list_dir with DIFFERENT args
@@ -59,6 +68,11 @@ const (
 	readLineCap  = 150     // (P1, CONTEXT) read_file returns at most this many lines unless a range asks for fewer.
 	listEntryCap = 200     // (P1) list_dir caps entries so a huge directory can't flood the window.
 	runStreamCap = 4000    // (P1) run clips each of stdout/stderr to this many runes, head+tail.
+
+	// defaultRunTimeout bounds a single `run` command when Config.RunTimeout is
+	// unset (P5: a runaway command is the sandbox's job to kill). A real build or
+	// test suite can exceed it — raise it via Config for longer-running work.
+	defaultRunTimeout = 30 * time.Second
 
 	// writeByteCap is the BACKSTOP on a single write_file, not its policy (cf.
 	// observationCap). A turn's content can't realistically exceed the model's own
@@ -136,6 +150,11 @@ type Config struct {
 	Task    string          // required: the goal.
 	Root    string          // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
 	Obs     Observer        // optional: live progress sink; nil = silent.
+
+	// All three default sensibly when zero (P5/P7 — termination knobs are OURS):
+	MaxIterations int           // 0 = DefaultMaxIterations. The hard cap on think->act->observe turns.
+	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
+	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -148,8 +167,23 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
+
+	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
+	// so the loop body reads from locals and the defaults live in exactly one place.
+	maxIter := cfg.MaxIterations
+	if maxIter <= 0 {
+		maxIter = DefaultMaxIterations
+	}
+	maxTok := cfg.MaxTokens
+	if maxTok <= 0 {
+		maxTok = DefaultMaxTokens
+	}
+	runTimeout := cfg.RunTimeout
+	if runTimeout <= 0 {
+		runTimeout = defaultRunTimeout
+	}
 	if cfg.Tools == nil {
-		cfg.Tools = DefaultTools(cfg.Sandbox)
+		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
 	}
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
@@ -179,15 +213,15 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	// we never write can never be the thing consolidation later has to walk back.
 	grounded := false
 
-	for i := 1; i <= maxIterations; i++ { // (P5) the hard cap lives in the loop header.
-		cfg.Obs.Iteration(i, maxIterations)
+	for i := 1; i <= maxIter; i++ { // (P5) the hard cap lives in the loop header.
+		cfg.Obs.Iteration(i, maxIter)
 
 		// THINK: send the FULL context (P1) and get back text. Pure function.
 		resp, err := cfg.Model.Generate(ctx, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Temperature: &temp,
-			MaxTokens:   1024, // our cap (P7). Too low silently clips a long final answer mid-sentence.
+			MaxTokens:   maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
 		})
 		if err != nil {
 			// A transport/auth failure is a real stop (tool errors are not — see
@@ -283,7 +317,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 
 	// ---- Principle 5: if we fall out of the loop, WE stop it. Never trust the model to. ----
 	res.Outcome = HitCap
-	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIterations)
+	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
 	return res, nil
 }
 

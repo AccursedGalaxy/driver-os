@@ -100,10 +100,32 @@ func TestRunKilledRepeat(t *testing.T) {
 	}
 }
 
+func TestRunRespectsConfigMaxIterations(t *testing.T) {
+	// A model that never answers, with distinct non-list_dir actions so neither
+	// no-progress detector fires — OUR configured cap (3), not DefaultMaxIterations,
+	// must be what stops it (P5/P7: the termination knob is the caller's).
+	sp := &scripted{replies: []string{"read_file a", "read_file b", "read_file c", "read_file d", "read_file e"}}
+	res, err := Run(context.Background(), Config{
+		Model:         sp,
+		Sandbox:       sbWith(t, nil),
+		Task:          "test task",
+		MaxIterations: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != HitCap {
+		t.Fatalf("Outcome = %q, want %q", res.Outcome, HitCap)
+	}
+	if res.Iterations != 3 {
+		t.Errorf("Iterations = %d, want 3 (the configured cap, not DefaultMaxIterations=%d)", res.Iterations, DefaultMaxIterations)
+	}
+}
+
 func TestRunHitCap(t *testing.T) {
-	// maxIterations distinct read_file calls: no exact repeat, not list_dir, so
+	// DefaultMaxIterations distinct read_file calls: no exact repeat, not list_dir, so
 	// neither no-progress detector fires — the hard cap is the only backstop (P5).
-	replies := make([]string, maxIterations)
+	replies := make([]string, DefaultMaxIterations)
 	for i := range replies {
 		replies[i] = "read_file f" + string(rune('0'+i))
 	}
@@ -111,8 +133,8 @@ func TestRunHitCap(t *testing.T) {
 	if res.Outcome != HitCap {
 		t.Fatalf("Outcome = %q, want %q (Reason: %s)", res.Outcome, HitCap, res.Reason)
 	}
-	if res.Iterations != maxIterations {
-		t.Errorf("Iterations = %d, want %d", res.Iterations, maxIterations)
+	if res.Iterations != DefaultMaxIterations {
+		t.Errorf("Iterations = %d, want %d", res.Iterations, DefaultMaxIterations)
 	}
 }
 
