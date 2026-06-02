@@ -53,6 +53,23 @@ func SetupMemory() (mneme.Memory, error) {
 	}
 	mem, err := mneme.New(
 		mneme.WithStore(st),
+		// Consolidate (not the default Additive) is what lets memory STAY TRUE over
+		// time. Under Additive, Add only ever appends: bump the Go version and the
+		// store holds BOTH the old and new value forever, recalling stale facts
+		// beside fresh ones. Consolidate runs a second LLM call per Add that decides,
+		// per existing fact, whether the new ones ADD / UPDATE / DELETE / leave it —
+		// so a changed fact REPLACES the stale one instead of piling up. The cost is
+		// one extra LLM call (+ a cheap embed/search) per Add, and only when there are
+		// existing facts in scope to reconcile against (the first fact in a scope still
+		// costs nothing extra). This is the right trade for a repo-facts agent, where
+		// the truth mutates.
+		//
+		// Crucially, mneme retrieves the facts-to-reconcile by the EXTRACTED CANDIDATES,
+		// not by the conversation: storing "Go 1.24" pulls up the stored "Go 1.23" to
+		// overturn it even when 1.23 is unlike the rest of the turn. That candidate-keyed
+		// window (DefaultConsolidationTopK=30, left at the default) is what makes our
+		// "a later grounded run corrects the stale fact" claim actually hold.
+		mneme.WithStrategy(mneme.Consolidate),
 		mneme.WithLLM(&mnemeopenai.LLM{
 			BaseURL: base, APIKey: key,
 			Model: envOr("MNEME_LLM_MODEL", "openai/gpt-4o-mini"),
@@ -81,7 +98,9 @@ func SetupMemory() (mneme.Memory, error) {
 // system-prompt block. Returns "" when there is nothing to add (first run, no
 // memory, or a recall error — all non-fatal). The block is explicitly labelled
 // as possibly-stale so the model still verifies with tools (Principle 4: observe
-// REAL state, don't trust prior text).
+// REAL state, don't trust prior text). Consolidate-on-write (see SetupMemory)
+// corrects facts that a LATER grounded run re-observes, but a fact no run has
+// revisited can still be stale — so the verify-with-tools framing stays.
 func recall(ctx context.Context, mem mneme.Memory, task string) string {
 	if mem == nil {
 		return ""

@@ -63,12 +63,16 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
 
 **Caveats (read before trusting recall):**
 
-- **Additive, never corrected.** mneme v1 has no update/delete pass — facts
-  *accumulate*. A fact about a mutable repo goes stale and is never overwritten:
-  bump the Go version and the store will hold *both* values, and may recall both.
-  Recalled facts are labelled possibly-stale in the prompt so the model verifies
-  with tools (Principle 4), but that is the only guardrail. Treat memory as a
-  hint, not a source of truth.
+- **Self-correcting, but only where re-observed.** The agent runs mneme in its
+  `Consolidate` strategy: each store reconciles the new facts against existing
+  ones (ADD / UPDATE / DELETE), so a changed fact about a mutable repo *replaces*
+  the stale one instead of piling up beside it — bump the Go version and a later
+  grounded run overwrites the old value. The catch: reconciliation only touches
+  facts a run actually re-observes, so a fact no run has revisited can still be
+  stale. Recalled facts stay labelled possibly-stale in the prompt so the model
+  verifies with tools (Principle 4). Treat memory as a strong hint, not gospel.
+  (Consolidation costs one extra LLM call per store, only when the scope already
+  holds facts to reconcile against.)
 - **Only tool-verified answers are stored.** To avoid amplifying a guess or a
   stale recalled fact into a permanent one, the agent stores an answer *only* if
   it observed real state via a tool that run. An answer given purely from recall

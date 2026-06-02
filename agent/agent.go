@@ -165,8 +165,10 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	// VERIFIED against real external state this session (Principle 4). This breaks
 	// the amplification loop — a wrong/hallucinated answer, or one given purely
 	// from recalled memory without re-checking, is NOT written back as a durable
-	// "fact". mneme v1 is additive (no update/delete), so a bad fact would
-	// otherwise be recalled forever.
+	// "fact". mneme now consolidates on write (it can UPDATE/DELETE a stale fact
+	// when a later Add contradicts it, see SetupMemory), but that only fires on the
+	// facts we DO store — so this gate is still the first line of defense: a guess
+	// we never write can never be the thing consolidation later has to walk back.
 	grounded := false
 
 	for i := 1; i <= maxIterations; i++ { // (P5) the hard cap lives in the loop header.
