@@ -59,6 +59,14 @@ const (
 	readLineCap  = 150     // (P1, CONTEXT) read_file returns at most this many lines unless a range asks for fewer.
 	listEntryCap = 200     // (P1) list_dir caps entries so a huge directory can't flood the window.
 	runStreamCap = 4000    // (P1) run clips each of stdout/stderr to this many runes, head+tail.
+
+	// writeByteCap is the BACKSTOP on a single write_file, not its policy (cf.
+	// observationCap). A turn's content can't realistically exceed the model's own
+	// MaxTokens output cap, so this never fires on the live loop — it exists to stop
+	// a non-model caller (Tool is exported for custom toolsets) or a future-larger
+	// output cap from dumping an unbounded blob to disk in one action (P4, the disk
+	// analogue of the maxFileBytes read fence).
+	writeByteCap = 64 << 10 // 64 KiB per write_file call.
 )
 
 // Tool is a thing the harness can do on the model's behalf. The model NEVER

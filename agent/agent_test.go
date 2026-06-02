@@ -147,6 +147,87 @@ func TestListDirEmpty(t *testing.T) {
 	}
 }
 
+func TestParseWriteArg(t *testing.T) {
+	cases := []struct {
+		in      string
+		path    string
+		content string
+		bad     string
+	}{
+		{"notes.txt hello", "notes.txt", "hello", ""},
+		{"notes.txt hello\\nworld", "notes.txt", "hello\nworld", ""}, // \n -> newline
+		{"a.txt one\\ttwo", "a.txt", "one\ttwo", ""},                 // \t -> tab
+		{`a.txt c:\\dir`, "a.txt", `c:\dir`, ""},                     // \\ -> literal backslash
+		{"empty.txt", "empty.txt", "", ""},                           // path only -> empty file
+		{"sub/f.go package main", "sub/f.go", "package main", ""},    // path with subdir, content with space
+		{`a.txt bad\zescape`, "a.txt", "", `\z`},                     // botched escape (path still parsed)
+		{`a.txt trailing\`, "a.txt", "", `\`},                        // lone trailing backslash
+	}
+	for _, c := range cases {
+		p, content, bad := parseWriteArg(c.in)
+		if p != c.path || content != c.content || bad != c.bad {
+			t.Errorf("parseWriteArg(%q) = (%q,%q,%q), want (%q,%q,%q)",
+				c.in, p, content, bad, c.path, c.content, c.bad)
+		}
+	}
+}
+
+func TestWriteFileRoundTrips(t *testing.T) {
+	sb := sbWith(t, nil)
+	ctx := context.Background()
+
+	out, err := toolWriteFile(ctx, sb, "notes.txt line1\\nline2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "notes.txt") || !strings.Contains(out, "2 line(s)") {
+		t.Errorf("confirmation = %q, want path + line count", out)
+	}
+	// read_file sees exactly what write_file wrote — the decode landed real newlines.
+	got, err := toolReadFile(ctx, sb, "notes.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1| line1\n2| line2"; got != want {
+		t.Errorf("round-trip read = %q, want %q", got, want)
+	}
+}
+
+func TestWriteFileOverwrites(t *testing.T) {
+	sb := sbWith(t, map[string]string{"f.txt": "old contents here\n"})
+	if _, err := toolWriteFile(context.Background(), sb, "f.txt new"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := toolReadFile(context.Background(), sb, "f.txt")
+	if got != "1| new" {
+		t.Errorf("after overwrite read = %q, want the file replaced, not appended", got)
+	}
+}
+
+func TestWriteFileEscapeOutsideRootRefused(t *testing.T) {
+	sb := sbWith(t, nil)
+	_, err := toolWriteFile(context.Background(), sb, "../escape.txt nope")
+	if err == nil || !strings.Contains(err.Error(), "outside the sandbox root") {
+		t.Errorf("escape write err = %v, want a fence refusal", err)
+	}
+}
+
+func TestWriteFileMissingParentIsRecovery(t *testing.T) {
+	sb := sbWith(t, nil)
+	_, err := toolWriteFile(context.Background(), sb, "no/such/dir/f.txt body")
+	if err == nil || !strings.Contains(err.Error(), "mkdir -p") {
+		t.Errorf("missing-parent err = %v, want a `mkdir -p` recovery message", err)
+	}
+}
+
+func TestWriteFileBadEscapeIsRecovery(t *testing.T) {
+	sb := sbWith(t, nil)
+	_, err := toolWriteFile(context.Background(), sb, `f.txt oops\zhere`)
+	if err == nil || !strings.Contains(err.Error(), "invalid escape") {
+		t.Errorf("bad-escape err = %v, want an 'invalid escape' recovery message", err)
+	}
+}
+
 func TestClipKeepsHeadAndTail(t *testing.T) {
 	s := strings.Repeat("H", 30) + strings.Repeat("T", 30) // 60 runes
 	got := clip(s, 12)

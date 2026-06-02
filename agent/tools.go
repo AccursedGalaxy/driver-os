@@ -33,6 +33,9 @@ func DefaultTools(sb sandbox.Sandbox) map[string]Tool {
 		"run": {"run",
 			"run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after 30s.",
 			func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg) }},
+		"write_file": {"write_file",
+			"create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
+			func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) }},
 	}
 }
 
@@ -243,6 +246,116 @@ func explainPathErr(path, noun string, err error) error {
 		return fmt.Errorf("%q is a directory, not a file — use `list_dir %s` to see inside it", path, path)
 	case strings.Contains(err.Error(), "not a directory"):
 		return fmt.Errorf("a path component of %q is a file, not a directory — run `list_dir %s` to find the real path", path, dirArg(path))
+	}
+	return err
+}
+
+// toolWriteFile creates or overwrites a file THROUGH the sandbox fence (P2/P4):
+// the write goes through the same resolve() boundary list_dir and read_file obey,
+// so a model-authored path can never escape the root — unlike a `run` redirection,
+// which executes unfenced on the host. It returns a confirmation (path, bytes,
+// lines), NOT an echo of the content (P1, "return information not data"): the model
+// just sent those bytes this turn, so repeating them back would only burn context.
+// A successful write is real external state, so dispatch will mark the run grounded
+// (the write IS an observation of the world changing), the same as any other tool.
+func toolWriteFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
+	path, content, badEscape := parseWriteArg(arg)
+	if path == "" { // (P3) name the shape, don't just reject.
+		return "", fmt.Errorf("write_file needs a path: write the path first, then a space, then the content, e.g. `write_file notes.txt hello\\nworld`")
+	}
+	if badEscape != "" { // (P3) teach the escape set rather than write a stray backslash.
+		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported; write a literal backslash as \\\\", badEscape)
+	}
+	if n := len(content); n > writeByteCap { // (P4) backstop; see writeByteCap.
+		return "", fmt.Errorf("content is %d bytes, over the %d-byte write_file limit — split it across smaller writes, or generate it with `run`", n, writeByteCap)
+	}
+	if err := sb.WriteFile(ctx, path, []byte(content), 0o644); err != nil {
+		return "", explainWriteErr(path, err) // (P3) recovery instruction, not a raw errno.
+	}
+	return fmt.Sprintf("wrote %d byte(s), %d line(s) to %s", len(content), lineCount(content), path), nil
+}
+
+// parseWriteArg splits "<path> <content...>" into the path (first whitespace-
+// delimited token) and the file content (the remainder), decoding the minimal
+// escape set the one-line protocol forces (\n, \t, \\). A path containing a space
+// is not expressible — rare, and the same simplicity the other tools accept. With
+// no content token at all ("write_file empty.txt") it writes a real empty file.
+func parseWriteArg(arg string) (path, content, badEscape string) {
+	// parseAction already trimmed the outer whitespace; split off the first token.
+	i := strings.IndexAny(arg, " \t")
+	if i < 0 {
+		return arg, "", "" // path only -> truncate-to-empty.
+	}
+	raw := strings.TrimLeft(arg[i+1:], " \t")
+	content, badEscape = unescape(raw)
+	return arg[:i], content, badEscape
+}
+
+// unescape decodes the escapes a single physical line can carry: "\n" -> newline,
+// "\t" -> tab, "\\" -> a literal backslash. A backslash before anything else is a
+// botched escape — returned as badEscape so write_file can teach the fix (P3)
+// rather than silently writing a stray backslash. This is the honest cost of a
+// one-line protocol: a body full of literal backslashes (some regexes, some code)
+// is awkward to express, and `run` with a heredoc is the documented escape hatch.
+func unescape(s string) (out, badEscape string) {
+	if !strings.Contains(s, `\`) {
+		return s, "" // fast path: the common case has no escapes.
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return "", `\` // a trailing lone backslash.
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			return "", `\` + string(s[i+1])
+		}
+		i++ // consumed the escaped char too.
+	}
+	return b.String(), ""
+}
+
+// lineCount reports how many lines content occupies on disk: one per newline, plus
+// a final line when the content doesn't end in a newline. Empty content is zero
+// lines. It feeds only the confirmation string, so the model can sanity-check that
+// what landed matches what it meant to write.
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// explainWriteErr turns a write failure into a recovery instruction (P3). The
+// common case — fs.ErrNotExist — means something DIFFERENT on write than on read:
+// not "the file is absent" but "its parent directory is", because os.WriteFile
+// does not create parents. So this can't reuse explainPathErr (which would tell the
+// model the file may simply not exist — useless when it is trying to create it).
+// A fence refusal from resolve() is already a clear instruction and falls through.
+func explainWriteErr(path string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("cannot write %q: its parent directory does not exist — create it first with `run mkdir -p %s`, then write again", path, dirArg(path))
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Errorf("permission denied writing %q", path)
+	}
+	if strings.Contains(err.Error(), "is a directory") {
+		return fmt.Errorf("%q is a directory, not a file — choose a file path to write", path)
 	}
 	return err
 }
