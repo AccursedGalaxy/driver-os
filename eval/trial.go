@@ -1,0 +1,105 @@
+package eval
+
+import (
+	"context"
+	"os"
+
+	"github.com/AccursedGalaxy/driver-os/agent"
+	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox/local"
+)
+
+// Trial is one execution of a Case by a Model: the agent's typed self-report
+// (Outcome/Answer/Iters/Usage) PLUS the oracle's independent verdict (Pass/
+// Detail). Keeping both side by side is what makes the false-positive metric
+// computable — a run where Outcome==Answered but Pass==false is a model that
+// claimed success on a task it did not finish (the #1 bake-off failure). It is a
+// flat value (not the full *RunResult) so the report JSON stays compact; the
+// full Step trace is intentionally out of this slice (a follow-up can archive
+// per-trial traces alongside the report).
+type Trial struct {
+	Case    string
+	Model   string
+	Index   int           // 1-based trial number within the cell.
+	Outcome agent.Outcome // the agent's self-reported terminal state.
+	Answer  string
+	Iters   int
+	Usage   llm.Usage
+	Pass    bool   // the ORACLE's verdict — the actual grade.
+	Detail  string // the oracle's evidence.
+	Err     string // infra failure (provider/transport), distinct from a non-pass.
+}
+
+// FalsePositive reports the run that claimed done but did not actually finish:
+// the agent terminated with Answered, yet the oracle failed it. This is the
+// honesty signal the closing verification gate (VerifyCmd) exists to drive to
+// zero — measuring it here closes the loop on that feature.
+func (t Trial) FalsePositive() bool {
+	return t.Outcome == agent.Answered && !t.Pass
+}
+
+// RunTrial executes one trial: materialize a PRISTINE fixture into a fresh temp
+// dir (never the live repo, never a reused dir), run the agent against it, then
+// grade the resulting on-disk state with the case's oracle. The temp dir is
+// removed afterward — the fixture is reproducible, and the verdict is what we
+// keep. err-shaped infra failures from the loop are recorded on the Trial (as
+// .Err) rather than returned, so one flaky provider call can't abort a whole
+// suite sweep; the trial just counts as a non-pass.
+func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
+	tr := Trial{Case: c.Name, Model: m.Label, Index: index}
+
+	dir, err := os.MkdirTemp("", "eval-"+c.Name+"-")
+	if err != nil {
+		tr.Err = "mkdtemp: " + err.Error()
+		return tr
+	}
+	defer os.RemoveAll(dir)
+
+	if err := c.Fixture.Materialize(dir); err != nil {
+		tr.Err = "fixture: " + err.Error()
+		return tr
+	}
+
+	sb, err := local.New(dir)
+	if err != nil {
+		tr.Err = "sandbox: " + err.Error()
+		return tr
+	}
+	defer sb.Close()
+
+	cfg := c.Config // copy the knob template; fill the per-trial fields.
+	cfg.Model = m.Provider
+	cfg.Sandbox = sb
+	cfg.Task = c.Task
+	cfg.Root = dir
+	cfg.Obs = nil // silent: a trial yields data, not stdout (that's the Observer seam).
+
+	// Pick the loop the same way cmd/agent does: native tool-calling when the
+	// provider supports it and the case didn't force text, else the text loop.
+	run := agent.RunNative
+	if c.Protocol == "text" || !m.Provider.Capabilities().Tools {
+		run = agent.Run
+	}
+
+	res, runErr := run(ctx, cfg)
+	if res != nil {
+		tr.Outcome = res.Outcome
+		tr.Answer = res.Answer
+		tr.Iters = res.Iterations
+		tr.Usage = res.Usage
+	}
+	if runErr != nil {
+		tr.Err = runErr.Error()
+	}
+
+	// Grade the post-run state regardless of how the loop ended — a provider
+	// error or a hit-cap simply leaves the fixture unfinished, which the oracle
+	// will fail (correctly, and without counting as a false positive since the
+	// Outcome is not Answered).
+	g := c.Oracle.Grade(ctx, GradeInput{Root: dir, Sandbox: sb, Result: res})
+	tr.Pass = g.Pass
+	if tr.Detail == "" {
+		tr.Detail = g.Detail
+	}
+	return tr
+}

@@ -76,18 +76,23 @@ func SetupMemory() (mneme.Memory, error) {
 		}),
 		// WARNING: the embedding model is pinned to the store. Stored fact
 		// vectors and query vectors must come from the SAME model — they live in
-		// the same vector space. Changing MNEME_EMBED_MODEL after facts exist
-		// makes search compare across spaces (degraded/garbage results, no
-		// error). If you change it, delete .agent-memory.db first.
+		// the same vector space. mneme records the embedder's model name (our
+		// Embedder implements Name()) on first insert and now FAILS LOUDLY:
+		// changing MNEME_EMBED_MODEL after facts exist makes New return an
+		// *EmbedderMismatchError instead of silently comparing across spaces, so
+		// SetupMemory surfaces it and we run without memory rather than on
+		// garbage recall. If you change it intentionally, delete
+		// .agent-memory.db first (or pass mneme.AllowEmbedderMismatch()).
 		mneme.WithEmbedder(&mnemeopenai.Embedder{
 			BaseURL: base, APIKey: key,
 			Model: envOr("MNEME_EMBED_MODEL", "text-embedding-3-small"),
 		}),
 	)
 	if err != nil {
-		// New can't error today (it only fails on its env-fallback branches,
-		// which we bypass by passing every provider). But if it ever starts
-		// validating, don't leak the open store handle.
+		// New can error: it returns an *EmbedderMismatchError when the configured
+		// embedder doesn't match what this store was first written with (a changed
+		// MNEME_EMBED_MODEL against existing facts). Don't leak the open store
+		// handle on that path — the caller fails soft and runs without memory.
 		st.Close()
 		return nil, err
 	}

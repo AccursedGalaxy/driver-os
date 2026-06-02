@@ -1,0 +1,102 @@
+// Package eval is the evaluation harness for the agent loop (HP-11): it turns a
+// stochastic, multi-turn agent into MEASURABLE data — a pass-rate distribution,
+// a cost, a convergence curve, and an honesty number — so a change to the
+// context policy, the prompt, or the toolset can be shown to help instead of
+// merely felt to.
+//
+// It is the consumer the agent package was shaped for: Run/RunNative already
+// emit a typed RunResult (Outcome + Answer + Step trace + Usage) and take a
+// silent Observer, and RunResult.Root already travels with the result as "the
+// fixture hook". This package supplies the four things the dogfood bake-offs
+// (DOGFOOD.md R9/R10) proved a serious eval needs and manual dogfooding lacked:
+//
+//  1. An INDEPENDENT oracle — grading is a separate judgment from the agent's
+//     self-reported Outcome. Models reported `answered` with the build red; "did
+//     it say done" and "is it actually done" are different questions and only the
+//     Oracle answers the second.
+//  2. HELD-OUT cases — the grader runs inputs the model never saw, so a parser
+//     that passes the handed suite but silently accepts "2+3$" is still failed.
+//  3. N runs per cell — a single trial measures the dice (R9→R10 flipped the same
+//     model pass↔fail), so the unit of measurement is a distribution, not a bool.
+//  4. Pristine fixtures — every Trial starts from a byte-identical copy in a fresh
+//     temp dir, never the live repo and never a dir a prior trial mutated.
+//
+// This file holds the case + fixture vocabulary; oracle.go grades, trial.go runs
+// one (Case × Model) execution, and report.go aggregates and archives.
+package eval
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/AccursedGalaxy/driver-os/agent"
+	"github.com/AccursedGalaxy/driver-os/llm"
+)
+
+// Case is one task the harness can run against any model: the prompt, the
+// pristine starting state (Fixture), the independent grader (Oracle), and the
+// agent knobs to run it under (Config — minus the per-trial fields the runner
+// fills: Model, Sandbox, Root, Obs, Task). Protocol picks the loop, mirroring
+// cmd/agent: "tools" (native function-calling, the production path) or "text".
+type Case struct {
+	Name     string
+	Task     string       // the goal handed to the agent.
+	Fixture  Fixture      // the starting state, materialized fresh per trial.
+	Oracle   Oracle       // grades the finished run against ground truth (not self-report).
+	Protocol string       // "tools" (default) or "text".
+	Config   agent.Config // knob template (MaxIterations, MaxTokens, RunTimeout, Verify*, …).
+}
+
+// Model pairs a provider with the human-facing id used in the report. The
+// provider's Name() is its registered identity ("openrouter"), not the model
+// string the run actually exercised ("openai/gpt-4o-mini"), so the label is
+// carried explicitly — the report compares models, and a row needs the real id.
+type Model struct {
+	Label    string
+	Provider llm.Provider
+}
+
+// Fixture materializes a case's pristine starting state into a fresh directory.
+// Materialize is ADDITIVE (it writes files, never deletes), so the same type
+// also serves HeldOut's drop-in step: dropping a held-out test into an
+// already-populated run dir is just another Materialize over the same dir.
+type Fixture interface {
+	Materialize(dir string) error
+	Describe() string
+}
+
+// MapFixture is the simplest fixture: a path→content map written verbatim into
+// the target dir (parent dirs created as needed). Paths are slash-separated and
+// relative to the dir root. It keeps a small fixture in-code and hermetic — no
+// embed, no nested-module embed restriction (a fixture's own go.mod is just a
+// "go.mod" key), no testdata build interplay. A large fixture is better served
+// by a future embed-backed DirFixture; this is what the first slice ships.
+type MapFixture map[string]string
+
+// Materialize writes every entry, creating parent directories first.
+func (m MapFixture) Materialize(dir string) error {
+	for path, content := range m {
+		target := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("fixture mkdir for %q: %w", path, err)
+		}
+		if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("fixture write %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// Describe lists the fixture's paths in sorted order (a stable, scannable
+// summary for the manifest / logs).
+func (m MapFixture) Describe() string {
+	paths := make([]string, 0, len(m))
+	for p := range m {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return strings.Join(paths, ", ")
+}
