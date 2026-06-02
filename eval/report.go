@@ -165,6 +165,47 @@ func (c Cell) PromptTokensP(p float64) int {
 	return percentileInt(xs, p)
 }
 
+// CostP is the pth percentile of per-trial USD cost across the cell's PRICED
+// trials — the comparable cost-per-run number (a slow, token-hungry passer is
+// expensive even at a cheap per-token rate). ok=false when no trial was priced,
+// so the report renders "—" rather than a misleading $0.
+func (c Cell) CostP(p float64) (cost float64, ok bool) {
+	var xs []float64
+	for _, t := range c.Trials {
+		if t.Priced {
+			xs = append(xs, t.Cost)
+		}
+	}
+	if len(xs) == 0 {
+		return 0, false
+	}
+	return percentileFloat(xs, p), true
+}
+
+// CostTotal sums the USD cost of every priced trial in the cell — what this
+// cell actually cost to measure. ok=false when nothing was priced.
+func (c Cell) CostTotal() (total float64, ok bool) {
+	for _, t := range c.Trials {
+		if t.Priced {
+			total += t.Cost
+			ok = true
+		}
+	}
+	return total, ok
+}
+
+// SweepCost sums the USD cost of every priced trial across the whole report —
+// the bottom-line "what did this run cost". ok=false when nothing was priced.
+func (r *Report) SweepCost() (total float64, ok bool) {
+	for _, c := range r.Cells {
+		if t, has := c.CostTotal(); has {
+			total += t
+			ok = true
+		}
+	}
+	return total, ok
+}
+
 // Manifest is the reproducibility record — pinned ids and settings so a report
 // is a comparable artifact, not a one-off. The CLI fills it (it owns time, git,
 // and the env), keeping this package pure and testable.
@@ -205,22 +246,26 @@ func (r *Report) Markdown() string {
 
 	for _, name := range order {
 		fmt.Fprintf(&b, "## %s\n\n", name)
-		b.WriteString("| model | pass-rate | 95% CI | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 |\n")
-		b.WriteString("|-------|-----------|--------|-----------|----------|----------------------|----------------|\n")
+		b.WriteString("| model | pass-rate | 95% CI | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | $/trial p50 |\n")
+		b.WriteString("|-------|-----------|--------|-----------|----------|----------------------|----------------|-------------|\n")
 		for _, c := range byCase[name] {
 			lo, hi := c.PassRateCI()
 			fp := ""
 			if c.FalsePositives() > 0 {
 				fp = " ⚠"
 			}
-			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | [%.2f, %.2f] | %d/%d%s | %s | %d/%d | %s |\n",
+			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | [%.2f, %.2f] | %d/%d%s | %s | %d/%d | %s | %s |\n",
 				c.Model, c.Passes(), c.N(), c.PassRate(), lo, hi,
 				c.FalsePositives(), c.N(), fp,
 				renderOutcomes(c.Outcomes()),
 				c.ItersP(50, true), c.ItersP(90, true),
-				humanInt(c.PromptTokensP(50)))
+				humanInt(c.PromptTokensP(50)),
+				renderCostP(c))
 		}
 		b.WriteString("\n")
+	}
+	if total, ok := r.SweepCost(); ok {
+		fmt.Fprintf(&b, "_sweep cost: %s (priced models only; unpriced rows show —)_\n", humanUSD(total))
 	}
 	return b.String()
 }
@@ -239,7 +284,62 @@ func (r *Report) WriteFiles(dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "report.json"), j, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), j, 0o644); err != nil {
+		return err
+	}
+	return r.writeTraces(dir)
+}
+
+// writeTraces archives each trial's full think->act->observe trace to its own
+// file under dir/traces/, kept OUT of report.json (Trial.Steps is json:"-") so
+// the aggregate stays compact while a failed real-task cell is still replayable.
+// A trial with no captured steps (a provider error before the first turn) is
+// skipped — there is nothing to replay. Best-effort per file: one unwritable
+// trace must not fail the whole report it accompanies.
+func (r *Report) writeTraces(dir string) error {
+	var traceDir string
+	for _, c := range r.Cells {
+		for _, t := range c.Trials {
+			if len(t.Steps) == 0 {
+				continue
+			}
+			if traceDir == "" {
+				traceDir = filepath.Join(dir, "traces")
+				if err := os.MkdirAll(traceDir, 0o755); err != nil {
+					return err
+				}
+			}
+			rec := traceRecord{Case: t.Case, Model: t.Model, Index: t.Index,
+				Outcome: string(t.Outcome), Pass: t.Pass, Detail: t.Detail, Steps: t.Steps}
+			b, err := json.MarshalIndent(rec, "", "  ")
+			if err != nil {
+				continue
+			}
+			name := fmt.Sprintf("%s__%s__t%d.json", t.Case, slugify(t.Model), t.Index)
+			_ = os.WriteFile(filepath.Join(traceDir, name), b, 0o644)
+		}
+	}
+	return nil
+}
+
+// traceRecord is the on-disk shape of one archived trial trace: enough header to
+// identify the run (model/case/index + the verdict) followed by the full Step
+// trace, so a trace file is self-describing without the report beside it.
+type traceRecord struct {
+	Case    string       `json:"case"`
+	Model   string       `json:"model"`
+	Index   int          `json:"index"`
+	Outcome string       `json:"outcome"`
+	Pass    bool         `json:"pass"`
+	Detail  string       `json:"detail"`
+	Steps   []agent.Step `json:"steps"`
+}
+
+// slugify makes a model slug safe for a filename: "/" and ":" — the only
+// separators OpenRouter slugs use — become "_" (e.g. moonshotai/kimi-k2.6:free
+// -> moonshotai_kimi-k2.6_free).
+func slugify(s string) string {
+	return strings.NewReplacer("/", "_", ":", "_").Replace(s)
 }
 
 // ---- small helpers ----
@@ -292,6 +392,51 @@ func percentileInt(xs []int, p float64) int {
 		rank = len(s) - 1
 	}
 	return s[rank]
+}
+
+// percentileFloat is percentileInt for USD costs — nearest-rank on a sorted
+// copy, empty input is 0. Kept separate from percentileInt so neither pays a
+// conversion cost or loses precision.
+func percentileFloat(xs []float64, p float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), xs...)
+	sort.Float64s(s)
+	if p <= 0 {
+		return s[0]
+	}
+	if p >= 100 {
+		return s[len(s)-1]
+	}
+	rank := int(math.Ceil(p/100*float64(len(s)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(s) {
+		rank = len(s) - 1
+	}
+	return s[rank]
+}
+
+// renderCostP renders a cell's p50 per-trial cost, or "—" when the model is
+// unpriced (CostP ok=false) — never a misleading $0.
+func renderCostP(c Cell) string {
+	cost, ok := c.CostP(50)
+	if !ok {
+		return "—"
+	}
+	return humanUSD(cost)
+}
+
+// humanUSD formats a dollar amount with enough precision to be useful at eval
+// scale: sub-cent runs (a $0.0014 open model) need four decimals, dollar-plus
+// totals read fine at two.
+func humanUSD(d float64) string {
+	if d > 0 && d < 0.1 {
+		return fmt.Sprintf("$%.4f", d)
+	}
+	return fmt.Sprintf("$%.2f", d)
 }
 
 // renderOutcomes prints the histogram as "answered=4 hit_cap=1", outcomes in a

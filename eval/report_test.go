@@ -2,12 +2,73 @@ package eval
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
+
+func TestCellCostAggregation(t *testing.T) {
+	c := Cell{Case: "c", Model: "m", Trials: []Trial{
+		{Cost: 0.10, Priced: true},
+		{Cost: 0.30, Priced: true},
+		{Cost: 0.20, Priced: true},
+	}}
+	if total, ok := c.CostTotal(); !ok || math.Abs(total-0.60) > 1e-9 {
+		t.Errorf("CostTotal = %v (ok=%v), want 0.60", total, ok)
+	}
+	if p50, ok := c.CostP(50); !ok || math.Abs(p50-0.20) > 1e-9 {
+		t.Errorf("CostP(50) = %v (ok=%v), want 0.20 (nearest-rank median)", p50, ok)
+	}
+}
+
+func TestCellCostUnpricedReportsNotOK(t *testing.T) {
+	// Trials ran but the model was unpriced — cost must be reported absent (ok=false),
+	// never a misleading $0 that would make it look like the cheapest model.
+	c := Cell{Case: "c", Model: "m", Trials: []Trial{{Priced: false}, {Priced: false}}}
+	if _, ok := c.CostTotal(); ok {
+		t.Error("CostTotal ok=true for an all-unpriced cell, want false")
+	}
+	if _, ok := c.CostP(50); ok {
+		t.Error("CostP ok=true for an all-unpriced cell, want false")
+	}
+}
+
+func TestWriteFilesArchivesTraces(t *testing.T) {
+	dir := t.TempDir()
+	r := &Report{Cells: []Cell{{
+		Case: "calc", Model: "openai/gpt-5.5", Trials: []Trial{
+			{Case: "calc", Model: "openai/gpt-5.5", Index: 1, Outcome: agent.Answered, Pass: true,
+				Steps: []agent.Step{{Iter: 1, Verb: "run", Arg: "go test ./..."}}},
+			{Case: "calc", Model: "openai/gpt-5.5", Index: 2, // a pre-first-turn provider error: no steps, no trace file.
+				Outcome: agent.ProviderErr},
+		},
+	}}}
+	if err := r.WriteFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	// The compact report.json must NOT carry the steps (Trial.Steps is json:"-").
+	rj, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rj), "go test ./...") {
+		t.Error("report.json leaked the Step trace; it should stay compact (json:\"-\")")
+	}
+	// The trace with steps is archived under traces/; the step-less trial is skipped.
+	traced := filepath.Join(dir, "traces", "calc__openai_gpt-5.5__t1.json")
+	if b, err := os.ReadFile(traced); err != nil {
+		t.Fatalf("expected trace file %s: %v", traced, err)
+	} else if !strings.Contains(string(b), "go test ./...") {
+		t.Errorf("trace file missing the step content:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "traces", "calc__openai_gpt-5.5__t2.json")); !os.IsNotExist(err) {
+		t.Error("a step-less trial should NOT produce a trace file")
+	}
+}
 
 // cellWith builds a synthetic cell so the metric math is tested without running
 // the loop. Each trial is (outcome, pass, iters).

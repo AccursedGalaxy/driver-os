@@ -28,6 +28,14 @@ type Trial struct {
 	Pass    bool   // the ORACLE's verdict — the actual grade.
 	Detail  string // the oracle's evidence.
 	Err     string // infra failure (provider/transport), distinct from a non-pass.
+
+	Cost   float64 // USD cost of this trial's Usage at the pinned Pricing (meaningless unless Priced).
+	Priced bool    // whether the model had a Pricing entry — false => render "—", not $0.
+
+	// Steps is the full think->act->observe trace, kept for per-trial archival but
+	// EXCLUDED from report.json (json:"-") so the aggregate report stays compact —
+	// WriteFiles writes each trace to its own file under traces/ instead.
+	Steps []agent.Step `json:"-"`
 }
 
 // FalsePositive reports the run that claimed done but did not actually finish:
@@ -87,7 +95,9 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		tr.Answer = res.Answer
 		tr.Iters = res.Iterations
 		tr.Usage = res.Usage
+		tr.Steps = res.Steps
 	}
+	tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)
 	if runErr != nil {
 		tr.Err = runErr.Error()
 	}
