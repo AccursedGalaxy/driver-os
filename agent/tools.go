@@ -32,7 +32,9 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		"list_dir": {
 			Name: "list_dir",
 			Desc: "list the entries in ONE directory (not recursive). Use this to discover exact paths before read_file — never guess a path. ARG: a directory path relative to the sandbox root (\".\" or \"\" = root). RETURNS: one line per entry as \"dir <name>\" or \"file <name>\", directories first then files, name-sorted.",
-			Run:  func(ctx context.Context, arg string) (string, error) { return toolListDir(ctx, sb, arg) },
+			// NativeDesc: behavior + selection only; the `path` schema field owns the format.
+			NativeDesc: "List the entries in ONE directory (not recursive). Use it to discover exact paths before reading — never guess a path. Returns one line per entry (\"dir <name>\" / \"file <name>\"), directories first then files, name-sorted.",
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolListDir(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"directory path relative to the sandbox root (\".\" or \"\" = root); not recursive"}},` +
@@ -50,7 +52,9 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		"read_file": {
 			Name: "read_file",
 			Desc: "read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
-			Run:  func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) },
+			// NativeDesc: behavior + selection only; the path/from/to schema fields own the range format.
+			NativeDesc: "Read a UTF-8 text file with line numbers, optionally just a line range (from/to). Use after list_dir confirms the path; prefer it over `run cat` for bounded, citable output. Returns the lines prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +
@@ -66,14 +70,16 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", fmt.Errorf("invalid read_file arguments: %v", err)
 				}
-				// from absent => whole file; from present, to absent => from..EOF
-				// (hi=0 signals EOF, matching parseReadArg's ":N-").
+				// Either bound makes it a ranged read; an absent bound takes its
+				// default: from absent => start of file (lo=1), to absent => EOF
+				// (hi=0 signals EOF, matching parseReadArg's ":N-"). So {to:50} alone
+				// reads the first 50 lines rather than silently dropping `to`.
 				lo, hi, hasRange := 1, 0, false
 				if a.From != nil {
 					lo, hasRange = *a.From, true
-					if a.To != nil {
-						hi = *a.To
-					}
+				}
+				if a.To != nil {
+					hi, hasRange = *a.To, true
 				}
 				return readFileOp(ctx, sb, a.Path, lo, hi, hasRange)
 			},
@@ -81,7 +87,9 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		"run": {
 			Name: "run",
 			Desc: fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
-			Run:  func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) },
+			// NativeDesc: behavior + selection only; the `command` schema field owns the format.
+			NativeDesc: fmt.Sprintf("Run a shell command with `sh -c` inside the sandbox. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines; prefer list_dir/read_file for plain listing/reading. Returns the exit code and duration, then stdout/stderr (clipped head+tail if large); the command is killed after %s.", runTimeout),
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"command":{"type":"string","description":"one shell command line, run with sh -c inside the sandbox (pipes, &&, quotes allowed)"}},` +
@@ -99,7 +107,11 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		"write_file": {
 			Name: "write_file",
 			Desc: "create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
-			Run:  func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) },
+			// NativeDesc: behavior + selection only. Critically it does NOT mention \n
+			// escapes — in native mode `content` is written VERBATIM, so an escape
+			// instruction here would make the model write a literal backslash-n.
+			NativeDesc: "Create or OVERWRITE a text file inside the sandbox. Prefer this over `run` with shell redirection (`>`/`tee`): it is fence-confined and reports exactly what it wrote. The parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents. Returns a confirmation with the path, byte count, and line count.",
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"file path relative to the sandbox root; the parent directory must already exist (make it with run mkdir -p first). Writing an existing path REPLACES its contents."},` +
@@ -119,7 +131,10 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		"edit_file": {
 			Name: "edit_file",
 			Desc: "replace a RANGE OF LINES in an existing file — surgical, so you needn't rewrite the whole file (use this over write_file for a small change in a large file). Read the file FIRST: read_file prints absolute line numbers, and those are the numbers you edit by. ARG: a path, a line range \":<from>-<to>\" (1-based INCLUSIVE, e.g. \"main.go:40-42\"; \":40\" = one line; \":40-\" = line 40 to end), then a space, then the REPLACEMENT content on the SAME line (write a line break as \"\\n\", same escapes as write_file; do NOT wrap it in quotes). Omit the content to DELETE the range. RETURNS: a confirmation plus the edited region re-numbered so you can verify it. NOTE: every edit shifts the line numbers below it — re-read before your next edit.",
-			Run:  func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) },
+			// NativeDesc: behavior + selection only; the from/to/content schema fields own
+			// the format. No \n-escape framing — `content` is written verbatim in native mode.
+			NativeDesc: "Replace a range of lines in an existing file — surgical, so you needn't rewrite the whole file (prefer it over write_file for a small change in a large file). Read the file FIRST: edit by the absolute line numbers read_file printed. Every edit shifts the lines below it — re-read before your next edit. Returns a confirmation plus the edited region re-numbered so you can verify it.",
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +

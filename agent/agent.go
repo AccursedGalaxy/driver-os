@@ -90,8 +90,19 @@ const (
 // toolset; Config.Tools nil falls back to DefaultTools.
 type Tool struct {
 	Name string
-	Desc string
+	Desc string                                                // TEXT loop description: states the tool AND its one-line ARG grammar + \n escapes — that framing IS the text protocol.
 	Run  func(ctx context.Context, arg string) (string, error) // TEXT loop (and the native bridge fallback): the model fills one string.
+
+	// NativeDesc is the tool-level description the STRUCTURED native loop
+	// advertises (via nativeSchemas). It is behavior-only — what the tool does and
+	// when to pick it — and deliberately omits the ARG grammar and the \n/\t/\\
+	// escapes that Desc carries: in native mode those are FALSE (args are typed
+	// JSON fields with real newlines, no escaping) and the per-field Schema
+	// descriptions own the format. Leaking the text-protocol framing here is a
+	// trap — a model that obeys "write a line break as \n" would write a literal
+	// backslash-n into the verbatim structured content. Empty => nativeSchemas
+	// falls back to Desc (fine for a custom tool whose Desc has no escape framing).
+	NativeDesc string
 
 	// Schema and RunJSON are the STRUCTURED native path. When both are set,
 	// RunNative advertises Schema (typed, multi-field args) and dispatches the

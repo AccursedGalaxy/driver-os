@@ -96,6 +96,42 @@ func TestGenerateToolCallRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGenerateEmptyToolCallArgsSerializeAsObject(t *testing.T) {
+	// Replaying an assistant tool call that had NO arguments must put "{}" on the
+	// wire, never "" — the arguments field is a JSON string and an empty string is
+	// not valid JSON, which a strict server rejects.
+	var gotBody map[string]any
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","model":"m","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{}}`)
+	})
+
+	_, err := p.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{
+			llm.User("go"),
+			// A no-argument tool call: empty Args. (nil and "" both exercise the guard.)
+			{Role: llm.RoleAssistant, Parts: []llm.ContentPart{llm.ToolCallPart{ID: "c0", Name: "now", Args: nil}}},
+			llm.ToolResultMsg("c0", "2026", false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	var args any
+	for _, mm := range gotBody["messages"].([]any) {
+		m := mm.(map[string]any)
+		if tc, ok := m["tool_calls"].([]any); ok && len(tc) > 0 {
+			args = tc[0].(map[string]any)["function"].(map[string]any)["arguments"]
+		}
+	}
+	if args != "{}" {
+		t.Errorf("empty tool-call arguments serialized as %q, want \"{}\"", args)
+	}
+}
+
 func TestGenerateParsesResponse(t *testing.T) {
 	var gotBody map[string]any
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {

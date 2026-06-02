@@ -201,11 +201,19 @@ func assistantMessage(m llm.Message) openai.ChatCompletionMessageParamUnion {
 	var calls []openai.ChatCompletionMessageToolCallParam
 	for _, p := range m.Parts {
 		if tc, ok := p.(llm.ToolCallPart); ok {
+			// The wire field is a JSON STRING and must be valid JSON. A tool call
+			// with no arguments has empty Args; serialize that as "{}" (an empty
+			// object), never "" — an empty string is not valid JSON and a strict
+			// server rejects the replayed assistant turn.
+			args := string(tc.Args)
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
 			calls = append(calls, openai.ChatCompletionMessageToolCallParam{
 				ID: tc.ID,
 				Function: openai.ChatCompletionMessageToolCallFunctionParam{
 					Name:      tc.Name,
-					Arguments: string(tc.Args),
+					Arguments: args,
 				},
 			})
 		}

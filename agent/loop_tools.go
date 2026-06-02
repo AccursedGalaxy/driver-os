@@ -300,17 +300,26 @@ func nativeSchemas(tools map[string]Tool) []llm.Tool {
 	out := make([]llm.Tool, 0, len(tools))
 	for _, name := range toolNames(tools) {
 		t := tools[name]
+		// Prefer the behavior-only NativeDesc; Desc carries text-protocol framing
+		// (one-line ARG grammar, \n escapes) that is FALSE and misleading in native
+		// mode, where the per-field Schema descriptions own the format.
+		desc := t.Desc
+		if t.NativeDesc != "" {
+			desc = t.NativeDesc
+		}
 		schema := t.Schema
 		if len(schema) == 0 {
+			// Bridge fallback for a Run-only custom tool: a single-string `arg`.
+			// Its description still comes from `desc` (NativeDesc if the tool set one).
 			schema, _ = json.Marshal(map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"arg": map[string]any{"type": "string", "description": t.Desc},
+					"arg": map[string]any{"type": "string", "description": desc},
 				},
 				"required": []string{"arg"},
 			})
 		}
-		out = append(out, llm.Tool{Name: t.Name, Description: t.Desc, Schema: schema})
+		out = append(out, llm.Tool{Name: t.Name, Description: desc, Schema: schema})
 	}
 	return out
 }

@@ -185,6 +185,72 @@ func TestRunNativeWriteMultilineStructured(t *testing.T) {
 	}
 }
 
+func TestRunNativeWriteBackslashContentVerbatim(t *testing.T) {
+	// The single most important guarantee of the structured path: content is
+	// written BYTE-FOR-BYTE. Real code routinely carries backslashes — regexes,
+	// escape sequences, Windows paths. The text loop's `unescape` would turn `\t`
+	// into a tab and `\n` into a newline and REJECT `\d` as a bad escape; the
+	// structured RunJSON path must do NONE of that. This is the regression guard
+	// against ever re-routing the structured write back through unescape.
+	content := `regex := "\d+\.\d+"` + "\n" + // \d would be REJECTED by unescape
+		`win := "C:\tmp\new"` + "\n" + // \t, \n would be CORRUPTED by unescape
+		`esc := "a\\b\nc"` + "\n" // \\ would be collapsed by unescape
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "code.go", "content": content})},
+		{llm.Text("written")},
+	}
+	res, _, sb := runNative(t, nil, turns)
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s)", res.Outcome, res.Reason)
+	}
+	if got := readback(t, sb, "code.go"); got != content {
+		t.Errorf("backslash content corrupted:\n got = %q\nwant = %q", got, content)
+	}
+}
+
+func TestRunNativeEditFileBackslashContentVerbatim(t *testing.T) {
+	// The same verbatim guarantee for edit_file's replacement content (a distinct
+	// op from write_file): backslash sequences in the structured `content` field
+	// must splice in untouched, never decoded by unescape.
+	start := "a\nOLD\nc\n"
+	repl := `re := "\d+"` + "\t" + `\\ literal \n here` // literal backslashes + a real tab
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "from": 2, "to": 2, "content": repl})},
+		{llm.Text("ok")},
+	}
+	_, _, sb := runNative(t, map[string]string{"f.txt": start}, turns)
+	want := "a\n" + repl + "\nc\n"
+	if got := readback(t, sb, "f.txt"); got != want {
+		t.Errorf("edit backslash content corrupted:\n got = %q\nwant = %q", got, want)
+	}
+}
+
+func TestNativeSchemasUseBehaviorOnlyDescription(t *testing.T) {
+	// Fix A: the native loop must advertise the behavior-only NativeDesc, NOT the
+	// text-protocol Desc. The Desc tells the model to "write a line break as the
+	// two characters \n" — true for the one-line text protocol, a CORRUPTION trap
+	// in native mode (the structured content is written verbatim, so a literal
+	// `\n` lands as backslash-n). The tool-level native description must carry no
+	// such escape/positional-arg framing; the per-field schema owns the format.
+	tools := DefaultTools(sbWith(t, nil), defaultRunTimeout)
+	byName := map[string]llm.Tool{}
+	for _, s := range nativeSchemas(tools) {
+		byName[s.Name] = s
+	}
+	for _, name := range []string{"write_file", "edit_file", "read_file"} {
+		d := byName[name].Description
+		if strings.Contains(d, `\n`) || strings.Contains(d, `\t`) {
+			t.Errorf("native %s description leaks \\n/\\t escape framing: %q", name, d)
+		}
+		if strings.Contains(strings.ToLower(d), "same line") || strings.Contains(d, ":<from>-<to>") {
+			t.Errorf("native %s description leaks one-line/positional-arg framing: %q", name, d)
+		}
+		if d == "" || d == tools[name].Desc {
+			t.Errorf("native %s description should be the distinct behavior-only NativeDesc, got %q", name, d)
+		}
+	}
+}
+
 func TestRunNativeReadFileStructuredRange(t *testing.T) {
 	// {path, from, to} returns exactly the absolute-numbered slice.
 	file := "a\nb\nc\nd\ne\n"
@@ -199,6 +265,24 @@ func TestRunNativeReadFileStructuredRange(t *testing.T) {
 	}
 	if strings.Contains(obs, "1| a") || strings.Contains(obs, "5| e") {
 		t.Errorf("range read leaked lines outside 2-4: %q", obs)
+	}
+}
+
+func TestRunNativeReadFileStructuredToWithoutFrom(t *testing.T) {
+	// Fix B: {path, to:N} with no `from` reads the first N lines (from defaults to
+	// 1), rather than silently ignoring `to` and dumping the whole file.
+	file := "a\nb\nc\nd\ne\n"
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "read_file", map[string]any{"path": "f.txt", "to": 2})},
+		{llm.Text("done")},
+	}
+	res, _, _ := runNative(t, map[string]string{"f.txt": file}, turns)
+	obs := res.Steps[0].Observation
+	if !strings.Contains(obs, "1| a") || !strings.Contains(obs, "2| b") {
+		t.Errorf("to-without-from read = %q, want lines 1-2", obs)
+	}
+	if strings.Contains(obs, "3| c") {
+		t.Errorf("to-without-from leaked past line 2: %q", obs)
 	}
 }
 
