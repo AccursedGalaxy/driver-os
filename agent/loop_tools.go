@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -97,7 +98,12 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
-		resp, err := cfg.Model.Generate(loopCtx, llm.Request{
+		// generateWithEviction adds HP-1's reactive fallback: on a window overflow it
+		// compacts the OLDEST turn (pairing-safe) and retries instead of crashing,
+		// returning the possibly-shrunk transcript we carry forward.
+		var resp *llm.Response
+		var err error
+		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Tools:       schemas,
@@ -109,6 +115,13 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+				return upgradeIfVerified(cfg, res, runTimeout), nil
+			}
+			// (HP-1) Window overflowed and eviction couldn't compact it further —
+			// degrade gracefully rather than mislabel it a transport fault.
+			if errors.Is(err, llm.ErrContextLength) {
+				res.Outcome = HitContextLimit
+				res.Reason = "context window exceeded and could not be compacted further"
 				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err

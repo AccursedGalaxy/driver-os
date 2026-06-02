@@ -24,6 +24,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -133,14 +134,15 @@ type Tool struct {
 type Outcome string
 
 const (
-	Answered       Outcome = "answered"        // the model emitted `answer` (and it verified, if a check was configured).
-	Unverified     Outcome = "unverified"      // the model finished, but the closing verification (VerifyCmd / last-run check) failed — a non-pass (P5/HP-5).
-	HitCap         Outcome = "hit_cap"         // ran out of iterations (P5 hard cap).
-	KilledRepeat   Outcome = "killed_repeat"   // exact same action maxRepeats times.
-	KilledSpiral   Outcome = "killed_spiral"   // noProgressWindow list_dir calls in a row.
-	KilledStagnant Outcome = "killed_stagnant" // the same failing `run` result maxStagnant times despite changing actions.
-	HitDeadline    Outcome = "hit_deadline"    // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
-	ProviderErr    Outcome = "provider_error"  // a transport/auth failure talking to the model.
+	Answered        Outcome = "answered"          // the model emitted `answer` (and it verified, if a check was configured).
+	Unverified      Outcome = "unverified"        // the model finished, but the closing verification (VerifyCmd / last-run check) failed — a non-pass (P5/HP-5).
+	HitCap          Outcome = "hit_cap"           // ran out of iterations (P5 hard cap).
+	KilledRepeat    Outcome = "killed_repeat"     // exact same action maxRepeats times.
+	KilledSpiral    Outcome = "killed_spiral"     // noProgressWindow list_dir calls in a row.
+	KilledStagnant  Outcome = "killed_stagnant"   // the same failing `run` result maxStagnant times despite changing actions.
+	HitDeadline     Outcome = "hit_deadline"      // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
+	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
+	HitContextLimit Outcome = "hit_context_limit" // (HP-1) the window overflowed AND reactive eviction couldn't compact it further — a graceful stop, not a crash.
 )
 
 // Step is one think->act->observe iteration, captured as data. The trace of
@@ -328,7 +330,12 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		cfg.Obs.Iteration(i, maxIter)
 
 		// THINK: send the FULL context (P1) and get back text. Pure function.
-		resp, err := cfg.Model.Generate(loopCtx, llm.Request{
+		// generateWithEviction adds HP-1's reactive fallback: on a window overflow
+		// it compacts the OLDEST turn and retries instead of crashing, returning the
+		// possibly-shrunk transcript we carry forward.
+		var resp *llm.Response
+		var err error
+		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Temperature: &temp,
@@ -339,6 +346,14 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+				return upgradeIfVerified(cfg, res, runTimeout), nil
+			}
+			// (HP-1) The window overflowed and eviction couldn't compact it any
+			// further (only TASK + the most recent turn remain). Degrade gracefully
+			// to a typed stop rather than surfacing it as a transport fault.
+			if errors.Is(err, llm.ErrContextLength) {
+				res.Outcome = HitContextLimit
+				res.Reason = "context window exceeded and could not be compacted further"
 				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 			// A transport/auth failure is a real stop (tool errors are not — see
@@ -643,6 +658,70 @@ func addUsage(a, b llm.Usage) llm.Usage {
 // output well under observationCap, so this rarely fires — it just guarantees no
 // single observation can blow the window.
 func truncate(s string) string { return clip(s, observationCap) }
+
+// generateWithEviction sends the FULL context (P1) and applies HP-1's REACTIVE
+// fallback on a context-window overflow: rather than crash the run, it evicts the
+// oldest tool turn (pairing-safe — see evictOldestTurn) and retries. It returns
+// the possibly-shrunk message slice so the caller carries the compaction forward
+// into later turns (not just this one). This is deliberately NOT a context POLICY
+// (the policy question is HP-1, parked: we're nowhere near the window on real
+// tasks — measured ≤10k tokens of a 200k+ window). It is the cheap safety net
+// that turns a latent hard crash into graceful degradation IF a transcript ever
+// does overflow. A non-overflow error is returned untouched; an overflow that
+// can't be compacted any further is returned AS llm.ErrContextLength so the
+// caller degrades to HitContextLimit instead of mislabelling it a transport fault.
+func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
+	for {
+		resp, err := cfg.Model.Generate(ctx, req)
+		if err == nil || !errors.Is(err, llm.ErrContextLength) {
+			return resp, req.Messages, err
+		}
+		shrunk, ok := evictOldestTurn(req.Messages)
+		if !ok {
+			return nil, req.Messages, err // can't compact further — let the caller degrade.
+		}
+		cfg.Obs.Note(fmt.Sprintf("context overflow — evicted oldest turn (%d→%d msgs), retrying (HP-1 reactive fallback)", len(req.Messages), len(shrunk)))
+		req.Messages = shrunk
+	}
+}
+
+// evictOldestTurn is HP-1's reactive compaction unit: it drops the OLDEST tool
+// turn from the transcript while preserving (a) the opening TASK message and any
+// preamble before the first assistant turn, (b) the MOST RECENT turn (the live
+// grounding — P4), and (c) tool-call/tool-result pairing. The pairing constraint
+// is why the unit is a whole turn, never a lone observation: in the native loop a
+// RoleTool result is only well-formed immediately after the assistant message
+// that requested it, so [first assistant message, next assistant message) is the
+// smallest safely-removable span. The same span rule works for the text loop,
+// where a turn is Assistant(reply) + User(OBSERVATION). Returns the shrunk slice
+// and true, or the input unchanged and false when only TASK + one turn remain
+// (nothing left to drop without losing the most recent grounding).
+func evictOldestTurn(msgs []llm.Message) ([]llm.Message, bool) {
+	a := -1 // start of the oldest turn: the first assistant message after the preamble.
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == llm.RoleAssistant {
+			a = i
+			break
+		}
+	}
+	if a < 0 {
+		return msgs, false // no assistant turn yet — nothing to evict.
+	}
+	b := len(msgs) // end of the oldest turn: the NEXT assistant message (turn boundary).
+	for i := a + 1; i < len(msgs); i++ {
+		if msgs[i].Role == llm.RoleAssistant {
+			b = i
+			break
+		}
+	}
+	if b >= len(msgs) {
+		return msgs, false // `a` is the only/most-recent turn — keep it for grounding.
+	}
+	out := make([]llm.Message, 0, len(msgs)-(b-a))
+	out = append(out, msgs[:a]...) // TASK + preamble.
+	out = append(out, msgs[b:]...) // every turn from the second-oldest onward.
+	return out, true
+}
 
 // clip bounds a string to capRunes, keeping the HEAD and the TAIL and eliding the
 // middle. Head+tail beats head-only for tool output: a build log's failure is at
