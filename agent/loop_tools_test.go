@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
@@ -522,6 +523,159 @@ func TestRunNativeVerifyLastRunFallback(t *testing.T) {
 		if res.Outcome != tc.want {
 			t.Errorf("VerifyLastRun=%v: Outcome = %q (%s), want %q", tc.flag, res.Outcome, res.Reason, tc.want)
 		}
+	}
+}
+
+func TestRunNativeVerifyContinueRecoversPrematureFinish(t *testing.T) {
+	// The pass-rate lever: a model finishes PREMATURELY (turn 1 is a tool-call-free
+	// "done") while the verify command still fails — but with VerifyContinue it is
+	// fed the failure and keeps working, writing the real file on turn 2, which then
+	// verifies. The premature stop becomes a genuine Answered instead of Unverified.
+	good := "package calc\n\nfunc Eval() int { return 1 }\n"
+	turns := [][]llm.ContentPart{
+		{llm.Text("All done, the implementation is complete.")},                                  // premature finish
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": good})}, // nudged into real work
+		{llm.Text("now actually done")},
+	}
+	ns := &nativeScript{turns: turns}
+	box := sbWith(t, nil)
+	// verify is red until calc.go exists, green after the continued work writes it.
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: box, Task: "t", MaxIterations: 10,
+		VerifyCmd: "test -f calc.go", VerifyContinue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered — continuation should recover the premature finish", res.Outcome, res.Reason)
+	}
+	if res.Iterations < 3 {
+		t.Errorf("Iterations = %d, want >=3 (it was nudged past the premature finish)", res.Iterations)
+	}
+	if got := readback(t, box, "calc.go"); got != good {
+		t.Errorf("file not written by the continued work: %q", got)
+	}
+}
+
+func TestRunNativeVerifyContinueStopsAtCap(t *testing.T) {
+	// Continuation is bounded: a model that keeps finishing prematurely without ever
+	// fixing anything is fed back each time but, at the iteration cap, records the
+	// honest Unverified (never an infinite loop).
+	turns := [][]llm.ContentPart{{llm.Text("done")}} // every turn is a premature finish.
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 4,
+		VerifyCmd: "exit 1", VerifyContinue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified at the cap", res.Outcome, res.Reason)
+	}
+	if res.Iterations != 4 {
+		t.Errorf("Iterations = %d, want 4 (continued to the cap, then gave the honest verdict)", res.Iterations)
+	}
+}
+
+func TestRunNativeChurnNudgeFiresOnce(t *testing.T) {
+	// After ChurnNudgeRuns failing test-runs, a one-time rewrite hint is appended to
+	// the run observation the model reads — the lever toward whole-file rewrites.
+	files := map[string]string{"a.txt": "x\n"}
+	turns := [][]llm.ContentPart{
+		{failRun("r1")},
+		{structuredCall("a", "read_file", map[string]any{"path": "a.txt"})}, // break the run streak (no stagnant kill)
+		{failRun("r2")}, // 2nd failure -> nudge
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20, ChurnNudgeRuns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nudges := 0
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "rewrite the whole file") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("churn nudge appeared %d times, want exactly 1 (fires once at the threshold)", nudges)
+	}
+}
+
+func TestRunNativeVerifyOnTerminateUpgradesFalseFailure(t *testing.T) {
+	// verify-on-terminate: a run that writes correct code but then flails into the
+	// iteration cap (the gpt-5-nano r2 pattern — code done, model stuck on a bad
+	// side-command) is UPGRADED to Answered because VerifyCmd passes. The verify
+	// command is the source of truth; a kill/cap on already-correct code is not a fail.
+	good := "package calc\nfunc Eval() int { return 1 }\n"
+	turns := [][]llm.ContentPart{
+		{structuredCall("w", "write_file", map[string]any{"path": "calc.go", "content": good})},   // code is done here
+		{structuredCall("a", "read_file", map[string]any{"path": "calc.go", "from": 1, "to": 1})}, // then flail to the cap
+		{structuredCall("b", "read_file", map[string]any{"path": "calc.go", "from": 2, "to": 2})},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 3,
+		VerifyCmd: "test -f calc.go", // passes once the file exists
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered — verify passed so the cap is not a failure", res.Outcome, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "completed despite hit_cap") {
+		t.Errorf("Reason = %q, want it to record the upgraded-from outcome", res.Reason)
+	}
+}
+
+func TestRunNativeChurnNudgeFiresOnEdits(t *testing.T) {
+	// The grok fix: the nudge fires on edit-churn even when the model barely runs the
+	// tests (a run-only trigger never fires for it). 3 distinct edits -> nudge.
+	turns := [][]llm.ContentPart{
+		{structuredCall("e1", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "A"})},
+		{structuredCall("e2", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "B"})},
+		{structuredCall("e3", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "C"})},
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t",
+		MaxIterations: 20, ChurnNudgeRuns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nudges := 0
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "rewrite the whole file") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("churn nudge on edits appeared %d times, want exactly 1", nudges)
+	}
+}
+
+func TestRunNativeWallClockBudget(t *testing.T) {
+	// The universal backstop: a run that would otherwise loop is ended as HitDeadline
+	// once the wall-clock budget is exceeded, rather than an external timeout (the nano
+	// exit-124 case). A 1ns budget trips on the very first between-turn check.
+	turns := [][]llm.ContentPart{{structuredCall("c", "read_file", map[string]any{"path": "x"})}}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 30, MaxWallClock: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != HitDeadline {
+		t.Fatalf("Outcome = %q (%s), want HitDeadline", res.Outcome, res.Reason)
 	}
 }
 

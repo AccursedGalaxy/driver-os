@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
@@ -73,11 +74,30 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	var lastRunFP string
 	stagnant := 0
 	lastRunFailed := false
+	failRuns := 0   // count of failing `run` results this session (a churn signal).
+	edits := 0      // count of edit_file calls this session (the other churn signal).
+	nudged := false // the churn nudge fires at most once.
+
+	start := time.Now() // (P5) wall-clock budget anchor; see MaxWallClock.
+	// A deadline-bound context so a slow IN-FLIGHT call (a reasoning-heavy Generate,
+	// a hung provider) is cancelled AT the budget — the between-turn check alone
+	// can't interrupt a call already in progress (the gpt-oss exit-124 case).
+	loopCtx := ctx
+	if cfg.MaxWallClock > 0 {
+		var cancel context.CancelFunc
+		loopCtx, cancel = context.WithTimeout(ctx, cfg.MaxWallClock)
+		defer cancel()
+	}
 
 	for i := 1; i <= maxIter; i++ {
+		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
+			res.Outcome = HitDeadline
+			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
+			return upgradeIfVerified(cfg, res, runTimeout), nil
+		}
 		cfg.Obs.Iteration(i, maxIter)
 
-		resp, err := cfg.Model.Generate(ctx, llm.Request{
+		resp, err := cfg.Model.Generate(loopCtx, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Tools:       schemas,
@@ -85,6 +105,12 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			MaxTokens:   maxTok,
 		})
 		if err != nil {
+			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
+			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
+				res.Outcome = HitDeadline
+				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+				return upgradeIfVerified(cfg, res, runTimeout), nil
+			}
 			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err
 			return res, err
 		}
@@ -101,7 +127,18 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
 			// Re-verify the claimed state before accepting it.
-			if reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout); reason != "" {
+			reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout)
+			if reason != "" && cfg.VerifyContinue && i < maxIter {
+				// Continue-on-fail: re-ground with the real failing state (P4) and keep
+				// working rather than accept a premature finish. The assistant's
+				// tool-call-free turn must precede the feedback so the conversation stays
+				// well-formed.
+				cfg.Obs.Note("finish rejected (not verified) — continuing")
+				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+				messages = append(messages, llm.User("OBSERVATION:\nNot finished — you stopped calling tools, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
+				continue
+			}
+			if reason != "" {
 				res.Outcome, res.Answer, res.Reason = Unverified, answer, reason
 				cfg.Obs.Note("answer not verified — " + reason)
 				return res, nil
@@ -135,7 +172,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
-				return res, nil
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
 			repeats = 0
@@ -147,7 +184,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d list_dir-only turns in a row — switch to run/read_file, or answer", navRun)
-				return res, nil
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
 			navRun = 0
@@ -160,24 +197,23 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn}
 			usageForTurn = llm.Usage{}
 
-			obs, isErr := dispatchNative(ctx, cfg.Tools, c)
+			obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
 			if !isErr {
 				grounded = true // (P4) the model has now seen real external state.
 			}
-			step.Grounded = grounded
-			step.Observation = obs
-			res.Steps = append(res.Steps, step)
-			cfg.Obs.Observation(obs)
-			// (P6) A tool failure is an observation the model reacts to, tagged so
-			// the provider marks it an error result — never a crash for us.
-			messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
 
-			// (P5) Stagnant-observation detector: a `run` that keeps failing with the
+			// (P5) Stagnant-observation + churn tracking, evaluated on `run` results.
+			// Done BEFORE feeding the observation back so the churn nudge can ride the
+			// very message the model reads. A `run` that keeps failing with the
 			// byte-identical result, across turns whose ACTIONS differ, is a stall the
 			// turn-signature/spiral detectors can't see (DOGFOOD R9/R10's 30-turn
-			// edit→test→edit→same-error burn). Key it on the observation, not the action.
+			// edit→test→edit→same-error burn) — key it on the observation, not the action.
+			kill := false
 			if c.Name == "run" {
 				lastRunFailed = isRunFailure(obs)
+				if lastRunFailed {
+					failRuns++
+				}
 				switch {
 				case !lastRunFailed: // a passing run is real progress — reset.
 					stagnant, lastRunFP = 0, ""
@@ -186,18 +222,39 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 				default: // a NEW failure — the world changed, count restarts.
 					stagnant, lastRunFP = 1, runFingerprint(obs)
 				}
-				if stagnant >= maxStagnant {
-					res.Outcome = KilledStagnant
-					res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
-					return res, nil
-				}
+				kill = stagnant >= maxStagnant
+			}
+			if c.Name == "edit_file" {
+				edits++
+			}
+			// (P3) Churn nudge: fire once when EITHER wandering signal crosses the
+			// threshold — repeated failing test-runs (gpt-oss) OR many edit_file calls
+			// without converging (grok, which barely runs the tests so a run-only
+			// trigger never fires). Skipped on a kill turn (we're terminating anyway).
+			if !kill && !nudged && cfg.ChurnNudgeRuns > 0 && (failRuns >= cfg.ChurnNudgeRuns || edits >= cfg.ChurnNudgeRuns) {
+				obs += churnNudge
+				nudged = true
+			}
+
+			step.Grounded = grounded
+			step.Observation = obs
+			res.Steps = append(res.Steps, step)
+			cfg.Obs.Observation(obs)
+			// (P6) A tool failure is an observation the model reacts to, tagged so
+			// the provider marks it an error result — never a crash for us.
+			messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
+
+			if kill {
+				res.Outcome = KilledStagnant
+				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		}
 	}
 
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return res, nil
+	return upgradeIfVerified(cfg, res, runTimeout), nil
 }
 
 // dispatchNative runs the tool a call names and turns any failure into an error

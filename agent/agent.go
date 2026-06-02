@@ -139,6 +139,7 @@ const (
 	KilledRepeat   Outcome = "killed_repeat"   // exact same action maxRepeats times.
 	KilledSpiral   Outcome = "killed_spiral"   // noProgressWindow list_dir calls in a row.
 	KilledStagnant Outcome = "killed_stagnant" // the same failing `run` result maxStagnant times despite changing actions.
+	HitDeadline    Outcome = "hit_deadline"    // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
 	ProviderErr    Outcome = "provider_error"  // a transport/auth failure talking to the model.
 )
 
@@ -190,6 +191,16 @@ type Config struct {
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
 	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
 
+	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
+	// is the universal backstop for a spiral that dodges every action/observation
+	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool
+	// calls (premature finishes, truncated apply_patch blobs) and was only stopped by
+	// an EXTERNAL `timeout`, exiting 124 with no typed outcome. With this set the loop
+	// ends itself as HitDeadline (and runs the verify-on-terminate check). Especially
+	// relevant with slow third-party providers, where iteration count and wall-clock
+	// diverge. 0 = off (only the iteration cap bounds the run).
+	MaxWallClock time.Duration
+
 	// VerifyCmd is the closing VERIFICATION gate (P5/HP-5): a success command the
 	// caller names (e.g. "go test ./...") that is re-run when the model finishes.
 	// A non-zero exit downgrades the terminal Answered to Unverified — turning a
@@ -207,6 +218,28 @@ type Config struct {
 	// returns 1 on no match), which this would wrongly flag — VerifyCmd is the
 	// precise gate, this is the cheap heuristic for an un-instrumented run.
 	VerifyLastRun bool
+
+	// ChurnNudgeRuns, when > 0, injects a ONE-TIME hint after this many FAILING `run`
+	// results in a session: a suggestion to stop incremental editing and rewrite the
+	// whole file in one write_file. It targets the residual cheap-model failure the
+	// live runs surfaced — a capable model (gpt-oss-120b, grok) that passes when it
+	// writes the file wholesale but burns to the iteration cap when it wanders in
+	// edit_file/run churn on shifting line numbers. The runs that rewrite pass; the
+	// runs that churn time out, so nudging a stuck model toward a rewrite is the lever
+	// to consistent passing. 0 = off (the historical behavior).
+	ChurnNudgeRuns int
+
+	// VerifyContinue turns the VerifyCmd gate from TERMINAL into CONTINUE-ON-FAIL: a
+	// finish that doesn't verify is not accepted as Unverified while iterations
+	// remain — instead the failing output is fed back as an observation and the loop
+	// keeps going. This is the lever that lifts weak-model pass rates: the dominant
+	// cheap-model failure (DOGFOOD R9/R10) is a PREMATURE finish — a tool-call-free
+	// turn that is really narration ("I'll implement now") or a hallucinated "done",
+	// emitted before the work is complete. Re-grounding it with the real red test
+	// output and "keep working" converts that false stop into actual progress, where
+	// the plain terminal gate would just record a non-pass. Bounded by MaxIterations;
+	// requires VerifyCmd.
+	VerifyContinue bool
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -261,6 +294,9 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	var lastRunFP string
 	stagnant := 0
 	lastRunFailed := false
+	failRuns := 0   // count of failing `run` results this session (a churn signal).
+	edits := 0      // count of edit_file calls this session (the other churn signal).
+	nudged := false // the churn nudge fires at most once.
 
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
@@ -273,17 +309,38 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	// we never write can never be the thing consolidation later has to walk back.
 	grounded := false
 
+	start := time.Now() // (P5) wall-clock budget anchor; see MaxWallClock.
+	// Deadline-bound context so a slow in-flight call is cancelled AT the budget,
+	// not merely noticed at the next between-turn check.
+	loopCtx := ctx
+	if cfg.MaxWallClock > 0 {
+		var cancel context.CancelFunc
+		loopCtx, cancel = context.WithTimeout(ctx, cfg.MaxWallClock)
+		defer cancel()
+	}
+
 	for i := 1; i <= maxIter; i++ { // (P5) the hard cap lives in the loop header.
+		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
+			res.Outcome = HitDeadline
+			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
+			return upgradeIfVerified(cfg, res, runTimeout), nil
+		}
 		cfg.Obs.Iteration(i, maxIter)
 
 		// THINK: send the FULL context (P1) and get back text. Pure function.
-		resp, err := cfg.Model.Generate(ctx, llm.Request{
+		resp, err := cfg.Model.Generate(loopCtx, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Temperature: &temp,
 			MaxTokens:   maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
 		})
 		if err != nil {
+			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
+			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
+				res.Outcome = HitDeadline
+				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+				return upgradeIfVerified(cfg, res, runTimeout), nil
+			}
 			// A transport/auth failure is a real stop (tool errors are not — see
 			// dispatch). Record it as a typed outcome AND return the error.
 			res.Outcome = ProviderErr
@@ -308,9 +365,17 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 			step.Grounded = grounded
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
-			// terminal state before accepting it. A failing check is an honest
-			// non-pass, NOT a stored fact.
-			if reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout); reason != "" {
+			// terminal state before accepting it.
+			reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout)
+			if reason != "" && cfg.VerifyContinue && i < maxIter {
+				// Continue-on-fail: a premature finish becomes more work, not a stop.
+				// Feed the real failing state back (P4) and keep going.
+				cfg.Obs.Note("finish rejected (not verified) — continuing")
+				messages = append(messages, llm.User("OBSERVATION:\nNot finished — you answered, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
+				continue
+			}
+			if reason != "" {
+				// No budget left (or not in continue-mode): an honest non-pass, not a stored fact.
 				res.Outcome = Unverified
 				res.Answer = arg
 				res.Reason = reason
@@ -340,7 +405,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", lastAction, repeats)
-				return res, nil
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
 			repeats = 0
@@ -359,7 +424,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d list_dir calls in a row — switch to run or read_file, or answer", sameVerb)
-				return res, nil
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
 			sameVerb = 1
@@ -367,7 +432,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		lastVerb = verb
 
 		// ACT: run the named tool. The model only chose it; we execute it (P2).
-		observation := dispatch(ctx, cfg.Tools, verb, arg)
+		observation := dispatch(loopCtx, cfg.Tools, verb, arg)
 
 		// A successful tool observation means the model has now seen REAL external
 		// state this run — anything it answers from here is grounded, so worth
@@ -385,6 +450,9 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		// above can't see. Track it on the observation, not the action.
 		if verb == "run" {
 			lastRunFailed = isRunFailure(observation)
+			if lastRunFailed {
+				failRuns++
+			}
 			switch {
 			case !lastRunFailed: // a passing run is real progress — reset.
 				stagnant, lastRunFP = 0, ""
@@ -397,8 +465,21 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Outcome = KilledStagnant
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
 				cfg.Obs.Observation(observation)
-				return res, nil
+				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
+		}
+		if verb == "edit_file" {
+			edits++
+		}
+
+		// (P3) Churn nudge: fire once when EITHER signal of wandering crosses the
+		// threshold — repeated failing test-runs (the gpt-oss churn) OR many
+		// edit_file calls without converging (the grok read/edit churn, which barely
+		// runs the tests so a run-only trigger never fires). Appended to whatever the
+		// current observation is so the model reads it next turn.
+		if !nudged && cfg.ChurnNudgeRuns > 0 && (failRuns >= cfg.ChurnNudgeRuns || edits >= cfg.ChurnNudgeRuns) {
+			observation += churnNudge
+			nudged = true
 		}
 
 		// OBSERVE: the result — including any error — is appended as the next thing
@@ -410,7 +491,44 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	// ---- Principle 5: if we fall out of the loop, WE stop it. Never trust the model to. ----
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return res, nil
+	return upgradeIfVerified(cfg, res, runTimeout), nil
+}
+
+// churnNudge is the one-time hint appended to an observation once a session crosses
+// Config.ChurnNudgeRuns failing test-runs OR edit_file calls (P3). The live runs
+// showed capable cheap models pass when they write the file wholesale but burn the
+// whole iteration budget when they wander — gpt-oss in repeated failing test-runs,
+// grok in read/edit churn (barely running the tests) — so a stuck model is steered
+// toward the path that works, regardless of which way it is spinning.
+const churnNudge = "\n\n[hint: the tests have failed several times. If you've been making incremental edits, " +
+	"stop and rewrite the whole file in ONE write_file with a complete, correct implementation — " +
+	"that is usually faster than chasing line-by-line edits, and avoids line-number drift.]"
+
+// upgradeIfVerified flips a non-Answered terminal outcome (a kill or the iteration
+// cap) to Answered when VerifyCmd actually passes (P5/HP-5). The verify command is
+// the source of truth for "is the task done", so a run whose code is already correct
+// must not be reported as a failure just because the loop bailed — the live runs
+// showed gpt-5-nano flail on a malformed `bash -lc go test` side-command (tripping
+// the stagnant detector) while its real calc.go passed. This is the dual of
+// verify-continue: that downgrades a false success, this upgrades a false failure.
+// No-op without VerifyCmd, or when the command still fails (a genuine non-pass).
+func upgradeIfVerified(cfg Config, res *RunResult, runTimeout time.Duration) *RunResult {
+	if cfg.VerifyCmd == "" {
+		return res
+	}
+	// A FRESH context, detached from the loop's: this final check must run even when
+	// the run ended because the wall-clock budget (loop ctx) just expired — otherwise
+	// a HitDeadline on already-correct code could never be upgraded. Bounded by runOp's
+	// own timeout so it can't itself hang.
+	out, err := runOp(context.Background(), cfg.Sandbox, cfg.VerifyCmd, runTimeout)
+	if err == nil && !isRunFailure(out) {
+		res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, cfg.VerifyCmd)
+		res.Outcome = Answered
+		if res.Answer == "" {
+			res.Answer = fmt.Sprintf("task verified complete (%q passed)", cfg.VerifyCmd)
+		}
+	}
+	return res
 }
 
 // verifyTermination decides whether a model's done-signal actually holds (P5/HP-5)
