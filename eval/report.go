@@ -310,7 +310,7 @@ func (r *Report) writeTraces(dir string) error {
 				}
 			}
 			rec := traceRecord{Case: t.Case, Model: t.Model, Index: t.Index,
-				Outcome: string(t.Outcome), Pass: t.Pass, Detail: t.Detail, Steps: t.Steps}
+				Outcome: string(t.Outcome), Pass: t.Pass, Detail: t.Detail, Answer: t.Answer, Steps: t.Steps}
 			b, err := json.MarshalIndent(rec, "", "  ")
 			if err != nil {
 				continue
@@ -324,7 +324,10 @@ func (r *Report) writeTraces(dir string) error {
 
 // traceRecord is the on-disk shape of one archived trial trace: enough header to
 // identify the run (model/case/index + the verdict) followed by the full Step
-// trace, so a trace file is self-describing without the report beside it.
+// trace, so a trace file is self-describing without the report beside it. Answer
+// is the final artifact lifted out of the trace — redundant with the last step's
+// reply, but for a PROSE case (issue-review) it is the whole point of the run, so
+// it sits at the top of the file where a reader looks first.
 type traceRecord struct {
 	Case    string       `json:"case"`
 	Model   string       `json:"model"`
@@ -332,6 +335,7 @@ type traceRecord struct {
 	Outcome string       `json:"outcome"`
 	Pass    bool         `json:"pass"`
 	Detail  string       `json:"detail"`
+	Answer  string       `json:"answer"`
 	Steps   []agent.Step `json:"steps"`
 }
 
