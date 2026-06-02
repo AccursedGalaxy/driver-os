@@ -3,9 +3,30 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
+
+// ReadOnlyTools must keep the OBSERVE tools and drop the two MUTATION tools — the
+// safety guarantee the issue-review bot relies on (it reviews code, never edits).
+func TestReadOnlyToolsHasNoMutation(t *testing.T) {
+	ro := ReadOnlyTools(sbWith(t, nil), time.Second)
+	for _, want := range []string{"list_dir", "read_file", "run"} {
+		if _, ok := ro[want]; !ok {
+			t.Errorf("ReadOnlyTools is missing the observe tool %q", want)
+		}
+	}
+	for _, banned := range []string{"write_file", "edit_file"} {
+		if _, ok := ro[banned]; ok {
+			t.Errorf("ReadOnlyTools must not expose the mutation tool %q", banned)
+		}
+	}
+	// The canonical set still has them — we removed by deletion, not by lying.
+	if _, ok := DefaultTools(sbWith(t, nil), time.Second)["write_file"]; !ok {
+		t.Error("sanity: DefaultTools should still include write_file")
+	}
+}
 
 // roleSeq renders a message slice as its role sequence (e.g. "u a t t a t") so a
 // test can assert eviction kept pairing and order without comparing every part.

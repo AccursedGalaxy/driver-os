@@ -166,6 +166,28 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 	}
 }
 
+// ReadOnlyTools is DefaultTools with the two dedicated MUTATION tools
+// (write_file, edit_file) removed: list_dir + read_file + run only. It exists for
+// agents whose whole job is to OBSERVE and reason about a codebase without
+// changing it — e.g. the issue-review bot, which grounds a discussion in the real
+// code and must never modify the repo it analyses.
+//
+// Honest scope note: this is "no dedicated write tools", not a hermetic read-only
+// jail. `run` stays in (grep/build/test is how the agent grounds "does X already
+// exist?"), and `run` executes shell, so it CAN touch the filesystem. That is
+// acceptable here because the caller pairs it with an ephemeral, confined sandbox
+// (the CI checkout) and a trusted-author gate upstream — the bot's task only ever
+// comes from accounts you trust. Drop `run` too if you need a stricter set.
+//
+// It derives from DefaultTools by deletion so the kept tools' descriptions and
+// schemas never drift from the canonical set.
+func ReadOnlyTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool {
+	t := DefaultTools(sb, runTimeout)
+	delete(t, "write_file")
+	delete(t, "edit_file")
+	return t
+}
+
 // ---- tools: real external state (P4) ----
 
 // toolListDir returns NAMES, not a stat dump (P1, "return information not data"):
