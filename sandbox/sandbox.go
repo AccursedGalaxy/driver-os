@@ -1,11 +1,13 @@
 // Package sandbox defines the isolation boundary the agent acts inside.
 //
-// Motivation (see ../SANDBOX.md). Today the agent runs OUR trusted tools behind
-// a path fence (confineToRoot in cmd/agent). The moment the agent runs
-// arbitrary, model-authored code, that code is hostile and a path check is not
-// enough. Rather than scatter isolation logic through individual tools, we make
-// it a property of ONE boundary: every effect the model causes — running a
-// command, reading or writing a file — goes through a Sandbox.
+// Motivation (see ../SANDBOX.md). The agent runs OUR trusted tools behind a path
+// fence (sandbox/local's resolve, the lifted form of cmd/agent's old
+// confineToRoot). The moment the agent runs arbitrary, model-authored code, that
+// code is hostile and a path check is not enough — so the sandbox/docker backend
+// runs Exec inside a container (gVisor via --runtime=runsc). Rather than scatter
+// isolation logic through individual tools, we make it a property of ONE
+// boundary: every effect the model causes — running a command, reading or writing
+// a file — goes through a Sandbox.
 //
 // This is the same shape as the rest of driver-os: a small stable core
 // interface (like llm.Provider) with pluggable backend adapters in subpackages

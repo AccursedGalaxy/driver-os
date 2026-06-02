@@ -1,4 +1,18 @@
-.PHONY: deps-clone
+.PHONY: deps-clone sandbox-image sandbox-integration
+
+# Build the trusted base image the docker sandbox backend runs untrusted commands
+# in (sh, rg, git, go). Tag matches docker.DefaultImage. Run once (and after any
+# Dockerfile change); the daemon caches it thereafter.
+sandbox-image:
+	docker build -t driver-os-sandbox:latest sandbox/docker
+
+# Run the docker backend's integration tests against a REAL daemon (network
+# blocks, path escapes, resource limits, conformance). Requires `make
+# sandbox-image` first and a running docker daemon.
+sandbox-integration:
+	go test -tags docker_integration -count=1 ./sandbox/docker
+
+
 
 # Clone/update dependency repos listed in _deps/repos.txt into _deps/ for browsing.
 # Missing repos are shallow-cloned; existing ones are fast-forwarded.

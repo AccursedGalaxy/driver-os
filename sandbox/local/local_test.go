@@ -9,7 +9,21 @@ import (
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/sandbox"
+	"github.com/AccursedGalaxy/driver-os/sandbox/sandboxtest"
 )
+
+// TestConformance runs the shared backend contract suite against the local
+// backend. It runs ALWAYS (no daemon needed) and is the parity baseline the
+// docker backend is held to under the docker_integration tag.
+func TestConformance(t *testing.T) {
+	sandboxtest.RunConformance(t, func(t *testing.T, dir string) (sandbox.Sandbox, func()) {
+		sb, err := New(dir)
+		if err != nil {
+			t.Fatalf("local.New: %v", err)
+		}
+		return sb, func() { _ = sb.Close() }
+	})
+}
 
 func newTest(t *testing.T) (*Sandbox, string) {
 	t.Helper()

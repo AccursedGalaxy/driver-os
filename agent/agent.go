@@ -148,6 +148,7 @@ const (
 	HitDeadline     Outcome = "hit_deadline"      // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
 	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
 	HitContextLimit Outcome = "hit_context_limit" // (HP-1) the window overflowed AND reactive eviction couldn't compact it further — a graceful stop, not a crash.
+	RefusedUnsafe   Outcome = "refused_unsafe"    // the Sandbox's isolation is weaker than Config.MinIsolation requires — refused BEFORE the first model call (P2/§5). Never ran hostile code on a too-weak boundary.
 )
 
 // Step is one think->act->observe iteration, captured as data. The trace of
@@ -192,6 +193,18 @@ type Config struct {
 	Task    string          // required: the goal.
 	Root    string          // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
 	Obs     Observer        // optional: live progress sink; nil = silent.
+
+	// MinIsolation is the SAFETY PRECONDITION (P2/§5): the weakest sandbox isolation
+	// this run will tolerate. Before the first model call, Run/RunNative refuse with
+	// Outcome RefusedUnsafe if Sandbox.Capabilities().Isolation < MinIsolation — so
+	// untrusted, model-authored code never executes on a boundary too weak to
+	// contain it (e.g. requiring IsolationKernel forces a gVisor backend; a `local`
+	// or plain-container sandbox is refused). The default zero is IsolationNone,
+	// which admits every backend and preserves today's behavior for trusted callers
+	// (issue-bot, eval). This is the ONE enforcement point; CLI -untrusted just sets
+	// it. Fails CLOSED: a nil Sandbox with MinIsolation > IsolationNone is a refusal,
+	// not a panic.
+	MinIsolation sandbox.Isolation
 
 	// All three default sensibly when zero (P5/P7 — termination knobs are OURS):
 	MaxIterations int           // 0 = DefaultMaxIterations. The hard cap on think->act->observe turns.
@@ -255,7 +268,37 @@ type Config struct {
 // RunResult. err is non-nil ONLY for a genuine infrastructure failure (the model
 // call itself failed); a no-progress kill or a hit cap is a normal Outcome, not
 // a Go error.
+// checkIsolation enforces Config.MinIsolation (P2/§5) and is the FIRST thing both
+// loops do. It returns a non-nil RefusedUnsafe RunResult — to be returned
+// directly, before any model call or verification — when the Sandbox's isolation
+// is weaker than required, and nil when the run may proceed. It fails CLOSED: a
+// nil Sandbox under a non-zero MinIsolation is a refusal, not a panic. The caller
+// must return this result AS-IS and must NOT route it through upgradeIfVerified —
+// a refused run must never execute VerifyCmd on the unsafe sandbox.
+func checkIsolation(cfg Config) *RunResult {
+	if cfg.MinIsolation <= sandbox.IsolationNone {
+		return nil // default: every backend admitted; today's trusted-caller behavior.
+	}
+	have := sandbox.IsolationNone
+	if cfg.Sandbox != nil {
+		have = cfg.Sandbox.Capabilities().Isolation
+	}
+	if have < cfg.MinIsolation {
+		return &RunResult{
+			Task:    cfg.Task,
+			Root:    cfg.Root,
+			Outcome: RefusedUnsafe,
+			Reason: fmt.Sprintf("refused: task requires isolation >= %s but the sandbox provides %s — "+
+				"run with a stronger backend (e.g. -sandbox=docker -runtime=runsc)", cfg.MinIsolation, have),
+		}
+	}
+	return nil
+}
+
 func Run(ctx context.Context, cfg Config) (*RunResult, error) {
+	if refusal := checkIsolation(cfg); refusal != nil {
+		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
+	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
