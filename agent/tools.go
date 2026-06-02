@@ -104,6 +104,37 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 				return runOp(ctx, sb, a.Command, runTimeout)
 			},
 		},
+		"search": {
+			Name: "search",
+			// Desc is the API the model programs against. It names the ONE thing this
+			// tool fixes that `run grep` couldn't: it always searches from the ROOT,
+			// so the model cannot accidentally scope away the markdown docs (the
+			// retry/backoff "is it already decided?" footgun). The whole arg is the
+			// pattern — there is deliberately no folder knob in the text protocol, so
+			// the scope can't be narrowed wrong.
+			Desc: "search the WHOLE project for a regex PATTERN with ripgrep, always from the sandbox ROOT — so code AND the docs (DESIGN.md, HARD-PROBLEMS.md, README.md, CLAUDE.md) are ALWAYS in scope. Use this over `run grep` to answer \"does X already exist / is X already decided?\": searching the term surfaces the design docs automatically, because you cannot scope a folder away. It respects .gitignore, so noise (.git/, vendored _deps/ clones, eval/runs/ trace dumps) is skipped for you. ARG: the pattern — a Rust regex, e.g. `retry|backoff|Retryable` (the WHOLE arg is the pattern; it is matched from the root). Case-insensitive UNLESS the pattern contains an uppercase letter. RETURNS: matching lines as `path:line:text` (gitignored files excluded); capped, with a note on how to narrow if there are too many.",
+			// NativeDesc: behavior + selection only; the `pattern`/`path` schema fields
+			// own the format. The native loop DOES expose an optional `path` to narrow,
+			// but its default (omitted) is the whole root — so the docs stay in scope
+			// unless the model deliberately narrows.
+			NativeDesc: "Search the whole project for a regex pattern with ripgrep, from the sandbox root so code AND the docs (DESIGN.md, README.md, …) are always in scope. Prefer it over `run grep` to answer \"does X already exist / is X already decided?\": searching the term surfaces the design docs automatically. Respects .gitignore (skips .git/, vendored clones, trace dumps). Case-insensitive unless the pattern contains an uppercase letter. Returns matching lines as `path:line:text`, capped with a note on how to narrow.",
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolSearch(ctx, sb, arg, runTimeout) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"pattern":{"type":"string","description":"a Rust-regex pattern to search for, e.g. retry|backoff. Case-insensitive unless it contains an uppercase letter."},` +
+				`"path":{"type":"string","description":"OPTIONAL directory or file (relative to the sandbox root) to narrow the search to; OMIT to search the whole project — the default, which keeps the docs in scope. Must stay within the root."}},` +
+				`"required":["pattern"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Pattern string `json:"pattern"`
+					Path    string `json:"path"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid search arguments: %v", err)
+				}
+				return searchOp(ctx, sb, a.Pattern, a.Path, runTimeout)
+			},
+		},
 		"write_file": {
 			Name: "write_file",
 			Desc: "create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
@@ -753,6 +784,119 @@ func runFingerprint(obs string) string {
 		return first + "\n" + rest
 	}
 	return first
+}
+
+// toolSearch is the text-loop entry: the WHOLE arg is the pattern (no folder knob
+// in the text protocol, on purpose — that is the footgun this tool removes), so it
+// always searches from the root. searchOp does the real work, shared with the
+// native handler which can also pass an optional path.
+func toolSearch(ctx context.Context, sb sandbox.Sandbox, arg string, timeout time.Duration) (string, error) {
+	return searchOp(ctx, sb, arg, "", timeout)
+}
+
+// searchOp runs ripgrep from the sandbox ROOT with the right defaults baked in:
+// gitignore-respecting (so docs are in, noise is out) and root-scoped (so the
+// model can't accidentally exclude the folder that holds the answer — the exact
+// grep-scope bug this tool fixes). The model supplies only a pattern (+ optional
+// narrowing path); the dangerous knobs are ours, not the model's.
+//
+// It runs `rg` DIRECTLY (Path:"rg", typed Args) rather than through `sh -c`, so
+// the model's pattern can never be shell-interpreted — no quoting, no injection,
+// and a pattern that starts with `-` is safe because it is passed via `-e`.
+func searchOp(ctx context.Context, sb sandbox.Sandbox, pattern, path string, timeout time.Duration) (string, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" { // (P3) name the shape rather than run an empty search.
+		return "", fmt.Errorf("search needs a pattern, e.g. `search retry|backoff` — it is matched as a regex from the project root")
+	}
+	cleanPath, err := validateSearchPath(path)
+	if err != nil {
+		return "", err // (P3) the fence message already teaches the fix.
+	}
+
+	// Defaults that make the output a clean, citable observation (P1): line numbers
+	// for citation, flat `path:line:text` (no heading/color so it parses), and a
+	// per-line column cap so one minified/vendored line can't blow up the window.
+	args := []string{
+		"--line-number",
+		"--no-heading",
+		"--color=never",
+		"--smart-case",
+		"--max-columns=250",
+		"--max-columns-preview",
+		"-e", pattern,
+	}
+	if cleanPath != "" {
+		args = append(args, "--", cleanPath) // `--` so a path can't be read as a flag.
+	}
+
+	res, err := sb.Exec(ctx, sandbox.Command{Path: "rg", Args: args, Timeout: timeout})
+	if err != nil {
+		// rg absent is the one start-failure worth a recovery instruction (P3):
+		// fall back to the always-present grep, still from the root.
+		if strings.Contains(err.Error(), "executable file not found") {
+			return "", fmt.Errorf("ripgrep (rg) is not installed — fall back to `run grep -rn <pattern> .` (search from `.`, the root, so the docs stay in scope)")
+		}
+		return "", err // couldn't start / canceled — dispatch turns it into an observation (P6).
+	}
+	if res.TimedOut {
+		return "", fmt.Errorf("search timed out after %s — narrow it with a more specific pattern or a path", timeout)
+	}
+	return formatSearch(res, pattern, cleanPath), nil
+}
+
+// validateSearchPath keeps an optional narrowing path inside the root, so the
+// "always from the root" guarantee holds even when the model narrows: an absolute
+// path or a `..` escape is refused with a teaching message (P3). Empty (the
+// default) means "search the whole project" and passes through.
+func validateSearchPath(path string) (string, error) {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(p) {
+		return "", fmt.Errorf("search path %q must be relative to the sandbox root (omit it to search the whole project)", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("refused: search path %q escapes the sandbox root", p)
+	}
+	return clean, nil
+}
+
+// formatSearch renders rg's result as a scannable observation. rg's exit codes
+// are a three-way signal, not a pass/fail: 0 = matches, 1 = NO matches (a normal
+// outcome, not an error), 2 = a real error (e.g. a bad regex). We translate each
+// into the right shape (P3/P6): matches capped with a narrow-hint, a confirmed
+// absence phrased as a valid conclusion, and a syntax error surfaced with rg's
+// own stderr so the model can fix the pattern.
+func formatSearch(r *sandbox.Result, pattern, path string) string {
+	scope := "the project"
+	if path != "" {
+		scope = path
+	}
+	switch r.ExitCode {
+	case 0: // matches.
+		lines := strings.Split(strings.TrimRight(string(r.Stdout), "\n"), "\n")
+		total := len(lines)
+		clipped := 0
+		if total > searchMatchCap { // (P1) don't flood the window on a common term.
+			clipped = total - searchMatchCap
+			lines = lines[:searchMatchCap]
+		}
+		body := strings.Join(lines, "\n")
+		if clipped > 0 { // (P3) tell the model how to see the rest.
+			body += fmt.Sprintf("\n...[showing the first %d of %d matches — refine the pattern, or pass a narrower `path`, to see the rest]", searchMatchCap, total)
+		}
+		return body
+	case 1: // no matches — a real answer, not a failure (mirrors read_file's "absence can be your answer").
+		return fmt.Sprintf("no matches for /%s/ in %s — the pattern is not present anywhere tracked (gitignored files aside); a confirmed absence can be your answer. Widen the pattern if you expected a hit.", pattern, scope)
+	default: // exit 2 (or anything else): a real rg error — surface its stderr so the model can fix it (P3).
+		msg := clip(strings.TrimSpace(string(r.Stderr)), runStreamCap)
+		if msg == "" {
+			msg = fmt.Sprintf("ripgrep exited %d with no message", r.ExitCode)
+		}
+		return "search error: " + msg
+	}
 }
 
 // looksLikeEditEnvelope detects a foreign file-EDITING-tool wrapper at the start

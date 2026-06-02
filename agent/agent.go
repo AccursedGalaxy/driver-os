@@ -82,6 +82,11 @@ const (
 	listEntryCap = 200     // (P1) list_dir caps entries so a huge directory can't flood the window.
 	runStreamCap = 4000    // (P1) run clips each of stdout/stderr to this many runes, head+tail.
 
+	// searchMatchCap bounds how many matching lines `search` returns (P1, CONTEXT):
+	// a common term (e.g. "err") can match thousands of lines, and dumping them all
+	// would rot the window. When it clips it tells the model how to narrow (P3).
+	searchMatchCap = 100
+
 	// defaultRunTimeout bounds a single `run` command when Config.RunTimeout is
 	// unset (P5: a runaway command is the sandbox's job to kill). A real build or
 	// test suite can exceed it — raise it via Config for longer-running work.
