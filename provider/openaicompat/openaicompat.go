@@ -40,6 +40,16 @@ type Config struct {
 	// (cmd/agent) trusts this to decide native-tools vs the text fallback, so an
 	// optimistic lie here means no fallback and a failed request.
 	Capabilities *llm.Capabilities
+
+	// PromptCache, when true, marks Anthropic-style `cache_control` breakpoints on
+	// the stable prefix (the system prompt) and the latest message of every
+	// request, so a backend that supports prompt caching — Anthropic via OpenRouter
+	// — serves the re-sent prefix from cache instead of re-billing it at full rate.
+	// It is OPT-IN because the marker is an Anthropic extension: plain OpenAI
+	// rejects an unknown field inside a content block, so this must stay off for
+	// non-Anthropic targets. Harmless when the prefix is below the model's minimum
+	// cacheable size (the backend simply doesn't cache). See WithPromptCache.
+	PromptCache bool
 }
 
 // Provider is an OpenAI-compatible llm.Provider.
@@ -48,7 +58,17 @@ type Provider struct {
 	model  string
 	client openai.Client
 	caps   llm.Capabilities
+	cache  bool // PromptCache: emit cache_control breakpoints (Anthropic-via-OpenRouter).
 }
+
+// WithPromptCache returns the provider with Anthropic prompt-caching breakpoints
+// enabled (see Config.PromptCache). Chainable onto a preset for the common case:
+//
+//	openaicompat.OpenRouter("anthropic/claude-opus-4.8").WithPromptCache()
+//
+// Use it ONLY for Anthropic-family models (the marker is their extension); leave
+// it off for plain OpenAI, which rejects the field.
+func (p *Provider) WithPromptCache() *Provider { p.cache = true; return p }
 
 var _ llm.Provider = (*Provider)(nil)
 
@@ -78,6 +98,7 @@ func New(cfg Config) *Provider {
 		model:  cfg.Model,
 		client: openai.NewClient(opts...),
 		caps:   caps,
+		cache:  cfg.PromptCache,
 	}
 }
 
@@ -125,6 +146,11 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 	params := openai.ChatCompletionNewParams{
 		Model:    model,
 		Messages: toMessages(req),
+	}
+	if p.cache {
+		// (HP-8) Mark cache breakpoints so the re-sent prefix is served from the
+		// provider's prompt cache instead of re-billed every turn.
+		applyCacheBreakpoints(params.Messages)
 	}
 	if req.MaxTokens > 0 {
 		params.MaxTokens = openai.Int(int64(req.MaxTokens))
@@ -226,6 +252,69 @@ func assistantMessage(m llm.Message) openai.ChatCompletionMessageParamUnion {
 		am.Content.OfString = openai.String(txt)
 	}
 	return openai.ChatCompletionMessageParamUnion{OfAssistant: &am}
+}
+
+// applyCacheBreakpoints marks the two cache anchors that maximize reuse of our
+// re-send-everything loop (P1) under Anthropic prompt caching (via OpenRouter):
+//
+//   - the SYSTEM message (the prefix that is byte-identical on every turn — the
+//     system prompt + the tool schemas that precede it in Anthropic's cache order);
+//   - the LAST message of the request (this turn's newest content). Anthropic
+//     reads the longest cached prefix automatically, so marking the tail each turn
+//     WRITES an ever-growing cache that the NEXT turn READS in full — incremental
+//     caching that collapses the quadratic re-send cost (HP-8).
+//
+// Two breakpoints (Anthropic allows up to four) is enough: system for the stable
+// base, tail for the growing history. Below the model's minimum cacheable size
+// the backend just ignores the markers, so this is always safe to apply.
+func applyCacheBreakpoints(msgs []openai.ChatCompletionMessageParamUnion) {
+	if len(msgs) == 0 {
+		return
+	}
+	if msgs[0].OfSystem != nil { // the stable system+tools prefix.
+		markCacheBreakpoint(&msgs[0])
+	}
+	markCacheBreakpoint(&msgs[len(msgs)-1]) // the growing-history tail.
+}
+
+// ephemeralCacheControl is the marker OpenRouter forwards to Anthropic to open a
+// cache breakpoint on a content block.
+func ephemeralCacheControl() map[string]any {
+	return map[string]any{"cache_control": map[string]any{"type": "ephemeral"}}
+}
+
+// markCacheBreakpoint rewrites a message's string content into the single-element
+// ARRAY form carrying a cache_control marker on its text block — the only shape
+// that can hold the marker (it's a per-content-block field, not a message field).
+// It handles the kinds that actually anchor a breakpoint in our loops: system, the
+// trailing user OBSERVATION (text loop), and the trailing tool result (native
+// loop). Other kinds are left untouched. The marker rides as an SDK "extra field",
+// since cache_control is an Anthropic extension absent from the OpenAI types.
+func markCacheBreakpoint(msg *openai.ChatCompletionMessageParamUnion) {
+	textPart := func(s string) openai.ChatCompletionContentPartTextParam {
+		p := openai.ChatCompletionContentPartTextParam{Text: s}
+		p.SetExtraFields(ephemeralCacheControl())
+		return p
+	}
+	switch {
+	case msg.OfSystem != nil:
+		msg.OfSystem.Content = openai.ChatCompletionSystemMessageParamContentUnion{
+			OfArrayOfContentParts: []openai.ChatCompletionContentPartTextParam{
+				textPart(msg.OfSystem.Content.OfString.Or("")),
+			},
+		}
+	case msg.OfTool != nil:
+		msg.OfTool.Content = openai.ChatCompletionToolMessageParamContentUnion{
+			OfArrayOfContentParts: []openai.ChatCompletionContentPartTextParam{
+				textPart(msg.OfTool.Content.OfString.Or("")),
+			},
+		}
+	case msg.OfUser != nil:
+		part := textPart(msg.OfUser.Content.OfString.Or(""))
+		msg.OfUser.Content = openai.ChatCompletionUserMessageParamContentUnion{
+			OfArrayOfContentParts: []openai.ChatCompletionContentPartUnionParam{{OfText: &part}},
+		}
+	}
 }
 
 // toTools translates provider-agnostic tools into OpenAI tool params. Schema (a

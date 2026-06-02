@@ -297,3 +297,97 @@ func TestCapabilities(t *testing.T) {
 		t.Errorf("override Capabilities = %+v, want Tools && Vision", c)
 	}
 }
+
+// captureBody runs a Generate against a server that records the outgoing request
+// body and returns a minimal valid completion, so a test can assert exactly what
+// went on the wire. cache controls whether PromptCache is enabled on the provider.
+func captureBody(t *testing.T, cache bool, req llm.Request) map[string]any {
+	t.Helper()
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"c","model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := New(Config{Name: "test", BaseURL: srv.URL, APIKey: "k", Model: "m", PromptCache: cache})
+	if _, err := p.Generate(context.Background(), req); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	return body
+}
+
+// hasCacheControl reports whether a wire message's content is the array form
+// carrying a cache_control marker on its (first) text block.
+func hasCacheControl(msg any) bool {
+	m, ok := msg.(map[string]any)
+	if !ok {
+		return false
+	}
+	parts, ok := m["content"].([]any)
+	if !ok || len(parts) == 0 {
+		return false // string content => no marker.
+	}
+	p0, ok := parts[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	cc, ok := p0["cache_control"].(map[string]any)
+	return ok && cc["type"] == "ephemeral"
+}
+
+func TestPromptCacheBreakpoints(t *testing.T) {
+	req := llm.Request{
+		System: "SYSTEM PROMPT",
+		Messages: []llm.Message{
+			llm.User("OBSERVATION one"),
+			{Role: llm.RoleAssistant, Parts: []llm.ContentPart{llm.ToolCallPart{ID: "c1", Name: "read_file", Args: json.RawMessage(`{"p":"x"}`)}}},
+			llm.ToolResultMsg("c1", "the file body", false), // the LAST message (a tool result).
+		},
+	}
+
+	t.Run("enabled marks system and last only", func(t *testing.T) {
+		body := captureBody(t, true, req)
+		msgs := body["messages"].([]any)
+		if n := len(msgs); n != 4 {
+			t.Fatalf("messages = %d, want 4 (system + 3)", n)
+		}
+		if !hasCacheControl(msgs[0]) {
+			t.Errorf("system message should carry a cache breakpoint: %v", msgs[0])
+		}
+		if !hasCacheControl(msgs[len(msgs)-1]) {
+			t.Errorf("last message (tool result) should carry a cache breakpoint: %v", msgs[len(msgs)-1])
+		}
+		// The middle user OBSERVATION must NOT be marked (only two breakpoints).
+		if hasCacheControl(msgs[1]) {
+			t.Errorf("a middle message must not be marked: %v", msgs[1])
+		}
+	})
+
+	t.Run("disabled leaves plain string content", func(t *testing.T) {
+		body := captureBody(t, false, req)
+		msgs := body["messages"].([]any)
+		for i, mm := range msgs {
+			if hasCacheControl(mm) {
+				t.Errorf("message %d carries cache_control with caching OFF: %v", i, mm)
+			}
+		}
+		// And the system content is still a plain string, not an array.
+		if _, isArray := msgs[0].(map[string]any)["content"].([]any); isArray {
+			t.Errorf("system content should be a plain string when caching is off")
+		}
+	})
+}
+
+func TestWithPromptCacheSetsFlag(t *testing.T) {
+	if New(Config{Name: "t"}).cache {
+		t.Error("cache should default off")
+	}
+	if !New(Config{Name: "t", PromptCache: true}).cache {
+		t.Error("Config.PromptCache should enable cache")
+	}
+	if !OpenRouter("anthropic/claude-opus-4.8").WithPromptCache().cache {
+		t.Error("WithPromptCache should enable cache")
+	}
+}
