@@ -447,6 +447,157 @@ func TestRunNativeMixedTurnResetsSpiral(t *testing.T) {
 	}
 }
 
+// failRun is a `run` call whose command fails deterministically with identical
+// output every time — the raw material for the stagnant-observation detector.
+func failRun(id string) llm.ToolCallPart {
+	return structuredCall(id, "run", map[string]any{"command": "echo boom 1>&2; exit 2"})
+}
+
+func TestRunNativeVerifyCmdFailMarksUnverified(t *testing.T) {
+	// The headline A1 fix: the model writes a file then CLAIMS success in prose,
+	// but the caller-named verification command fails -> the run is Unverified, not
+	// a false Answered/exit-0. This is the DOGFOOD R9/R10 termination-by-silence catch.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "f.txt", "content": "hi"})},
+		{llm.Text("done — all tests pass")}, // the false claim.
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified", res.Outcome, res.Reason)
+	}
+	if res.Answer != "done — all tests pass" {
+		t.Errorf("Answer = %q, want the model's prose preserved", res.Answer)
+	}
+	if !strings.Contains(res.Reason, "verification command") {
+		t.Errorf("Reason = %q, want it to name the failing verification command", res.Reason)
+	}
+}
+
+func TestRunNativeVerifyCmdPassStaysAnswered(t *testing.T) {
+	// When the verification command passes, the run is a genuine Answered.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "f.txt", "content": "hi"})},
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered — verification passed", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeVerifyLastRunFallback(t *testing.T) {
+	// Without a VerifyCmd, the opt-in last-run heuristic marks a silent finish that
+	// follows a still-failing run as Unverified; and with the flag OFF (default) the
+	// same run is accepted as Answered (so absence/grep answers don't regress).
+	turns := [][]llm.ContentPart{
+		{failRun("r1")},       // most recent run is a failure...
+		{llm.Text("all set")}, // ...then the model claims done.
+	}
+	for _, tc := range []struct {
+		flag bool
+		want Outcome
+	}{
+		{true, Unverified},
+		{false, Answered},
+	} {
+		ns := &nativeScript{turns: turns}
+		res, err := RunNative(context.Background(), Config{
+			Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyLastRun: tc.flag,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Outcome != tc.want {
+			t.Errorf("VerifyLastRun=%v: Outcome = %q (%s), want %q", tc.flag, res.Outcome, res.Reason, tc.want)
+		}
+	}
+}
+
+func TestRunNativeStagnantObservationKilled(t *testing.T) {
+	// The A2 fix: distinct actions (run, read, run, read, run) that each leave the
+	// SAME failing `run` result. No exact-repeat (reads break the turn run) and no
+	// list_dir spiral — yet the run is stuck. The stagnant-observation detector ends
+	// it at the maxStagnant-th identical failure.
+	files := map[string]string{"a.txt": "x\n", "b.txt": "y\n"}
+	turns := [][]llm.ContentPart{
+		{failRun("r1")},
+		{structuredCall("a", "read_file", map[string]any{"path": "a.txt"})},
+		{failRun("r2")},
+		{structuredCall("b", "read_file", map[string]any{"path": "b.txt"})},
+		{failRun("r3")}, // third identical failure -> kill.
+		{llm.Text("should never reach here")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledStagnant {
+		t.Fatalf("Outcome = %q (%s), want KilledStagnant", res.Outcome, res.Reason)
+	}
+	if res.Iterations != 5 {
+		t.Errorf("Iterations = %d, want 5 (killed on the 3rd identical failure)", res.Iterations)
+	}
+}
+
+func TestRunNativeStagnantThresholdNotTrippedEarly(t *testing.T) {
+	// Two identical failures are NOT enough (threshold is maxStagnant=3): the model
+	// answers and the run is accepted, proving the detector isn't hair-trigger.
+	files := map[string]string{"a.txt": "x\n"}
+	turns := [][]llm.ContentPart{
+		{failRun("r1")},
+		{structuredCall("a", "read_file", map[string]any{"path": "a.txt"})},
+		{failRun("r2")},
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered — 2 failures is under the threshold", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeWriteEnvelopeIsRecoverableObservation(t *testing.T) {
+	// The A3 fix end-to-end: a structured write_file whose `content` leaked an
+	// apply_patch envelope (R10 gpt-5-nano) is REJECTED as an ERROR observation —
+	// the corrupt file is never written — and the model recovers with a clean write.
+	good := "package main\n\nfunc main() {}\n"
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "*** Begin Patch\n*** Add File: calc.go\n" + good})},
+		{structuredCall("c2", "write_file", map[string]any{"path": "calc.go", "content": good})},
+		{llm.Text("written cleanly")},
+	}
+	res, _, sb := runNative(t, nil, turns)
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s)", res.Outcome, res.Reason)
+	}
+	if !strings.Contains(res.Steps[0].Observation, "ERROR") || !strings.Contains(res.Steps[0].Observation, "patch/diff/fence") {
+		t.Errorf("envelope write observation = %q, want an ERROR with a patch-wrapper recovery", res.Steps[0].Observation)
+	}
+	if got := readback(t, sb, "calc.go"); got != good {
+		t.Errorf("final file = %q, want the clean second write (the envelope must never land)", got)
+	}
+}
+
 func TestRunNativeRepeatDetectorOnStructuredArgs(t *testing.T) {
 	// The no-progress detector must key on the structured args: the SAME typed call
 	// repeated maxRepeats+1 times trips KilledRepeat, exactly as a repeated text arg

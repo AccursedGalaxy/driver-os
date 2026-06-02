@@ -370,6 +370,90 @@ func TestEditFileEscapeOutsideRootRefused(t *testing.T) {
 	}
 }
 
+func TestLooksLikeEditEnvelope(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"apply_patch begin", "*** Begin Patch\n*** Add File: calc.go\n", "*** Begin Patch"},
+		{"leading whitespace", "  \n\t*** Begin Patch\n", "*** Begin Patch"},
+		{"add file directive", "*** Add File: x.go\npackage main\n", "*** Add File:"},
+		{"code fence", "```go\npackage main\n```", "```"},
+		{"diff old header", "--- a/x.go\n+++ b/x.go\n", "--- "},
+		{"diff new header", "+++ b/x.go\n", "+++ "},
+		{"hunk header", "@@ -1,3 +1,4 @@\n", "@@ "},
+		{"normal go", "package main\n\nfunc main() {}\n", ""},
+		{"yaml front matter", "---\ntitle: x\n---\n", ""}, // "---\n" has no space -> not a diff header.
+		{"regex content", `re := "\d+\.\d+"`, ""},
+		{"empty", "", ""},
+		{"fence midfile is fine", "package main\n```\n", ""}, // only a LEADING fence is rejected.
+	}
+	for _, c := range cases {
+		if got := looksLikeEditEnvelope(c.in); got != c.want {
+			t.Errorf("%s: looksLikeEditEnvelope(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+func TestIsRunFailureAndFingerprint(t *testing.T) {
+	// isRunFailure keys on the formatRun "exit <code> (" prefix.
+	if isRunFailure("exit 0 (12ms)\nstdout:\nok") {
+		t.Error("exit 0 must not be a failure")
+	}
+	if !isRunFailure("exit 2 (12ms)\nstderr:\nboom") {
+		t.Error("exit 2 must be a failure")
+	}
+	if isRunFailure("wrote 3 byte(s) to f.txt") {
+		t.Error("a non-run observation must not register as a run failure")
+	}
+	// runFingerprint strips the jittering duration so two identical failures match.
+	a := runFingerprint("exit 2 (131ms)\nstderr:\nundefined: foo")
+	b := runFingerprint("exit 2 (9ms)\nstderr:\nundefined: foo")
+	if a != b {
+		t.Errorf("fingerprints differ only by duration but did not match:\n%q\n%q", a, b)
+	}
+	if strings.Contains(a, "ms)") {
+		t.Errorf("fingerprint still carries the duration: %q", a)
+	}
+	// A different exit code or body must NOT match.
+	if a == runFingerprint("exit 1 (9ms)\nstderr:\nundefined: foo") {
+		t.Error("different exit codes should not share a fingerprint")
+	}
+}
+
+func TestWriteFileRejectsEditEnvelope(t *testing.T) {
+	sb := sbWith(t, nil)
+	ctx := context.Background()
+	// The R10 gpt-5-nano failure: apply_patch envelope leaked into content.
+	_, err := writeFileOp(ctx, sb, "calc.go", "*** Begin Patch\n*** Add File: calc.go\npackage main\n")
+	if err == nil || !strings.Contains(err.Error(), "patch/diff/fence") {
+		t.Errorf("apply_patch envelope err = %v, want a recovery message about a patch wrapper", err)
+	}
+	// And it must NOT have written the corrupt file.
+	if _, rerr := sb.ReadFile(ctx, "calc.go"); rerr == nil {
+		t.Error("rejected write still created the file")
+	}
+	// A leading markdown fence (R3-style wrapping) is likewise rejected.
+	if _, err := writeFileOp(ctx, sb, "x.go", "```go\npackage main\n```"); err == nil {
+		t.Error("leading code fence should be rejected")
+	}
+	// Clean content still writes.
+	if _, err := writeFileOp(ctx, sb, "ok.go", "package main\n"); err != nil {
+		t.Errorf("clean content was wrongly rejected: %v", err)
+	}
+}
+
+func TestEditFileRejectsEditEnvelope(t *testing.T) {
+	sb := sbWith(t, map[string]string{"f.go": "a\nb\nc\n"})
+	_, err := editFileOp(context.Background(), sb, "f.go", 2, 2, "*** Begin Patch\n+++ b/f.go\n")
+	if err == nil || !strings.Contains(err.Error(), "patch/diff/fence") {
+		t.Errorf("envelope replacement err = %v, want a patch-wrapper recovery message", err)
+	}
+	// The file must be untouched by the rejected edit.
+	if got := readback(t, sb, "f.go"); got != "a\nb\nc\n" {
+		t.Errorf("rejected edit mutated the file: %q", got)
+	}
+}
+
 func TestClipKeepsHeadAndTail(t *testing.T) {
 	s := strings.Repeat("H", 30) + strings.Repeat("T", 30) // 60 runes
 	got := clip(s, 12)

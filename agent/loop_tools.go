@@ -66,6 +66,14 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	repeats, navRun := 0, 0
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
+	// (P5) Stagnant-observation state, evaluated on each `run` result regardless of
+	// which turn it lands in: lastRunFP fingerprints the most recent failing `run`
+	// (duration stripped), stagnant counts identical recurrences, lastRunFailed feeds
+	// the verification fallback.
+	var lastRunFP string
+	stagnant := 0
+	lastRunFailed := false
+
 	for i := 1; i <= maxIter; i++ {
 		cfg.Obs.Iteration(i, maxIter)
 
@@ -89,6 +97,15 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 		if len(calls) == 0 {
 			answer := strings.TrimSpace(resp.Text())
 			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage})
+			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
+			// when the model narrated intent, acknowledged failure, or hallucinated
+			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
+			// Re-verify the claimed state before accepting it.
+			if reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout); reason != "" {
+				res.Outcome, res.Answer, res.Reason = Unverified, answer, reason
+				cfg.Obs.Note("answer not verified — " + reason)
+				return res, nil
+			}
 			res.Outcome, res.Answer = Answered, answer
 			cfg.Obs.Done(answer)
 			if grounded {
@@ -154,6 +171,27 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			// (P6) A tool failure is an observation the model reacts to, tagged so
 			// the provider marks it an error result — never a crash for us.
 			messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
+
+			// (P5) Stagnant-observation detector: a `run` that keeps failing with the
+			// byte-identical result, across turns whose ACTIONS differ, is a stall the
+			// turn-signature/spiral detectors can't see (DOGFOOD R9/R10's 30-turn
+			// edit→test→edit→same-error burn). Key it on the observation, not the action.
+			if c.Name == "run" {
+				lastRunFailed = isRunFailure(obs)
+				switch {
+				case !lastRunFailed: // a passing run is real progress — reset.
+					stagnant, lastRunFP = 0, ""
+				case runFingerprint(obs) == lastRunFP:
+					stagnant++
+				default: // a NEW failure — the world changed, count restarts.
+					stagnant, lastRunFP = 1, runFingerprint(obs)
+				}
+				if stagnant >= maxStagnant {
+					res.Outcome = KilledStagnant
+					res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
+					return res, nil
+				}
+			}
 		}
 	}
 

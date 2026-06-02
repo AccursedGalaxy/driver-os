@@ -418,6 +418,9 @@ func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string) 
 	if path == "" { // (P3) name the shape, don't just reject.
 		return "", fmt.Errorf("write_file needs a path: write the path first, then a space, then the content, e.g. `write_file notes.txt hello\\nworld`")
 	}
+	if env := looksLikeEditEnvelope(content); env != "" { // (P3/P6) a foreign patch/diff wrapper, not file content.
+		return "", fmt.Errorf("content begins with %q, which looks like a patch/diff/fence wrapper rather than the file body — send the RAW file contents only (no apply_patch envelope, no ``` fence, no diff markers)", env)
+	}
 	if n := len(content); n > writeByteCap { // (P4) backstop; see writeByteCap.
 		return "", fmt.Errorf("content is %d bytes, over the %d-byte write_file limit — split it across smaller writes, or generate it with `run`", n, writeByteCap)
 	}
@@ -550,6 +553,9 @@ func editFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int
 	}
 	if n := len(content); n > writeByteCap {
 		return "", fmt.Errorf("replacement is %d bytes, over the %d-byte limit — split the edit, or generate the file with `run`", n, writeByteCap)
+	}
+	if env := looksLikeEditEnvelope(content); env != "" { // (P3/P6) a foreign patch/diff wrapper, not replacement content.
+		return "", fmt.Errorf("replacement begins with %q, which looks like a patch/diff/fence wrapper rather than the lines to insert — send the RAW replacement text only (no apply_patch envelope, no ``` fence, no diff markers)", env)
 	}
 
 	data, overMem, err := readBounded(ctx, sb, path)
@@ -700,4 +706,61 @@ func formatRun(r *sandbox.Result) string {
 		b.WriteString("(no output)\n") // a stable shape even for the silent-failure case (P6).
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// isRunFailure reports whether a formatRun observation is a non-zero exit. The
+// observation always begins "exit <code> (<dur>)", so success is exactly the
+// "exit 0 " prefix; anything else with the "exit " prefix is a failure. Used by
+// the stagnant-observation detector and the closing verification gate.
+func isRunFailure(obs string) bool {
+	return strings.HasPrefix(obs, "exit ") && !strings.HasPrefix(obs, "exit 0 ")
+}
+
+// runFingerprint reduces a formatRun observation to the parts that are STABLE
+// across identical re-runs, for the stagnant-observation detector's equality
+// check. It drops the "(<dur>)" parenthetical from the leading "exit <code> (...)"
+// line — wall-clock duration jitters run-to-run and would defeat equality — while
+// keeping the exit code and the whole stdout/stderr body (the substantive, stable
+// signal of "the same failure again").
+func runFingerprint(obs string) string {
+	first, rest, found := strings.Cut(obs, "\n")
+	if p := strings.IndexByte(first, '('); p >= 0 {
+		first = strings.TrimRight(first[:p], " ")
+	}
+	if found {
+		return first + "\n" + rest
+	}
+	return first
+}
+
+// looksLikeEditEnvelope detects a foreign file-EDITING-tool wrapper at the start
+// of write/edit content — framing the model pattern-completed into our verbatim
+// content field instead of sending the raw file body. DOGFOOD surfaced two of
+// these: R3's surrounding quotes and R10's gpt-5-nano leaking the OpenAI
+// apply_patch "*** Begin Patch" envelope (written byte-for-byte → a file starting
+// with "*** ..." that does not compile). The markers below never legitimately
+// begin a source file, so rejecting them with a recovery message (P3/P6) converts
+// a silent on-disk corruption into a correctable observation. It returns the
+// matched marker for the error message, or "" when the content is clean.
+//
+// Deliberately conservative to avoid false rejects: the diff headers require a
+// trailing space ("--- a/x", not a YAML/front-matter "---\n"), and only a leading
+// marker counts (a backtick fence MID-file is fine).
+func looksLikeEditEnvelope(content string) string {
+	s := strings.TrimLeft(content, " \t\r\n")
+	for _, m := range []string{
+		"*** Begin Patch", // OpenAI apply_patch envelope (R10 gpt-5-nano).
+		"*** Add File:",   // apply_patch per-file directives.
+		"*** Update File:",
+		"*** Delete File:",
+		"```",  // a markdown code fence wrapping the whole body.
+		"--- ", // unified-diff old-file header (space distinguishes from YAML "---").
+		"+++ ", // unified-diff new-file header.
+		"@@ ",  // unified-diff hunk header.
+	} {
+		if strings.HasPrefix(s, m) {
+			return m
+		}
+	}
+	return ""
 }

@@ -138,6 +138,46 @@ func TestRunHitCap(t *testing.T) {
 	}
 }
 
+func TestRunVerifyCmdFailMarksUnverified(t *testing.T) {
+	// Text-loop counterpart of the native gate: grounded write + an `answer`, but the
+	// caller's verification command fails -> Unverified, not Answered.
+	sp := &scripted{replies: []string{"write_file ok.txt hi", "answer done"}}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified", res.Outcome, res.Reason)
+	}
+	if res.Answer != "done" {
+		t.Errorf("Answer = %q, want the answer preserved on an unverified finish", res.Answer)
+	}
+}
+
+func TestRunStagnantObservationKilled(t *testing.T) {
+	// Text-loop A2: a failing `run` whose identical result recurs across turns with
+	// DIFFERENT actions between (read_file) — exact-repeat never fires, spiral never
+	// fires — is ended by the stagnant-observation detector at the 3rd identical fail.
+	fail := "run echo boom 1>&2; exit 2"
+	res, err := Run(context.Background(), Config{
+		Model:         &scripted{replies: []string{fail, "read_file a.txt", fail, "read_file b.txt", fail}},
+		Sandbox:       sbWith(t, map[string]string{"a.txt": "x\n", "b.txt": "y\n"}),
+		Task:          "t",
+		MaxIterations: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledStagnant {
+		t.Fatalf("Outcome = %q (%s), want KilledStagnant", res.Outcome, res.Reason)
+	}
+	if res.Iterations != 5 {
+		t.Errorf("Iterations = %d, want 5 (killed on the 3rd identical failure)", res.Iterations)
+	}
+}
+
 func TestRunProviderError(t *testing.T) {
 	boom := errors.New("transport exploded")
 	sp := &scripted{err: boom}

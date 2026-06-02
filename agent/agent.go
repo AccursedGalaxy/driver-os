@@ -48,6 +48,17 @@ const (
 
 	maxRepeats = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
 
+	// maxStagnant is the (P5) stagnant-OBSERVATION detector: the SAME failing `run`
+	// result this many times KILLS the run, even when the actions producing it
+	// differ. The repeat/spiral detectors above key on the model's ACTION (same
+	// verb+arg, or list_dir-only turns); both missed the DOGFOOD R9/R10 pathology
+	// where a weak model made N distinct edit_file/run turns that each left the build
+	// broken with the byte-identical error — productive-looking churn, zero progress.
+	// Keying on an unchanging failing observation (not the action) catches it: the
+	// world isn't moving even though the model is. 3 lets a genuine retry-after-fix
+	// through (a real fix changes the error) while ending a true stall early.
+	maxStagnant = 3
+
 	// noProgressWindow is the wider net (P5). The exact-repeat detector misses the
 	// spiral dogfooding exposed: the model grinds list_dir with DIFFERENT args
 	// (list_dir a, list_dir b, list_dir c …), never escalating to run/read_file or
@@ -122,11 +133,13 @@ type Tool struct {
 type Outcome string
 
 const (
-	Answered     Outcome = "answered"       // the model emitted `answer`.
-	HitCap       Outcome = "hit_cap"        // ran out of iterations (P5 hard cap).
-	KilledRepeat Outcome = "killed_repeat"  // exact same action maxRepeats times.
-	KilledSpiral Outcome = "killed_spiral"  // noProgressWindow list_dir calls in a row.
-	ProviderErr  Outcome = "provider_error" // a transport/auth failure talking to the model.
+	Answered       Outcome = "answered"        // the model emitted `answer` (and it verified, if a check was configured).
+	Unverified     Outcome = "unverified"      // the model finished, but the closing verification (VerifyCmd / last-run check) failed — a non-pass (P5/HP-5).
+	HitCap         Outcome = "hit_cap"         // ran out of iterations (P5 hard cap).
+	KilledRepeat   Outcome = "killed_repeat"   // exact same action maxRepeats times.
+	KilledSpiral   Outcome = "killed_spiral"   // noProgressWindow list_dir calls in a row.
+	KilledStagnant Outcome = "killed_stagnant" // the same failing `run` result maxStagnant times despite changing actions.
+	ProviderErr    Outcome = "provider_error"  // a transport/auth failure talking to the model.
 )
 
 // Step is one think->act->observe iteration, captured as data. The trace of
@@ -176,6 +189,24 @@ type Config struct {
 	MaxIterations int           // 0 = DefaultMaxIterations. The hard cap on think->act->observe turns.
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
 	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
+
+	// VerifyCmd is the closing VERIFICATION gate (P5/HP-5): a success command the
+	// caller names (e.g. "go test ./...") that is re-run when the model finishes.
+	// A non-zero exit downgrades the terminal Answered to Unverified — turning a
+	// model that stopped while the task was still broken (DOGFOOD R9/R10's
+	// termination-by-silence false positives: narrated intent, acknowledged
+	// failure, hallucinated success) into an honest non-pass instead of exit-0
+	// success. Empty = no closing check. The harness does NOT guess the success
+	// criterion; the caller states it.
+	VerifyCmd string
+
+	// VerifyLastRun is the no-VerifyCmd FALLBACK: when set (and VerifyCmd is empty),
+	// a silent finish is marked Unverified if the most recent `run` this session was
+	// still failing and nothing succeeded after it. Off by default and opt-in
+	// because a legitimate absence answer often follows a non-zero exit (e.g. `grep`
+	// returns 1 on no match), which this would wrongly flag — VerifyCmd is the
+	// precise gate, this is the cheap heuristic for an un-instrumented run.
+	VerifyLastRun bool
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -223,6 +254,14 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	repeats := 0
 	sameVerb := 0
 
+	// (P5) Stagnant-observation state + the last-run-failed flag the verification
+	// fallback reads. lastRunFP is the fingerprint of the most recent failing `run`
+	// result (duration stripped — see runFingerprint); stagnant counts how many
+	// times in a row that identical failure has recurred.
+	var lastRunFP string
+	stagnant := 0
+	lastRunFailed := false
+
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
 	// VERIFIED against real external state this session (Principle 4). This breaks
@@ -268,6 +307,16 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		if verb == "answer" {
 			step.Grounded = grounded
 			res.Steps = append(res.Steps, step)
+			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
+			// terminal state before accepting it. A failing check is an honest
+			// non-pass, NOT a stored fact.
+			if reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout); reason != "" {
+				res.Outcome = Unverified
+				res.Answer = arg
+				res.Reason = reason
+				cfg.Obs.Note("answer not verified — " + reason)
+				return res, nil
+			}
 			res.Outcome = Answered
 			res.Answer = arg
 			cfg.Obs.Done(arg)
@@ -330,6 +379,28 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		step.Observation = observation
 		res.Steps = append(res.Steps, step)
 
+		// ---- Principle 5: stagnant-observation detector. ----
+		// A `run` that keeps FAILING with the byte-identical result, despite the
+		// model changing actions between, is a stall the action-keyed detectors
+		// above can't see. Track it on the observation, not the action.
+		if verb == "run" {
+			lastRunFailed = isRunFailure(observation)
+			switch {
+			case !lastRunFailed: // a passing run is real progress — reset.
+				stagnant, lastRunFP = 0, ""
+			case runFingerprint(observation) == lastRunFP:
+				stagnant++
+			default: // a NEW failure — the world changed, count restarts.
+				stagnant, lastRunFP = 1, runFingerprint(observation)
+			}
+			if stagnant >= maxStagnant {
+				res.Outcome = KilledStagnant
+				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
+				cfg.Obs.Observation(observation)
+				return res, nil
+			}
+		}
+
 		// OBSERVE: the result — including any error — is appended as the next thing
 		// the model sees (P2, P4). It is REAL external state, our anchor.
 		cfg.Obs.Observation(observation)
@@ -340,6 +411,37 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
 	return res, nil
+}
+
+// verifyTermination decides whether a model's done-signal actually holds (P5/HP-5)
+// and returns a non-empty reason when it does NOT (so the caller records Unverified
+// instead of Answered). Two checks, in precedence order:
+//
+//   - VerifyCmd (authoritative): the caller named a success command, so re-run it.
+//     A non-zero exit is ground truth — independent of what the model claimed, and
+//     independent of any model cooperation. This is the precise gate that turns the
+//     DOGFOOD R9/R10 false positives (a model that stops while the build is red)
+//     into honest non-passes.
+//   - VerifyLastRun (heuristic fallback, opt-in): with no VerifyCmd, a silent finish
+//     is suspect when the most recent `run` was still failing. Weaker — a legitimate
+//     absence answer can follow a non-zero exit (grep-no-match) — hence opt-in.
+//
+// With neither configured it returns "" (the historical behavior: trust the answer).
+func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) string {
+	if cfg.VerifyCmd != "" {
+		out, err := runOp(ctx, cfg.Sandbox, cfg.VerifyCmd, runTimeout)
+		if err != nil { // couldn't even start it — we cannot confirm success.
+			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err)
+		}
+		if isRunFailure(out) {
+			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out)
+		}
+		return ""
+	}
+	if cfg.VerifyLastRun && lastRunFailed {
+		return "the most recent command run was still failing and nothing succeeded after it — the task does not look complete"
+	}
+	return ""
 }
 
 // dispatch runs a tool and turns ANY failure into an observation string (P6).
