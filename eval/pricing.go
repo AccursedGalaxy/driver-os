@@ -47,6 +47,21 @@ var Pricing = map[string]Price{
 	"moonshotai/kimi-k2.6":          {InPerM: 0.60, OutPerM: 2.50},
 	"moonshotai/kimi-k2.6:free":     {InPerM: 0.00, OutPerM: 0.00}, // free tier: priced, and the price is zero.
 	"google/gemini-3-flash-preview": {InPerM: 0.30, OutPerM: 2.50},
+
+	// Round-12 candidates — untested families/tiers scouted against the live
+	// catalog (2026-06-03) and run through the explore+code probe before any
+	// promotion into `roster`. Grok is written "4.20" on OpenRouter (no "4.2").
+	"x-ai/grok-4.3":               {InPerM: 1.25, OutPerM: 2.50},
+	"x-ai/grok-4.20":              {InPerM: 1.25, OutPerM: 2.50},
+	"z-ai/glm-5":                  {InPerM: 0.60, OutPerM: 2.08},
+	"openai/gpt-5.4":              {InPerM: 2.50, OutPerM: 15.00},
+	"openai/gpt-5.2-codex":        {InPerM: 1.75, OutPerM: 14.00},
+	"anthropic/claude-sonnet-4.6": {InPerM: 3.00, OutPerM: 15.00},
+	"qwen/qwen3-coder":            {InPerM: 0.22, OutPerM: 1.80},
+	"minimax/minimax-m3":          {InPerM: 0.30, OutPerM: 1.20},
+	"google/gemini-3.5-flash":     {InPerM: 1.50, OutPerM: 9.00},
+	"moonshotai/kimi-k2-thinking": {InPerM: 0.60, OutPerM: 2.50},
+	"deepseek/deepseek-v4-pro":    {InPerM: 0.43, OutPerM: 0.87},
 }
 
 // CostOf returns the USD cost for a model's usage and whether the model was
