@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"iter"
 	"reflect"
 	"testing"
 )
@@ -84,4 +85,7 @@ func (f *fakeProvider) Name() string               { return f.name }
 func (f *fakeProvider) Capabilities() Capabilities { return Capabilities{} }
 func (f *fakeProvider) Generate(_ context.Context, _ Request) (*Response, error) {
 	return nil, nil
+}
+func (f *fakeProvider) Stream(context.Context, Request) iter.Seq2[Chunk, error] {
+	return UnsupportedStream(f.name)
 }

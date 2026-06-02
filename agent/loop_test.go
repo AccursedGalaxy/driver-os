@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
@@ -26,6 +27,9 @@ type scripted struct {
 
 func (s *scripted) Name() string                   { return "scripted" }
 func (s *scripted) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (s *scripted) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("scripted")
+}
 
 func (s *scripted) Generate(_ context.Context, req llm.Request) (*llm.Response, error) {
 	s.calls = append(s.calls, req)

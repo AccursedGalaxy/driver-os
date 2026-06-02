@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"iter"
 	"testing"
 	"time"
 
@@ -21,6 +22,9 @@ type scriptProvider struct {
 
 func (p *scriptProvider) Name() string                   { return p.name }
 func (p *scriptProvider) Capabilities() llm.Capabilities { return llm.Capabilities{Tools: true} }
+func (p *scriptProvider) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream(p.name)
+}
 
 func (p *scriptProvider) Generate(_ context.Context, _ llm.Request) (*llm.Response, error) {
 	usage := llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
@@ -101,6 +105,9 @@ type statelessFixer struct{}
 
 func (statelessFixer) Name() string                   { return "fixer" }
 func (statelessFixer) Capabilities() llm.Capabilities { return llm.Capabilities{Tools: true} }
+func (statelessFixer) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("fixer")
+}
 func (statelessFixer) Generate(_ context.Context, req llm.Request) (*llm.Response, error) {
 	for _, m := range req.Messages {
 		if m.Role == llm.RoleTool { // the write already happened — finish.

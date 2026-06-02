@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -280,6 +281,9 @@ func TestCapabilities(t *testing.T) {
 		if !c.Tools {
 			t.Errorf("%s: Tools = false, want true", p.Name())
 		}
+		if !c.Streaming {
+			t.Errorf("%s: Streaming = false, want true (the adapter implements Stream)", p.Name())
+		}
 		if c.Vision {
 			t.Errorf("%s: Vision = true, but vision is not wired through the adapter", p.Name())
 		}
@@ -389,5 +393,177 @@ func TestWithPromptCacheSetsFlag(t *testing.T) {
 	}
 	if !OpenRouter("anthropic/claude-opus-4.8").WithPromptCache().cache {
 		t.Error("WithPromptCache should enable cache")
+	}
+}
+
+// streamServer points the adapter at an httptest server that replays a fixed list
+// of SSE chunk JSON objects as `data: {json}` events, then the terminal [DONE].
+// onBody, if set, receives the outgoing request body for request-shape assertions.
+func streamServer(t *testing.T, onBody func([]byte), chunks ...string) *Provider {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if onBody != nil {
+			raw, _ := io.ReadAll(r.Body)
+			onBody(raw)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range chunks {
+			io.WriteString(w, "data: "+c+"\n\n")
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return New(Config{Name: "test", BaseURL: srv.URL, APIKey: "k", Model: "m"})
+}
+
+// drainStream consumes a stream into its text, completed tool calls, terminal
+// chunk, and first error — the shape every streaming test asserts against.
+func drainStream(seq iterSeq) (text string, calls []llm.ToolCallPart, done llm.Chunk, err error) {
+	for ch, e := range seq {
+		if e != nil {
+			err = e
+			return
+		}
+		switch {
+		case ch.Done:
+			done = ch
+		case ch.ToolCall != nil:
+			calls = append(calls, *ch.ToolCall)
+		default:
+			text += ch.Text
+		}
+	}
+	return
+}
+
+// iterSeq aliases the stream's return type so test signatures stay readable.
+type iterSeq = iter.Seq2[llm.Chunk, error]
+
+func TestStreamTextDeltas(t *testing.T) {
+	var body []byte
+	p := streamServer(t, func(b []byte) { body = b },
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"content":", world"},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":3}}}`,
+	)
+
+	text, calls, done, err := drainStream(p.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi")}}))
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	if text != "Hello, world" {
+		t.Errorf("streamed text = %q, want %q", text, "Hello, world")
+	}
+	if len(calls) != 0 {
+		t.Errorf("got %d tool calls, want 0", len(calls))
+	}
+	if !done.Done {
+		t.Fatal("never received the terminal Done chunk")
+	}
+	if done.FinishReason != llm.FinishStop {
+		t.Errorf("Done.FinishReason = %q, want stop", done.FinishReason)
+	}
+	// Token accounting on the terminal chunk mirrors Generate — including the
+	// cached-tokens detail that the SDK accumulator drops.
+	if done.Usage.TotalTokens != 6 || done.Usage.CachedTokens != 3 {
+		t.Errorf("Done.Usage = %+v, want Total=6 Cached=3", done.Usage)
+	}
+	// The request opted into the trailing usage chunk; without it Done.Usage is zero.
+	var sent map[string]any
+	_ = json.Unmarshal(body, &sent)
+	if sent["stream"] != true {
+		t.Errorf("request stream = %v, want true", sent["stream"])
+	}
+	so, _ := sent["stream_options"].(map[string]any)
+	if so == nil || so["include_usage"] != true {
+		t.Errorf("request stream_options = %v, want include_usage:true", sent["stream_options"])
+	}
+}
+
+func TestStreamToolCall(t *testing.T) {
+	// A tool call whose JSON args arrive split across three chunks; the adapter must
+	// surface ONE fully-assembled ToolCallPart, not three fragments.
+	p := streamServer(t, nil,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go.mod\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`,
+	)
+
+	_, calls, done, err := drainStream(p.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.User("read go.mod")}}))
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want exactly 1 (assembled)", len(calls))
+	}
+	c := calls[0]
+	if c.ID != "call_1" || c.Name != "read_file" {
+		t.Errorf("tool call id/name = %q/%q, want call_1/read_file", c.ID, c.Name)
+	}
+	if got := string(c.Args); got != `{"path":"go.mod"}` {
+		t.Errorf("assembled args = %q, want %q", got, `{"path":"go.mod"}`)
+	}
+	if done.FinishReason != llm.FinishToolUse {
+		t.Errorf("Done.FinishReason = %q, want tool_use", done.FinishReason)
+	}
+}
+
+func TestStreamParallelToolCalls(t *testing.T) {
+	// Two tool calls in ONE assistant turn: both are announced together, then their
+	// JSON args arrive in separate chunks interleaved by index. This is the case the
+	// SDK's JustFinishedToolCall mishandles — the adapter must still surface BOTH,
+	// each with fully-assembled args.
+	p := streamServer(t, nil,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_file","arguments":""}},{"index":1,"id":"call_b","type":"function","function":{"name":"list_dir","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"path\":\"b\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":6,"total_tokens":15}}`,
+	)
+
+	_, calls, done, err := drainStream(p.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.User("read a and list b")}}))
+	if err != nil {
+		t.Fatalf("Stream error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("got %d tool calls, want 2 (parallel calls must not be dropped)", len(calls))
+	}
+	want := map[string]struct{ name, args string }{
+		"call_a": {"read_file", `{"path":"a"}`},
+		"call_b": {"list_dir", `{"path":"b"}`},
+	}
+	for _, c := range calls {
+		w, ok := want[c.ID]
+		if !ok {
+			t.Errorf("unexpected tool call id %q", c.ID)
+			continue
+		}
+		if c.Name != w.name || string(c.Args) != w.args {
+			t.Errorf("call %s = %s%s, want %s%s", c.ID, c.Name, c.Args, w.name, w.args)
+		}
+	}
+	if done.FinishReason != llm.FinishToolUse {
+		t.Errorf("Done.FinishReason = %q, want tool_use", done.FinishReason)
+	}
+}
+
+func TestStreamErrorIsClassified(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"message":"slow down","type":"rate_limit"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	p := New(Config{Name: "test", BaseURL: srv.URL, APIKey: "k", Model: "m"})
+
+	_, _, _, err := drainStream(p.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi")}}))
+	if err == nil {
+		t.Fatal("expected a classified error from the stream, got nil")
+	}
+	var pe *llm.ProviderError
+	if !errors.As(err, &pe) || pe.Kind != llm.KindRateLimit {
+		t.Errorf("error = %v, want a ProviderError of kind rate_limit", err)
 	}
 }

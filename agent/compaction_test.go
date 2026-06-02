@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -126,6 +127,9 @@ type ctxLimitModel struct {
 
 func (m *ctxLimitModel) Name() string                   { return "ctxlimit" }
 func (m *ctxLimitModel) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (m *ctxLimitModel) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("ctxlimit")
+}
 
 func (m *ctxLimitModel) Generate(_ context.Context, req llm.Request) (*llm.Response, error) {
 	m.lastCall = req

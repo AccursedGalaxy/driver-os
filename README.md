@@ -87,10 +87,9 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
 ## Status
 
 Build order (see DESIGN.md, decision 11). **Done:** core types + registry, the
-`openaicompat` adapter (non-streaming chat), normalized errors, end-to-end
-tested. **Next:** streaming (`iter.Seq2`) → native `anthropic` adapter → tools
-(self-contained, dual schema) → `Runner` (tool-exec loop) → comparison/fan-in
-harness.
+`openaicompat` adapter (chat + `iter.Seq2` streaming), normalized errors,
+end-to-end tested. **Next:** native `anthropic` adapter → tools (self-contained,
+dual schema) → `Runner` (tool-exec loop) → comparison/fan-in harness.
 
 ## Develop
 

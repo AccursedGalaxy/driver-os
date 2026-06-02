@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"iter"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,9 @@ type nativeScript struct {
 
 func (s *nativeScript) Name() string                   { return "native" }
 func (s *nativeScript) Capabilities() llm.Capabilities { return llm.Capabilities{Tools: true} }
+func (s *nativeScript) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("native")
+}
 
 func (s *nativeScript) Generate(_ context.Context, req llm.Request) (*llm.Response, error) {
 	s.calls = append(s.calls, req)

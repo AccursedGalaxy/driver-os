@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"os"
 	"strings"
@@ -84,12 +85,12 @@ func New(cfg Config) *Provider {
 		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 	// Default to the truth for a CLOUD OpenAI-compatible endpoint: native
-	// tool-calling works, vision does NOT yet (ImagePart isn't wired through the
-	// adapters — see llm/content.go), and streaming arrives in a later build step.
-	// Advertising vision here was a flat lie; advertising tools for an arbitrary
-	// local model was optimism that defeats the text-loop fallback — so callers
-	// that know better (the Ollama preset, a custom vLLM box) override via Config.
-	caps := llm.Capabilities{Tools: true, Vision: false}
+	// tool-calling and streaming both work, vision does NOT yet (ImagePart isn't
+	// wired through the adapters — see llm/content.go). Advertising vision here was
+	// a flat lie; advertising tools for an arbitrary local model was optimism that
+	// defeats the text-loop fallback — so callers that know better (the Ollama
+	// preset, a custom vLLM box) override via Config.
+	caps := llm.Capabilities{Tools: true, Streaming: true, Vision: false}
 	if cfg.Capabilities != nil {
 		caps = *cfg.Capabilities
 	}
@@ -129,7 +130,7 @@ func OpenRouter(model string) *Provider {
 func Ollama(model string) *Provider {
 	return New(Config{
 		Name: "ollama", BaseURL: "http://localhost:11434/v1", APIKey: "ollama", Model: model,
-		Capabilities: &llm.Capabilities{Tools: false, Vision: false},
+		Capabilities: &llm.Capabilities{Tools: false, Streaming: true, Vision: false},
 	})
 }
 
@@ -138,6 +139,90 @@ func (p *Provider) Capabilities() llm.Capabilities { return p.caps }
 
 // Generate runs a single non-streaming completion.
 func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	params, reqOpts := p.buildParams(req)
+	cc, err := p.client.Chat.Completions.New(ctx, params, reqOpts...)
+	if err != nil {
+		return nil, p.classify(err)
+	}
+	return toResponse(cc), nil
+}
+
+// Stream runs a completion incrementally (decision 5). It yields text deltas as
+// they arrive and each tool call once fully assembled, then one terminal Done
+// chunk carrying FinishReason + Usage. The same request mapping as Generate feeds
+// it (buildParams), so caching, tools, and sampling knobs behave identically; only
+// the transport differs. Errors mid-stream are classified like Generate's and end
+// the iteration.
+func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Chunk, error] {
+	return func(yield func(llm.Chunk, error) bool) {
+		params, reqOpts := p.buildParams(req)
+		// Ask for the trailing usage chunk; without this the stream reports no
+		// token accounting and the terminal Done chunk's Usage stays zero.
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
+
+		stream := p.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
+		defer stream.Close()
+
+		// The accumulator reassembles partial deltas (text and tool-call arg
+		// fragments) into a complete ChatCompletion. We DON'T take usage from it:
+		// AddChunk sums the top-level token counts but drops PromptTokensDetails, so
+		// acc.Usage loses CachedTokens. We capture the raw usage-bearing chunk
+		// instead, keeping streaming token accounting identical to Generate's.
+		// (include_usage sends usage only on the final chunk; "last chunk that
+		// carries usage wins" is robust regardless.)
+		acc := openai.ChatCompletionAccumulator{}
+		var usage openai.CompletionUsage
+		for stream.Next() {
+			chunk := stream.Current()
+			acc.AddChunk(chunk)
+			if chunk.Usage.TotalTokens > 0 {
+				usage = chunk.Usage
+			}
+
+			// Stream text deltas live — that's the value of streaming. Skip empty
+			// deltas (usage-only and role-only chunks carry no text).
+			if len(chunk.Choices) > 0 {
+				if d := chunk.Choices[0].Delta.Content; d != "" {
+					if !yield(llm.Chunk{Text: d}, nil) {
+						return
+					}
+				}
+			}
+		}
+		if err := stream.Err(); err != nil {
+			yield(llm.Chunk{}, p.classify(err))
+			return
+		}
+
+		// Tool calls are surfaced from the FULLY accumulated result, not live: the
+		// SDK's JustFinishedToolCall is documented as unreliable when a turn has
+		// PARALLEL tool calls (multiple calls, arg fragments interleaved by index),
+		// dropping calls — whereas the accumulator assembles every call correctly
+		// regardless of interleaving. A tool call is unusable until its args are
+		// complete anyway, so emitting them at end-of-stream (after the live text,
+		// before Done) costs the caller nothing and is correct for N calls.
+		if len(acc.Choices) > 0 {
+			for _, tc := range acc.Choices[0].Message.ToolCalls {
+				part := &llm.ToolCallPart{ID: tc.ID, Name: tc.Function.Name, Args: json.RawMessage(tc.Function.Arguments)}
+				if !yield(llm.Chunk{ToolCall: part}, nil) {
+					return
+				}
+			}
+		}
+
+		// Terminal chunk: the run's finish reason and full token accounting.
+		final := llm.Chunk{Done: true, Usage: usageFrom(usage)}
+		if len(acc.Choices) > 0 {
+			final.FinishReason = mapFinish(acc.Choices[0].FinishReason)
+		}
+		yield(final, nil)
+	}
+}
+
+// buildParams maps a provider-agnostic Request onto the SDK's params plus the
+// per-request options, shared verbatim by Generate and Stream so the two paths
+// can never drift on model selection, cache breakpoints, sampling, or tools.
+func (p *Provider) buildParams(req llm.Request) (openai.ChatCompletionNewParams, []option.RequestOption) {
 	model := req.Model
 	if model == "" {
 		model = p.model
@@ -178,12 +263,7 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 	for k, v := range req.ProviderOptions {
 		reqOpts = append(reqOpts, option.WithJSONSet(k, v))
 	}
-
-	cc, err := p.client.Chat.Completions.New(ctx, params, reqOpts...)
-	if err != nil {
-		return nil, p.classify(err)
-	}
-	return toResponse(cc), nil
+	return params, reqOpts
 }
 
 // toMessages translates our message model to OpenAI message unions. Text parts
@@ -357,13 +437,20 @@ func toResponse(cc *openai.ChatCompletion) *llm.Response {
 		}
 		r.FinishReason = mapFinish(choice.FinishReason)
 	}
-	r.Usage = llm.Usage{
-		PromptTokens:     int(cc.Usage.PromptTokens),
-		CompletionTokens: int(cc.Usage.CompletionTokens),
-		TotalTokens:      int(cc.Usage.TotalTokens),
-		CachedTokens:     int(cc.Usage.PromptTokensDetails.CachedTokens),
-	}
+	r.Usage = usageFrom(cc.Usage)
 	return r
+}
+
+// usageFrom normalizes the SDK's token accounting into our Usage. Shared by the
+// non-streaming response and the streaming Done chunk so both report tokens the
+// same way (CachedTokens included, where the backend populates it).
+func usageFrom(u openai.CompletionUsage) llm.Usage {
+	return llm.Usage{
+		PromptTokens:     int(u.PromptTokens),
+		CompletionTokens: int(u.CompletionTokens),
+		TotalTokens:      int(u.TotalTokens),
+		CachedTokens:     int(u.PromptTokensDetails.CachedTokens),
+	}
 }
 
 func mapFinish(reason string) llm.FinishReason {
