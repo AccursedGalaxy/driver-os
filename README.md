@@ -84,6 +84,52 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
   synchronous extraction + embedding call before the run returns, so you see the
   answer and then wait briefly.
 
+## Running untrusted code (sandbox backends)
+
+Every effect the agent causes — running a command, reading/writing a file — flows
+through one `sandbox.Sandbox` boundary (see `SANDBOX.md`). The backend, not the
+tool, decides how strongly that boundary isolates:
+
+| `-sandbox` / `-runtime` | isolation | use for |
+|---|---|---|
+| `local` *(default)* | none — host subprocess + path fence | code **we** wrote and trust |
+| `docker` / `runc` | process — container, shared host kernel | isolated-but-not-hostile |
+| `docker` / `runsc` | kernel — gVisor userspace kernel | **arbitrary, model-authored code** |
+
+```sh
+# Run the agent's `run`/`search` commands inside a locked-down container
+# (network off, root fs read-only, CPU/memory/pids capped, non-root user):
+go run ./cmd/agent -sandbox=docker -task "..."
+
+# Treat the task's code as HOSTILE: require gVisor and refuse to start on
+# anything weaker. Fails closed — `-untrusted` without `-runtime=runsc` will not
+# run a single command:
+go run ./cmd/agent -sandbox=docker -runtime=runsc -untrusted -task "..."
+```
+
+Build the container image once (it carries `sh`, `rg`, `git`, `go`):
+
+```sh
+make sandbox-image        # builds driver-os-sandbox:latest
+make sandbox-integration  # runs the docker-backed tests against a real daemon
+```
+
+Notes:
+
+- **Network is off by default** (`--network none`) so untrusted code can't
+  exfiltrate. Pass `-network` to allow egress (e.g. a trusted dep-fetch). With the
+  network off, in-container `go build`/`go test` resolve modules only from a
+  read-only host `GOMODCACHE` mount — exposed via the library `docker.Options`
+  (`ExtraMounts`), which the integration tests exercise.
+- **The workspace is the only writable mount.** For a genuinely untrusted task,
+  point the sandbox at a *throwaway copy*, not your live checkout — the backend
+  takes a `dir`; the trust decision is the caller's.
+- **The fence is symlink-safe.** A symlink planted inside the workspace by
+  in-container code can't redirect a host-side read/write off-root (the
+  confused-deputy guard in `sandbox/local`).
+- `issue-bot` and the `eval` harness stay on `local` (trusted fixtures) — they
+  don't pay container startup cost.
+
 ## Status
 
 Build order (see DESIGN.md, decision 11). **Done:** core types + registry, the
