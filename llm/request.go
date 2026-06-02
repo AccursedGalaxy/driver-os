@@ -30,6 +30,12 @@ type Request struct {
 	// Stop is an optional set of stop sequences.
 	Stop []string
 
+	// Tools are the functions the model may call this turn. When non-empty, a
+	// tool-capable adapter advertises them and may return ToolCallParts with
+	// FinishToolUse; the caller executes them and replies with ToolResultParts.
+	// Adapters that don't support tools ignore this (preserving swap-ability).
+	Tools []Tool
+
 	// ProviderOptions is a passthrough for provider-specific knobs (e.g.
 	// reasoning effort, thinking budget). Adapters merge recognized keys into
 	// the underlying request and ignore the rest. Prefer the typed helpers

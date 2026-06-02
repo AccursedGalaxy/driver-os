@@ -7,6 +7,7 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
@@ -30,6 +32,14 @@ type Config struct {
 	Model string
 	// HTTPClient optionally overrides the HTTP client (timeouts, proxies, ...).
 	HTTPClient *http.Client
+	// Capabilities optionally overrides what this provider/model advertises
+	// (native tool-calling, vision, ...). nil = the constructor's default. It is
+	// per-CONFIG, not a family constant, because tool support is really a model
+	// property: a cloud endpoint's models all support it, an arbitrary local
+	// model (Ollama, a custom vLLM box) may not — and the loop selector
+	// (cmd/agent) trusts this to decide native-tools vs the text fallback, so an
+	// optimistic lie here means no fallback and a failed request.
+	Capabilities *llm.Capabilities
 }
 
 // Provider is an OpenAI-compatible llm.Provider.
@@ -53,12 +63,21 @@ func New(cfg Config) *Provider {
 	if cfg.HTTPClient != nil {
 		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
+	// Default to the truth for a CLOUD OpenAI-compatible endpoint: native
+	// tool-calling works, vision does NOT yet (ImagePart isn't wired through the
+	// adapters — see llm/content.go), and streaming arrives in a later build step.
+	// Advertising vision here was a flat lie; advertising tools for an arbitrary
+	// local model was optimism that defeats the text-loop fallback — so callers
+	// that know better (the Ollama preset, a custom vLLM box) override via Config.
+	caps := llm.Capabilities{Tools: true, Vision: false}
+	if cfg.Capabilities != nil {
+		caps = *cfg.Capabilities
+	}
 	return &Provider{
 		name:   cfg.Name,
 		model:  cfg.Model,
 		client: openai.NewClient(opts...),
-		// Streaming is wired in build step 2; tools/vision in later steps.
-		caps: llm.Capabilities{Tools: true, Vision: true},
+		caps:   caps,
 	}
 }
 
@@ -82,8 +101,15 @@ func OpenRouter(model string) *Provider {
 }
 
 // Ollama targets a local Ollama server. The key is a placeholder Ollama ignores.
+// Tool support is per-MODEL with Ollama (many small models can't function-call),
+// so it defaults to no native tools — the agent then uses the transparent text
+// loop, which works everywhere. A tool-capable local model opts in by building
+// the provider with New(Config{..., Capabilities: &llm.Capabilities{Tools: true}}).
 func Ollama(model string) *Provider {
-	return New(Config{Name: "ollama", BaseURL: "http://localhost:11434/v1", APIKey: "ollama", Model: model})
+	return New(Config{
+		Name: "ollama", BaseURL: "http://localhost:11434/v1", APIKey: "ollama", Model: model,
+		Capabilities: &llm.Capabilities{Tools: false, Vision: false},
+	})
 }
 
 func (p *Provider) Name() string                   { return p.name }
@@ -115,6 +141,9 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 	if len(req.Stop) > 0 {
 		params.Stop = openai.ChatCompletionNewParamsStopUnion{OfStringArray: req.Stop}
 	}
+	if tools := toTools(req.Tools); len(tools) > 0 {
+		params.Tools = tools
+	}
 
 	// Provider-specific passthrough (decision 6): merge recognized-by-the-wire
 	// keys into the request body. Unknown keys are simply sent; the server
@@ -131,24 +160,86 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 	return toResponse(cc), nil
 }
 
-// toMessages translates our message model to OpenAI message unions. For the
-// slice, parts are flattened to text via Message.Text; tool/image parts are
-// wired in later build steps.
+// toMessages translates our message model to OpenAI message unions. Text parts
+// flatten via Message.Text; an assistant turn additionally carries any tool-call
+// parts, and a RoleTool message becomes one `tool` message per result — so a
+// tool-calling round-trip (assistant tool_calls -> tool results) replays exactly
+// as the API requires (image parts remain a later build step).
 func toMessages(req llm.Request) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)+1)
 	if req.System != "" {
 		out = append(out, openai.SystemMessage(req.System))
 	}
 	for _, m := range req.Messages {
-		text := m.Text()
 		switch m.Role {
 		case llm.RoleSystem:
-			out = append(out, openai.SystemMessage(text))
+			out = append(out, openai.SystemMessage(m.Text()))
 		case llm.RoleAssistant:
-			out = append(out, openai.AssistantMessage(text))
-		default: // user, tool (until tools land), anything else
-			out = append(out, openai.UserMessage(text))
+			out = append(out, assistantMessage(m))
+		case llm.RoleTool:
+			// One `tool` message per result part — each answers a specific call id.
+			// NOTE: Chat Completions has no per-tool-message error flag (unlike
+			// Anthropic's is_error), so ToolResultPart.IsError is NOT representable
+			// on the wire here — the failure is conveyed to the model by the result
+			// CONTENT itself (the loop prefixes failures with "ERROR:"). The IsError
+			// bit stays meaningful for providers/adapters that can carry it.
+			for _, p := range m.Parts {
+				if tr, ok := p.(llm.ToolResultPart); ok {
+					out = append(out, openai.ToolMessage(tr.Content, tr.ToolCallID))
+				}
+			}
+		default: // user, anything else
+			out = append(out, openai.UserMessage(m.Text()))
 		}
+	}
+	return out
+}
+
+// assistantMessage builds an assistant message, attaching any tool-call parts.
+// With no tool calls it is a plain text assistant message (the common case).
+func assistantMessage(m llm.Message) openai.ChatCompletionMessageParamUnion {
+	var calls []openai.ChatCompletionMessageToolCallParam
+	for _, p := range m.Parts {
+		if tc, ok := p.(llm.ToolCallPart); ok {
+			calls = append(calls, openai.ChatCompletionMessageToolCallParam{
+				ID: tc.ID,
+				Function: openai.ChatCompletionMessageToolCallFunctionParam{
+					Name:      tc.Name,
+					Arguments: string(tc.Args),
+				},
+			})
+		}
+	}
+	if len(calls) == 0 {
+		return openai.AssistantMessage(m.Text())
+	}
+	am := openai.ChatCompletionAssistantMessageParam{ToolCalls: calls}
+	if txt := m.Text(); txt != "" { // preserve any narration emitted alongside the calls.
+		am.Content.OfString = openai.String(txt)
+	}
+	return openai.ChatCompletionMessageParamUnion{OfAssistant: &am}
+}
+
+// toTools translates provider-agnostic tools into OpenAI tool params. Schema (a
+// JSON Schema object) unmarshals into the SDK's parameter map; an empty/invalid
+// schema yields an empty parameter list, which the API accepts as a no-arg tool.
+func toTools(tools []llm.Tool) []openai.ChatCompletionToolParam {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]openai.ChatCompletionToolParam, 0, len(tools))
+	for _, t := range tools {
+		fn := shared.FunctionDefinitionParam{Name: t.Name}
+		if t.Description != "" {
+			fn.Description = openai.String(t.Description)
+		}
+		if len(t.Schema) > 0 {
+			var params shared.FunctionParameters
+			if err := json.Unmarshal(t.Schema, &params); err == nil {
+				fn.Parameters = params
+			}
+		}
+		out = append(out, openai.ChatCompletionToolParam{Function: fn})
 	}
 	return out
 }
@@ -157,7 +248,16 @@ func toResponse(cc *openai.ChatCompletion) *llm.Response {
 	r := &llm.Response{Model: cc.Model, Raw: cc}
 	if len(cc.Choices) > 0 {
 		choice := cc.Choices[0]
-		r.Content = []llm.ContentPart{llm.Text(choice.Message.Content)}
+		if choice.Message.Content != "" {
+			r.Content = append(r.Content, llm.Text(choice.Message.Content))
+		}
+		for _, tc := range choice.Message.ToolCalls {
+			r.Content = append(r.Content, llm.ToolCallPart{
+				ID:   tc.ID,
+				Name: tc.Function.Name,
+				Args: json.RawMessage(tc.Function.Arguments),
+			})
+		}
 		r.FinishReason = mapFinish(choice.FinishReason)
 	}
 	r.Usage = llm.Usage{

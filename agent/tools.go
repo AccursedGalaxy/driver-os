@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,21 +29,125 @@ import (
 // API; a stale "30s" would mislead it once the value is configurable).
 func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool {
 	return map[string]Tool{
-		"list_dir": {"list_dir",
-			"list the entries in ONE directory (not recursive). Use this to discover exact paths before read_file — never guess a path. ARG: a directory path relative to the sandbox root (\".\" or \"\" = root). RETURNS: one line per entry as \"dir <name>\" or \"file <name>\", directories first then files, name-sorted.",
-			func(ctx context.Context, arg string) (string, error) { return toolListDir(ctx, sb, arg) }},
-		"read_file": {"read_file",
-			"read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
-			func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) }},
-		"run": {"run",
-			fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
-			func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) }},
-		"write_file": {"write_file",
-			"create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
-			func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) }},
-		"edit_file": {"edit_file",
-			"replace a RANGE OF LINES in an existing file — surgical, so you needn't rewrite the whole file (use this over write_file for a small change in a large file). Read the file FIRST: read_file prints absolute line numbers, and those are the numbers you edit by. ARG: a path, a line range \":<from>-<to>\" (1-based INCLUSIVE, e.g. \"main.go:40-42\"; \":40\" = one line; \":40-\" = line 40 to end), then a space, then the REPLACEMENT content on the SAME line (write a line break as \"\\n\", same escapes as write_file; do NOT wrap it in quotes). Omit the content to DELETE the range. RETURNS: a confirmation plus the edited region re-numbered so you can verify it. NOTE: every edit shifts the line numbers below it — re-read before your next edit.",
-			func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) }},
+		"list_dir": {
+			Name: "list_dir",
+			Desc: "list the entries in ONE directory (not recursive). Use this to discover exact paths before read_file — never guess a path. ARG: a directory path relative to the sandbox root (\".\" or \"\" = root). RETURNS: one line per entry as \"dir <name>\" or \"file <name>\", directories first then files, name-sorted.",
+			Run:  func(ctx context.Context, arg string) (string, error) { return toolListDir(ctx, sb, arg) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"directory path relative to the sandbox root (\".\" or \"\" = root); not recursive"}},` +
+				`"required":["path"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Path string `json:"path"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid list_dir arguments: %v", err)
+				}
+				return listDirOp(ctx, sb, a.Path)
+			},
+		},
+		"read_file": {
+			Name: "read_file",
+			Desc: "read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
+			Run:  func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +
+				`"from":{"type":"integer","description":"first line to read (1-based, inclusive); omit to read from the start of the file"},` +
+				`"to":{"type":"integer","description":"last line to read (inclusive); omit to read to the end of the file"}},` +
+				`"required":["path"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Path string `json:"path"`
+					From *int   `json:"from"`
+					To   *int   `json:"to"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid read_file arguments: %v", err)
+				}
+				// from absent => whole file; from present, to absent => from..EOF
+				// (hi=0 signals EOF, matching parseReadArg's ":N-").
+				lo, hi, hasRange := 1, 0, false
+				if a.From != nil {
+					lo, hasRange = *a.From, true
+					if a.To != nil {
+						hi = *a.To
+					}
+				}
+				return readFileOp(ctx, sb, a.Path, lo, hi, hasRange)
+			},
+		},
+		"run": {
+			Name: "run",
+			Desc: fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
+			Run:  func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"command":{"type":"string","description":"one shell command line, run with sh -c inside the sandbox (pipes, &&, quotes allowed)"}},` +
+				`"required":["command"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Command string `json:"command"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid run arguments: %v", err)
+				}
+				return runOp(ctx, sb, a.Command, runTimeout)
+			},
+		},
+		"write_file": {
+			Name: "write_file",
+			Desc: "create or OVERWRITE a text file inside the sandbox. PREFER this over `run` with shell redirection (`>`/`tee`): it is confined to the sandbox root and reports exactly what it wrote, where redirection runs unfenced. ARG: the path (relative to the sandbox root), then a space, then the file CONTENT on the SAME line — because the action is one line, write a line break as the two characters \"\\n\" (also \"\\t\" for a tab, \"\\\\\" for a literal backslash). Write the content RAW — do NOT wrap it in surrounding quotes, or the quotes become part of the file. RETURNS: a confirmation with the path, byte count, and line count. NOTE: the parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents.",
+			Run:  func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"file path relative to the sandbox root; the parent directory must already exist (make it with run mkdir -p first). Writing an existing path REPLACES its contents."},` +
+				`"content":{"type":"string","description":"the full file content, written verbatim — real newlines, no escaping, no surrounding quotes"}},` +
+				`"required":["path","content"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Path    string `json:"path"`
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid write_file arguments: %v", err)
+				}
+				return writeFileOp(ctx, sb, a.Path, a.Content)
+			},
+		},
+		"edit_file": {
+			Name: "edit_file",
+			Desc: "replace a RANGE OF LINES in an existing file — surgical, so you needn't rewrite the whole file (use this over write_file for a small change in a large file). Read the file FIRST: read_file prints absolute line numbers, and those are the numbers you edit by. ARG: a path, a line range \":<from>-<to>\" (1-based INCLUSIVE, e.g. \"main.go:40-42\"; \":40\" = one line; \":40-\" = line 40 to end), then a space, then the REPLACEMENT content on the SAME line (write a line break as \"\\n\", same escapes as write_file; do NOT wrap it in quotes). Omit the content to DELETE the range. RETURNS: a confirmation plus the edited region re-numbered so you can verify it. NOTE: every edit shifts the line numbers below it — re-read before your next edit.",
+			Run:  func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +
+				`"from":{"type":"integer","description":"first line to replace (1-based, inclusive). Use the absolute numbers read_file printed."},` +
+				`"to":{"type":"integer","description":"last line to replace (inclusive); omit to edit through the end of the file. Every edit shifts the lines below it — re-read before the next edit."},` +
+				`"content":{"type":"string","description":"replacement text, written verbatim (real newlines, no escaping); omit to DELETE the range"}},` +
+				`"required":["path","from"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Path    string  `json:"path"`
+					From    int     `json:"from"`
+					To      *int    `json:"to"`      // absent => EOF (distinct from to:0, which is invalid).
+					Content *string `json:"content"` // absent => delete the range.
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid edit_file arguments: %v", err)
+				}
+				hi := 0 // 0 signals EOF, matching parseEditArg's ":N-".
+				if a.To != nil {
+					hi = *a.To
+				}
+				content := ""
+				if a.Content != nil {
+					content = *a.Content
+				}
+				return editFileOp(ctx, sb, a.Path, a.From, hi, content)
+			},
+		},
 	}
 }
 
@@ -53,9 +158,16 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 // come first then files, each group name-sorted (ListDir is already name-sorted),
 // giving the stable shape the model can rely on call-to-call (P6).
 func toolListDir(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
-	entries, err := sb.ListDir(ctx, arg)
+	return listDirOp(ctx, sb, arg)
+}
+
+// listDirOp is the parse-free core shared by the text handler (toolListDir) and
+// the structured native handler (read straight from the `path` field): no arg
+// parsing here, just the directory listing and its bounds (P1).
+func listDirOp(ctx context.Context, sb sandbox.Sandbox, path string) (string, error) {
+	entries, err := sb.ListDir(ctx, path)
 	if err != nil {
-		return "", explainPathErr(arg, "directory", err) // (P3) errors are recovery instructions.
+		return "", explainPathErr(path, "directory", err) // (P3) errors are recovery instructions.
 	}
 	if len(entries) == 0 {
 		return "(empty directory)", nil // stable, unambiguous — not a blank string.
@@ -96,7 +208,16 @@ func toolReadFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, 
 	if badRange != "" { // (P3) teach the fix, don't pretend the file is missing.
 		return "", fmt.Errorf("invalid line range %q — use numbers, e.g. \"main.go:40-80\"", badRange)
 	}
+	return readFileOp(ctx, sb, path, lo, hi, hasRange)
+}
 
+// readFileOp is the parse-free core shared by the text handler (after
+// parseReadArg) and the structured native handler (after reading typed
+// from/to fields). lo/hi are 1-based inclusive; hasRange false reads the whole
+// file; hi<=0 with hasRange means "to EOF". It obeys both bounds — never pulls
+// more than maxFileBytes off disk (P4) and never returns more than readLineCap
+// lines (P1) — and tells the model the next range when it clips (P3).
+func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int, hasRange bool) (string, error) {
 	data, overMem, err := readBounded(ctx, sb, path) // (P4) bounded read; never loads the whole 5 GB.
 	if err != nil {
 		return "", explainPathErr(path, "file", err) // (P3)
@@ -267,11 +388,20 @@ func explainPathErr(path, noun string, err error) error {
 // (the write IS an observation of the world changing), the same as any other tool.
 func toolWriteFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
 	path, content, badEscape := parseWriteArg(arg)
-	if path == "" { // (P3) name the shape, don't just reject.
-		return "", fmt.Errorf("write_file needs a path: write the path first, then a space, then the content, e.g. `write_file notes.txt hello\\nworld`")
-	}
 	if badEscape != "" { // (P3) teach the escape set rather than write a stray backslash.
 		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported; write a literal backslash as \\\\", badEscape)
+	}
+	return writeFileOp(ctx, sb, path, content)
+}
+
+// writeFileOp is the parse-free core shared by the text handler (after
+// parseWriteArg decodes its escapes) and the structured native handler (which
+// passes the JSON `content` string verbatim). It holds the bounds and recovery
+// messages; the only difference between the two callers is how `content` was
+// obtained (escape-decoded vs. a raw JSON string).
+func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string) (string, error) {
+	if path == "" { // (P3) name the shape, don't just reject.
+		return "", fmt.Errorf("write_file needs a path: write the path first, then a space, then the content, e.g. `write_file notes.txt hello\\nworld`")
 	}
 	if n := len(content); n > writeByteCap { // (P4) backstop; see writeByteCap.
 		return "", fmt.Errorf("content is %d bytes, over the %d-byte write_file limit — split it across smaller writes, or generate it with `run`", n, writeByteCap)
@@ -390,6 +520,19 @@ func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, 
 	if badEscape != "" {
 		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported", badEscape)
 	}
+	return editFileOp(ctx, sb, path, lo, hi, content)
+}
+
+// editFileOp is the parse-free core shared by the text handler (after
+// parseEditArg) and the structured native handler (after reading typed
+// from/to/content fields). lo is 1-based inclusive; hi<=0 means "to EOF";
+// content "" deletes the range. It holds the read fence (P4), the splice, the
+// trailing-newline preservation, and the re-grounding echo (P4) so neither
+// caller reimplements them.
+func editFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int, content string) (string, error) {
+	if lo < 1 { // a structured caller can send from:0; the text path never does (parseReadArg requires >=1).
+		return "", fmt.Errorf("invalid start line %d — line numbers are 1-based; read_file shows the numbers to use", lo)
+	}
 	if n := len(content); n > writeByteCap {
 		return "", fmt.Errorf("replacement is %d bytes, over the %d-byte limit — split the edit, or generate the file with `run`", n, writeByteCap)
 	}
@@ -502,9 +645,17 @@ func echoRegion(lines []string, start, count int) string {
 // backend is trusted-only; swapping in a container/microVM backend (same
 // interface) is what would make `run` safe for untrusted, model-authored code.
 func toolRun(ctx context.Context, sb sandbox.Sandbox, arg string, timeout time.Duration) (string, error) {
+	return runOp(ctx, sb, arg, timeout)
+}
+
+// runOp is the parse-free core shared by the text handler and the structured
+// native handler (which reads the `command` field). There is no arg parsing for
+// run — the whole arg IS the command line — so the two callers differ only in
+// where the string came from.
+func runOp(ctx context.Context, sb sandbox.Sandbox, command string, timeout time.Duration) (string, error) {
 	res, err := sb.Exec(ctx, sandbox.Command{
 		Path:    "sh",
-		Args:    []string{"-c", arg},
+		Args:    []string{"-c", command},
 		Timeout: timeout, // a runaway command is the sandbox's job to kill (P5); caller-configurable.
 	})
 	if err != nil {

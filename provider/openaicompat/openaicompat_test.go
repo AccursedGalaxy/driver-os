@@ -22,6 +22,80 @@ func newTestProvider(t *testing.T, handler http.HandlerFunc) *Provider {
 	return New(Config{Name: "test", BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
 }
 
+func TestGenerateToolCallRoundTrip(t *testing.T) {
+	var gotBody map[string]any
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{
+			"id":"chatcmpl-2","model":"m",
+			"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"",
+				"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"arg\":\"go.mod\"}"}}]}}],
+			"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}
+		}`)
+	})
+
+	schema := json.RawMessage(`{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}`)
+	resp, err := p.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{
+			llm.User("read it"),
+			// a prior tool-calling turn + its result, to prove the round-trip serializes.
+			{Role: llm.RoleAssistant, Parts: []llm.ContentPart{llm.ToolCallPart{ID: "call_0", Name: "read_file", Args: json.RawMessage(`{"arg":"x"}`)}}},
+			llm.ToolResultMsg("call_0", "1| module x", false),
+		},
+		Tools: []llm.Tool{{Name: "read_file", Description: "read a file", Schema: schema}},
+	})
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	// --- outgoing request carried the tool schema + the round-trip messages ---
+	tools, _ := gotBody["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("request tools = %v, want 1", gotBody["tools"])
+	}
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "read_file" || fn["parameters"] == nil {
+		t.Errorf("tool function = %v, want name=read_file with parameters", fn)
+	}
+	var sawToolMsg, sawAsstCall bool
+	for _, mm := range gotBody["messages"].([]any) {
+		m := mm.(map[string]any)
+		if m["role"] == "tool" && m["tool_call_id"] == "call_0" {
+			sawToolMsg = true
+		}
+		if m["role"] == "assistant" {
+			if tc, ok := m["tool_calls"].([]any); ok && len(tc) > 0 {
+				sawAsstCall = true
+			}
+		}
+	}
+	if !sawToolMsg {
+		t.Errorf("outgoing messages lack the tool result for call_0")
+	}
+	if !sawAsstCall {
+		t.Errorf("outgoing messages lack the assistant tool_calls turn")
+	}
+
+	// --- parsed response surfaced the tool call ---
+	if resp.FinishReason != llm.FinishToolUse {
+		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, llm.FinishToolUse)
+	}
+	var calls int
+	for _, part := range resp.Content {
+		if tc, ok := part.(llm.ToolCallPart); ok {
+			calls++
+			if tc.Name != "read_file" || tc.ID != "call_1" || string(tc.Args) != `{"arg":"go.mod"}` {
+				t.Errorf("parsed call = %+v, want read_file/call_1/{\"arg\":\"go.mod\"}", tc)
+			}
+		}
+	}
+	if calls != 1 {
+		t.Errorf("parsed %d tool calls, want 1", calls)
+	}
+}
+
 func TestGenerateParsesResponse(t *testing.T) {
 	var gotBody map[string]any
 	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
@@ -159,5 +233,31 @@ func TestProviderImplementsInterface(t *testing.T) {
 	var _ llm.Provider = XAI("grok-3-mini")
 	if !strings.EqualFold(OpenAI("gpt-4o").Name(), "openai") {
 		t.Error("preset name mismatch")
+	}
+}
+
+func TestCapabilities(t *testing.T) {
+	// Cloud presets advertise native tools but NOT vision (vision isn't wired
+	// through the adapter yet — advertising it would be a lie the loop trusts).
+	for _, p := range []*Provider{OpenAI("gpt-4o"), XAI("grok-4"), OpenRouter("x/y")} {
+		c := p.Capabilities()
+		if !c.Tools {
+			t.Errorf("%s: Tools = false, want true", p.Name())
+		}
+		if c.Vision {
+			t.Errorf("%s: Vision = true, but vision is not wired through the adapter", p.Name())
+		}
+	}
+
+	// Ollama defaults to NO native tools so the loop falls back to the text
+	// protocol (local tool support is per-model); a real run opts in via Config.
+	if Ollama("llama3").Capabilities().Tools {
+		t.Error("Ollama default Capabilities().Tools = true, want false (text-loop fallback)")
+	}
+
+	// An explicit Config override wins over the constructor default.
+	custom := New(Config{Name: "vllm", BaseURL: "http://x", Model: "m", Capabilities: &llm.Capabilities{Tools: true, Vision: true}})
+	if c := custom.Capabilities(); !c.Tools || !c.Vision {
+		t.Errorf("override Capabilities = %+v, want Tools && Vision", c)
 	}
 }

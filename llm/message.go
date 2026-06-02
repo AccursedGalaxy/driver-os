@@ -35,3 +35,10 @@ func Assistant(s string) Message {
 func UserParts(parts ...ContentPart) Message {
 	return Message{Role: RoleUser, Parts: parts}
 }
+
+// ToolResultMsg builds a tool-result message answering the tool call with id.
+// isErr marks a tool failure — still an observation the model acts on, not a
+// transport error.
+func ToolResultMsg(id, content string, isErr bool) Message {
+	return Message{Role: RoleTool, Parts: []ContentPart{ToolResultPart{ToolCallID: id, Content: content, IsError: isErr}}}
+}

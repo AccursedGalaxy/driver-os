@@ -23,6 +23,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -90,7 +91,16 @@ const (
 type Tool struct {
 	Name string
 	Desc string
-	Run  func(ctx context.Context, arg string) (string, error)
+	Run  func(ctx context.Context, arg string) (string, error) // TEXT loop (and the native bridge fallback): the model fills one string.
+
+	// Schema and RunJSON are the STRUCTURED native path. When both are set,
+	// RunNative advertises Schema (typed, multi-field args) and dispatches the
+	// model's JSON args straight to RunJSON — no single-string parsing in native
+	// mode. They are optional and additive: a Tool with only Run still works in
+	// both loops (the native loop bridges it to a one-string `arg` schema), so
+	// custom/external toolsets are unaffected.
+	Schema  json.RawMessage
+	RunJSON func(ctx context.Context, args json.RawMessage) (string, error)
 }
 
 // Outcome is the typed terminal state of a Run. It replaces the old
