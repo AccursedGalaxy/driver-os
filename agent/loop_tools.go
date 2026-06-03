@@ -82,6 +82,10 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	edits := 0      // count of edit_file calls this session (the other churn signal).
 	nudged := false // the churn nudge fires at most once.
 
+	// (code-intel slice 1) edits since the last green build/run — the diagnostics-feed
+	// stuck signal (reset on any passing `run` or a clean DiagnoseCmd). See DiagnoseCmd.
+	editsSinceGreen := 0
+
 	// (HP-4) Near-cap finisher state, mirroring the text loop: lastRunPassed is the
 	// "build/test green" half of the done-signal, lastEditIter the iteration of the
 	// most recent file mutation (0 = none), finishNudged the once-only latch.
@@ -216,6 +220,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 		// ACT: run every requested call in order, appending one result per id (a
 		// missing result for any call would make the next request malformed).
 		usageForTurn := resp.Usage // attribute the turn's usage to its first step only.
+		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
 		for _, c := range calls {
 			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn}
 			usageForTurn = llm.Usage{}
@@ -235,6 +240,9 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			if c.Name == "run" {
 				lastRunFailed = isRunFailure(obs)
 				lastRunPassed = isRunSuccess(obs) // (HP-4) the green/red of the most recent run.
+				if lastRunPassed {
+					editsSinceGreen = 0 // (code-intel slice 1) reaching green clears the diagnostics-stuck count.
+				}
 				if lastRunFailed {
 					failRuns++
 				}
@@ -253,6 +261,8 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			}
 			if c.Name == "write_file" || c.Name == "edit_file" {
 				lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
+				editsSinceGreen++
+				editedThisTurn = true
 			}
 			// (P3) Churn nudge: fire once when EITHER wandering signal crosses the
 			// threshold — repeated failing test-runs (gpt-oss) OR many edit_file calls
@@ -275,6 +285,22 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Outcome = KilledStagnant
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
+			}
+		}
+
+		// (code-intel slice 1) Diagnostics feed, once per turn after the tool results are in
+		// the transcript (so the conversation stays well-formed, like the finisher below): if
+		// the model edited this turn and is stuck — DiagnoseAfterEdits edits without a green
+		// build — run the diagnostics SOURCE and surface its errors as a standalone user
+		// message, INFORMATION not a gate (see CODE-INTELLIGENCE.md). A clean build means it
+		// reached green via the check, so reset and stay silent.
+		if cfg.DiagnoseCmd != "" && cfg.DiagnoseAfterEdits > 0 && editedThisTurn &&
+			editsSinceGreen >= cfg.DiagnoseAfterEdits {
+			if report, clean := diagnoseSource(loopCtx, cfg, runTimeout); clean {
+				editsSinceGreen = 0
+			} else {
+				messages = append(messages, llm.User(diagnosticsMessage(cfg.DiagnoseCmd, report)))
+				cfg.Obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
 			}
 		}
 

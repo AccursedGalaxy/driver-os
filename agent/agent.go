@@ -281,6 +281,26 @@ type Config struct {
 	// tokens — the run still reaches the cap. To cut spend, widen the window so it fires
 	// earlier (e.g. 8–10), trading against interrupting a model still doing real work.
 	FinishNudgeWindow int
+
+	// DiagnoseCmd arms slice 1 of the code-intelligence work (see CODE-INTELLIGENCE.md):
+	// a fast compile/type-check command (e.g. "go build ./...") run as a diagnostics
+	// SOURCE when the model looks stuck with a broken build, whose errors are surfaced
+	// into the loop as INFORMATION — never a gate (the gate stays at termination,
+	// VerifyCmd). It targets the dominant build-broken failure: a model that edits
+	// without self-checking and never learns it left a compile error (the glm-5 `"errors"
+	// imported and not used` → hit_cap case). The source/surfacing split is deliberate —
+	// a future persistent-gopls client becomes an alternative SOURCE behind this same
+	// call, leaving the loops' SURFACING untouched, so only this command changes. Empty =
+	// off. May name the same command as VerifyCmd or a cheaper one (build vs. test).
+	DiagnoseCmd string
+
+	// DiagnoseAfterEdits is the stuck threshold for DiagnoseCmd: the feed stays silent
+	// until the model has made this many file edits WITHOUT reaching a green build/run in
+	// between (the counter resets on any passing `run` or a clean DiagnoseCmd). The
+	// threshold is what honors the multi-file reality — a multi-file change is legitimately
+	// red mid-flight, so the feed must NOT nag after the first edit, only once the model is
+	// clearly not converging. 0 = off (DiagnoseCmd is also required to arm).
+	DiagnoseAfterEdits int
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -368,6 +388,10 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	failRuns := 0   // count of failing `run` results this session (a churn signal).
 	edits := 0      // count of edit_file calls this session (the other churn signal).
 	nudged := false // the churn nudge fires at most once.
+
+	// (code-intel slice 1) edits since the last green build/run — the diagnostics-feed
+	// stuck signal (reset on any passing `run` or a clean DiagnoseCmd). See DiagnoseCmd.
+	editsSinceGreen := 0
 
 	// (HP-4) Near-cap finisher state. lastRunPassed is the "build/test green" half of
 	// the done-signal (the most recent `run` exited 0); lastEditIter is the iteration
@@ -543,6 +567,9 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		if verb == "run" {
 			lastRunFailed = isRunFailure(observation)
 			lastRunPassed = isRunSuccess(observation) // (HP-4) the green/red of the most recent run.
+			if lastRunPassed {
+				editsSinceGreen = 0 // (code-intel slice 1) reaching green clears the diagnostics-stuck count.
+			}
 			if lastRunFailed {
 				failRuns++
 			}
@@ -566,6 +593,23 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		}
 		if verb == "write_file" || verb == "edit_file" {
 			lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
+			editsSinceGreen++
+
+			// (code-intel slice 1) Diagnostics feed: once the model has edited
+			// DiagnoseAfterEdits times WITHOUT reaching a green build, run the diagnostics
+			// SOURCE and surface its errors as INFORMATION (not a gate; see
+			// CODE-INTELLIGENCE.md). A clean build means it actually reached green via the
+			// check, so reset and stay silent. Only on edit turns — no point re-checking a
+			// read/run turn. The threshold keeps it out of a legitimately-red multi-file
+			// change until the model is clearly not converging.
+			if cfg.DiagnoseCmd != "" && cfg.DiagnoseAfterEdits > 0 && editsSinceGreen >= cfg.DiagnoseAfterEdits {
+				if report, clean := diagnoseSource(loopCtx, cfg, runTimeout); clean {
+					editsSinceGreen = 0
+				} else {
+					observation += "\n\n" + diagnosticsMessage(cfg.DiagnoseCmd, report)
+					cfg.Obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
+				}
+			}
 		}
 
 		// (P3) Churn nudge: fire once when EITHER signal of wandering crosses the
@@ -628,6 +672,32 @@ const finishNudgeText = "\n\n[hint: your last build/test run passed and you have
 const finishNudgeNative = "[hint: your last build/test run passed and you haven't edited any files for several turns — " +
 	"the task may already be complete. If it is, FINISH NOW: reply with your final answer as plain text and do NOT call a tool. " +
 	"If something still remains, keep working.]"
+
+// diagnoseSource runs cfg.DiagnoseCmd as slice 1's diagnostics SOURCE (a fast
+// compile/type check — go build/go vet via the sandbox) and reports its output and
+// whether the build is clean (exit 0). The source/surfacing split (see
+// CODE-INTELLIGENCE.md) keeps this single call as the seam a future persistent-gopls
+// client slots behind, leaving the loops' surfacing logic untouched. A "" command, an
+// infra failure to even start it, or a clean build all yield clean=true and no report
+// — we never fabricate a build error out of an infrastructure fault (P6).
+func diagnoseSource(ctx context.Context, cfg Config, timeout time.Duration) (report string, clean bool) {
+	if cfg.DiagnoseCmd == "" {
+		return "", true
+	}
+	out, err := runOp(ctx, cfg.Sandbox, cfg.DiagnoseCmd, timeout)
+	if err != nil || !isRunFailure(out) {
+		return "", true
+	}
+	return out, false
+}
+
+// diagnosticsMessage renders the stuck-with-a-broken-build feed: the failing command
+// and its (already clipped by formatRun) output, framed explicitly as INFORMATION, not
+// a stop. Shared by both loops so the wording is identical regardless of protocol.
+func diagnosticsMessage(cmd, report string) string {
+	return fmt.Sprintf("[diagnostics] your recent edits do not build yet — `%s` reports:\n%s\n"+
+		"Fix these errors and continue. This is informational, not a stop.", cmd, report)
+}
 
 // upgradeIfVerified flips a non-Answered terminal outcome (a kill or the iteration
 // cap) to Answered when VerifyCmd actually passes (P5/HP-5). The verify command is
