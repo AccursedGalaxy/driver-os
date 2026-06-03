@@ -246,117 +246,9 @@ func TestWriteFileBadEscapeIsRecovery(t *testing.T) {
 	}
 }
 
-func TestParseEditArg(t *testing.T) {
-	cases := []struct {
-		in       string
-		path     string
-		lo, hi   int
-		hasRange bool
-		content  string
-		badRange string
-		badEsc   string
-	}{
-		{"f.go:40-42 new", "f.go", 40, 42, true, "new", "", ""},
-		{"f.go:40 one", "f.go", 40, 40, true, "one", "", ""},
-		{"f.go:40- rest", "f.go", 40, 0, true, "rest", "", ""},              // to EOF (hi=0)
-		{"f.go:40-42", "f.go", 40, 42, true, "", "", ""},                    // delete: no content
-		{"f.go:40-42 a\\nb", "f.go", 40, 42, true, "a\nb", "", ""},          // escapes decoded
-		{"f.go new", "f.go", 0, 0, false, "new", "", ""},                    // no range -> hasRange false
-		{"f.go:START-9 x", "f.go:START-9", 0, 0, false, "x", "START-9", ""}, // botched range surfaces
-		{`f.go:1-2 bad\z`, "f.go", 1, 2, true, "", "", `\z`},                // bad escape surfaces
-	}
-	for _, c := range cases {
-		p, lo, hi, hr, content, badR, badE := parseEditArg(c.in)
-		if p != c.path || lo != c.lo || hi != c.hi || hr != c.hasRange || content != c.content || badR != c.badRange || badE != c.badEsc {
-			t.Errorf("parseEditArg(%q) = (%q,%d,%d,%v,%q,%q,%q), want (%q,%d,%d,%v,%q,%q,%q)",
-				c.in, p, lo, hi, hr, content, badR, badE, c.path, c.lo, c.hi, c.hasRange, c.content, c.badRange, c.badEsc)
-		}
-	}
-}
-
-func TestEditFileReplace(t *testing.T) {
-	sb := sbWith(t, map[string]string{"f.txt": "a\nb\nc\nd\ne\n"})
-	out, err := toolEditFile(context.Background(), sb, "f.txt:2-3 X\\nY")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "replaced lines 2-3 (2 -> 2 lines)") {
-		t.Errorf("header missing/wrong:\n%s", out)
-	}
-	got, _ := toolReadFile(context.Background(), sb, "f.txt")
-	if want := "1| a\n2| X\n3| Y\n4| d\n5| e"; got != want {
-		t.Errorf("after edit =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestEditFileGrowsLineCount(t *testing.T) {
-	sb := sbWith(t, map[string]string{"f.txt": "a\nb\nc\n"})
-	out, err := toolEditFile(context.Background(), sb, "f.txt:2 X\\nY\\nZ") // 1 line -> 3
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "1 -> 3 lines") || !strings.Contains(out, "file now 5 line(s)") {
-		t.Errorf("grow header wrong:\n%s", out)
-	}
-	got, _ := toolReadFile(context.Background(), sb, "f.txt")
-	if want := "1| a\n2| X\n3| Y\n4| Z\n5| c"; got != want {
-		t.Errorf("after grow =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestEditFileDelete(t *testing.T) {
-	sb := sbWith(t, map[string]string{"f.txt": "a\nb\nc\nd\n"})
-	out, err := toolEditFile(context.Background(), sb, "f.txt:2-3") // no content = delete
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "2 -> 0 lines") {
-		t.Errorf("delete header wrong:\n%s", out)
-	}
-	got, _ := toolReadFile(context.Background(), sb, "f.txt")
-	if want := "1| a\n2| d"; got != want {
-		t.Errorf("after delete =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestEditFilePreservesTrailingNewlineConvention(t *testing.T) {
-	ctx := context.Background()
-	sbNL := sbWith(t, map[string]string{"f.txt": "a\nb\n"})
-	if _, err := toolEditFile(ctx, sbNL, "f.txt:1 X"); err != nil {
-		t.Fatal(err)
-	}
-	if d, _ := sbNL.ReadFile(ctx, "f.txt"); !strings.HasSuffix(string(d), "\n") {
-		t.Errorf("trailing newline not preserved: %q", string(d))
-	}
-	sbNo := sbWith(t, map[string]string{"f.txt": "a\nb"})
-	if _, err := toolEditFile(ctx, sbNo, "f.txt:1 X"); err != nil {
-		t.Fatal(err)
-	}
-	if d, _ := sbNo.ReadFile(ctx, "f.txt"); strings.HasSuffix(string(d), "\n") {
-		t.Errorf("spurious trailing newline added: %q", string(d))
-	}
-}
-
-func TestEditFileRecoveries(t *testing.T) {
-	sb := sbWith(t, map[string]string{"f.txt": "a\nb\n"})
-	ctx := context.Background()
-	cases := []struct{ name, arg, want string }{
-		{"no range", "f.txt hello", "needs a line range"},
-		{"out of range", "f.txt:9-10 x", "past the end"},
-		{"end before start", "f.txt:2-1 x", "end is before start"},
-		{"bad range", "f.txt:START-9 x", "invalid line range"},
-		{"bad escape", `f.txt:1 x\z`, "invalid escape"},
-	}
-	for _, c := range cases {
-		if _, err := toolEditFile(ctx, sb, c.arg); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: err = %v, want contains %q", c.name, err, c.want)
-		}
-	}
-}
-
 func TestEditFileMissingFileIsRecovery(t *testing.T) {
 	sb := sbWith(t, nil)
-	_, err := toolEditFile(context.Background(), sb, "nope.txt:1 x")
+	_, err := toolEditFile(context.Background(), sb, "nope.txt old ||| new")
 	if err == nil || !strings.Contains(err.Error(), "list_dir") {
 		t.Errorf("missing-file err = %v, want a list_dir pointer", err)
 	}
@@ -364,7 +256,7 @@ func TestEditFileMissingFileIsRecovery(t *testing.T) {
 
 func TestEditFileEscapeOutsideRootRefused(t *testing.T) {
 	sb := sbWith(t, nil)
-	_, err := toolEditFile(context.Background(), sb, "../escape.txt:1 x")
+	_, err := toolEditFile(context.Background(), sb, "../escape.txt old ||| new")
 	if err == nil || !strings.Contains(err.Error(), "outside the sandbox root") {
 		t.Errorf("escape edit err = %v, want a fence refusal", err)
 	}
@@ -439,18 +331,6 @@ func TestWriteFileRejectsEditEnvelope(t *testing.T) {
 	// Clean content still writes.
 	if _, err := writeFileOp(ctx, sb, "ok.go", "package main\n"); err != nil {
 		t.Errorf("clean content was wrongly rejected: %v", err)
-	}
-}
-
-func TestEditFileRejectsEditEnvelope(t *testing.T) {
-	sb := sbWith(t, map[string]string{"f.go": "a\nb\nc\n"})
-	_, err := editFileOp(context.Background(), sb, "f.go", 2, 2, "*** Begin Patch\n+++ b/f.go\n")
-	if err == nil || !strings.Contains(err.Error(), "patch/diff/fence") {
-		t.Errorf("envelope replacement err = %v, want a patch-wrapper recovery message", err)
-	}
-	// The file must be untouched by the rejected edit.
-	if got := readback(t, sb, "f.go"); got != "a\nb\nc\n" {
-		t.Errorf("rejected edit mutated the file: %q", got)
 	}
 }
 

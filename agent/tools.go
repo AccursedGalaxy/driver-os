@@ -161,37 +161,31 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		},
 		"edit_file": {
 			Name: "edit_file",
-			Desc: "replace a RANGE OF LINES in an existing file — surgical, so you needn't rewrite the whole file (use this over write_file for a small change in a large file). Read the file FIRST: read_file prints absolute line numbers, and those are the numbers you edit by. ARG: a path, a line range \":<from>-<to>\" (1-based INCLUSIVE, e.g. \"main.go:40-42\"; \":40\" = one line; \":40-\" = line 40 to end), then a space, then the REPLACEMENT content on the SAME line (write a line break as \"\\n\", same escapes as write_file; do NOT wrap it in quotes). Omit the content to DELETE the range. RETURNS: a confirmation plus the edited region re-numbered so you can verify it. NOTE: every edit shifts the line numbers below it — re-read before your next edit.",
-			// NativeDesc: behavior + selection only; the from/to/content schema fields own
-			// the format. No \n-escape framing — `content` is written verbatim in native mode.
-			NativeDesc: "Replace a range of lines in an existing file — surgical, so you needn't rewrite the whole file (prefer it over write_file for a small change in a large file). Read the file FIRST: edit by the absolute line numbers read_file printed. Every edit shifts the lines below it — re-read before your next edit. Returns a confirmation plus the edited region re-numbered so you can verify it.",
+			// edit_file is ANCHOR-BASED, not line-numbered: you give the exact text to
+			// change (`old`) and its replacement (`new`). The eval (HP-7) showed
+			// line-range editing drifts when a model batches edits without re-reading —
+			// a text anchor carries no number to go stale, so it can't drift.
+			Desc: "replace the UNIQUE occurrence of a snippet of text in an existing file — surgical and DRIFT-FREE: you give the exact text to change, NOT line numbers, so earlier edits in the same file never invalidate a later one. Use this over write_file for a small change in a large file. Read the file FIRST and copy the OLD text byte-for-byte (indentation included). ARG: `<path> <old text> ||| <new text>` — the literal separator ` ||| ` divides the two; write a line break in either as \"\\n\" (also \"\\t\", \"\\\\\"; do NOT wrap in quotes). The OLD text must match EXACTLY ONE place — if it matches none or several, you'll be told to add surrounding context. Make the NEW text empty (`... |||` with nothing after) to DELETE the old text. RETURNS: a confirmation plus the changed region re-numbered so you can verify it.",
+			// NativeDesc: behavior + selection only; the path/old/new schema fields own
+			// the format. No \n-escape framing — old/new are written verbatim in native mode.
+			NativeDesc: "Replace the UNIQUE occurrence of a text snippet in an existing file — surgical and DRIFT-FREE: you give the exact existing text (`old`) and its replacement (`new`), NOT line numbers, so earlier edits never invalidate a later one. Use it over write_file for a small change in a large file. Read the file FIRST and copy `old` byte-for-byte (indentation included); it must match EXACTLY ONE place — if none or several, you'll be told to add context. Set `new` to \"\" to DELETE the matched text. Returns a confirmation plus the changed region re-numbered so you can verify it.",
 			Run:        func(ctx context.Context, arg string) (string, error) { return toolEditFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +
-				`"from":{"type":"integer","description":"first line to replace (1-based, inclusive). Use the absolute numbers read_file printed."},` +
-				`"to":{"type":"integer","description":"last line to replace (inclusive); omit to edit through the end of the file. Every edit shifts the lines below it — re-read before the next edit."},` +
-				`"content":{"type":"string","description":"replacement text, written verbatim (real newlines, no escaping); omit to DELETE the range"}},` +
-				`"required":["path","from"]}`),
+				`"old":{"type":"string","description":"the exact existing text to replace, copied byte-for-byte from read_file output (indentation and whitespace included). Must identify EXACTLY ONE place in the file — include enough surrounding lines to be unique."},` +
+				`"new":{"type":"string","description":"the replacement text, written verbatim (real newlines, no escaping). Use an empty string to DELETE the old text."}},` +
+				`"required":["path","old","new"]}`),
 			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
-					Path    string  `json:"path"`
-					From    int     `json:"from"`
-					To      *int    `json:"to"`      // absent => EOF (distinct from to:0, which is invalid).
-					Content *string `json:"content"` // absent => delete the range.
+					Path string `json:"path"`
+					Old  string `json:"old"`
+					New  string `json:"new"`
 				}
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", fmt.Errorf("invalid edit_file arguments: %v", err)
 				}
-				hi := 0 // 0 signals EOF, matching parseEditArg's ":N-".
-				if a.To != nil {
-					hi = *a.To
-				}
-				content := ""
-				if a.Content != nil {
-					content = *a.Content
-				}
-				return editFileOp(ctx, sb, a.Path, a.From, hi, content)
+				return editFileOp(ctx, sb, a.Path, a.Old, a.New)
 			},
 		},
 	}
@@ -568,120 +562,94 @@ func explainWriteErr(path string, err error) error {
 	return err
 }
 
-// toolEditFile replaces a 1-based inclusive line range with new content, or deletes
-// it (empty content) — a surgical alternative to rewriting a whole file with
-// write_file. It is fence-confined like every file tool, and unlike a hand-rolled
-// `run sed -i` it returns a structured, re-numbered echo of the edited region so the
-// model can verify the change and re-ground (P4) before its next edit.
-//
-// It reads the WHOLE file, splices in code, and writes it back — so it refuses a
-// file larger than the read fence (maxFileBytes): editing a truncated view would
-// silently drop everything past the cap (P4). Huge-file edits belong to `run`.
+// replaceSep divides the old text from the new text in edit_file's one-line text
+// protocol: `<path> <old> ||| <new>`. It is only used by the text loop — the native
+// loop passes typed {path,old,new} fields straight to editFileOp, no parsing.
+const replaceSep = " ||| "
+
+// toolEditFile is the text-protocol entry: parse `<path> <old> ||| <new>` (old/new
+// carrying write_file's \n,\t,\\ escapes, since one physical line can't hold real
+// newlines), then defer to the shared editFileOp core.
 func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
-	path, lo, hi, hasRange, content, badRange, badEscape := parseEditArg(arg)
-	if path == "" { // (P3) name the shape.
-		return "", fmt.Errorf("edit_file needs a path and line range, e.g. `edit_file main.go:40-42 new content` (omit the content to delete those lines)")
+	arg = strings.TrimSpace(arg)
+	i := strings.IndexAny(arg, " \t")
+	if i < 0 { // path only — not enough to act on.
+		return "", fmt.Errorf("edit_file needs a path, the exact text to replace, and its replacement: `edit_file main.go OLD%sNEW`", replaceSep)
 	}
-	if badRange != "" {
-		return "", fmt.Errorf("invalid line range %q — use numbers, e.g. \"main.go:40-42\"", badRange)
+	path := arg[:i]
+	rest := strings.TrimLeft(arg[i+1:], " \t")
+	j := strings.Index(rest, replaceSep)
+	if j < 0 {
+		return "", fmt.Errorf("edit_file needs `%s` between the old text and the new text: `edit_file main.go OLD%sNEW`", strings.TrimSpace(replaceSep), replaceSep)
 	}
-	if !hasRange { // a range is mandatory — you must say WHICH lines (unlike read_file).
-		return "", fmt.Errorf("edit_file needs a line range after the path, e.g. `%s:40-42` — read_file shows the line numbers to use", path)
-	}
+	oldStr, badEscape := unescape(rest[:j])
 	if badEscape != "" {
-		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported", badEscape)
+		return "", fmt.Errorf("invalid escape %q in old text — only \\n, \\t and \\\\ are supported", badEscape)
 	}
-	return editFileOp(ctx, sb, path, lo, hi, content)
+	newStr, badEscape := unescape(rest[j+len(replaceSep):])
+	if badEscape != "" {
+		return "", fmt.Errorf("invalid escape %q in new text — only \\n, \\t and \\\\ are supported", badEscape)
+	}
+	return editFileOp(ctx, sb, path, oldStr, newStr)
 }
 
-// editFileOp is the parse-free core shared by the text handler (after
-// parseEditArg) and the structured native handler (after reading typed
-// from/to/content fields). lo is 1-based inclusive; hi<=0 means "to EOF";
-// content "" deletes the range. It holds the read fence (P4), the splice, the
-// trailing-newline preservation, and the re-grounding echo (P4) so neither
-// caller reimplements them.
-func editFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int, content string) (string, error) {
-	if lo < 1 { // a structured caller can send from:0; the text path never does (parseReadArg requires >=1).
-		return "", fmt.Errorf("invalid start line %d — line numbers are 1-based; read_file shows the numbers to use", lo)
+// editFileOp is the parse-free core shared by the text handler and the structured
+// native handler. It replaces the UNIQUE occurrence of old with new — anchored by
+// content, not line numbers, so a sequence of edits in one run cannot drift (HP-7):
+// the model copies the text to change, never a number a prior edit invalidated. 0 or
+// >1 matches are teach-the-fix errors (P3), not guesses; new "" deletes the match.
+// The splice leaves every byte outside the match untouched, so the file's
+// trailing-newline convention is preserved without special-casing.
+func editFileOp(ctx context.Context, sb sandbox.Sandbox, path, oldStr, newStr string) (string, error) {
+	if oldStr == "" { // an empty anchor matches everywhere — there's nothing to locate.
+		return "", fmt.Errorf("edit_file needs the exact existing text in `old` to locate the edit; to create a new file use write_file")
 	}
-	if n := len(content); n > writeByteCap {
+	if oldStr == newStr {
+		return "", fmt.Errorf("`old` and `new` are identical — nothing to change")
+	}
+	if n := len(newStr); n > writeByteCap {
 		return "", fmt.Errorf("replacement is %d bytes, over the %d-byte limit — split the edit, or generate the file with `run`", n, writeByteCap)
 	}
-	if env := looksLikeEditEnvelope(content); env != "" { // (P3/P6) a foreign patch/diff wrapper, not replacement content.
-		return "", fmt.Errorf("replacement begins with %q, which looks like a patch/diff/fence wrapper rather than the lines to insert — send the RAW replacement text only (no apply_patch envelope, no ``` fence, no diff markers)", env)
+	if env := looksLikeEditEnvelope(newStr); env != "" { // (P3/P6) a foreign patch/diff wrapper, not replacement text.
+		return "", fmt.Errorf("`new` begins with %q, which looks like a patch/diff/fence wrapper rather than the replacement text — send the RAW replacement only (no apply_patch envelope, no ``` fence, no diff markers)", env)
 	}
 
 	data, overMem, err := readBounded(ctx, sb, path)
 	if err != nil {
 		return "", explainPathErr(path, "file", err) // (P3) missing file -> list_dir.
 	}
-	if overMem { // (P4) see the doc comment: never write back a truncated read.
-		return "", fmt.Errorf("file %q exceeds %d KiB — too large to edit_file safely (it would truncate the rest); use `run` with sed/awk for an in-place edit", path, maxFileBytes>>10)
+	if overMem { // (P4) never write back a truncated read.
+		return "", fmt.Errorf("file %q exceeds %d KiB — too large to edit_file safely; use `run` with sed/awk for an in-place edit", path, maxFileBytes>>10)
 	}
 
 	src := string(data)
-	hadTrailingNL := strings.HasSuffix(src, "\n")
-	lines := strings.Split(src, "\n")
-	if n := len(lines); n > 0 && lines[n-1] == "" {
-		lines = lines[:n-1] // drop the phantom empty line a trailing newline yields (as read_file does).
-	}
-	total := len(lines)
-	if total == 0 {
-		return "", fmt.Errorf("file %q is empty — use write_file to create its contents", path)
-	}
-	if lo > total { // (P3) overshoot is recoverable, not a silent empty edit.
-		return "", fmt.Errorf("file %q has %d line(s); requested start %d is past the end — re-read and pick a line in range", path, total, lo)
-	}
-	if hi <= 0 || hi > total { // ":40-" (hi==0) means to EOF; an over-long end clamps to the last line.
-		hi = total
-	}
-	if hi < lo {
-		return "", fmt.Errorf("invalid range %d-%d: end is before start", lo, hi)
+	switch n := strings.Count(src, oldStr); {
+	case n == 0:
+		return "", fmt.Errorf("`old` text not found in %q — it must match the file byte-for-byte (indentation and whitespace included); read_file to copy the exact text", path)
+	case n > 1:
+		return "", fmt.Errorf("`old` matches %d places in %q — include more surrounding lines in `old` so it identifies exactly one location", n, path)
 	}
 
-	// Splice: keep [1..lo-1], drop [lo..hi], insert newLines, keep [hi+1..].
-	var newLines []string
-	if content != "" {
-		newLines = strings.Split(content, "\n")
-	} // empty content => delete: newLines stays nil.
-
-	out := make([]string, 0, (lo-1)+len(newLines)+(total-hi))
-	out = append(out, lines[:lo-1]...)
-	out = append(out, newLines...)
-	out = append(out, lines[hi:]...)
-
-	body := strings.Join(out, "\n")
-	if hadTrailingNL && body != "" {
-		body += "\n" // preserve the file's original trailing-newline convention.
-	}
+	body := strings.Replace(src, oldStr, newStr, 1)
 	if err := sb.WriteFile(ctx, path, []byte(body), 0o644); err != nil {
 		return "", explainWriteErr(path, err)
 	}
 
-	// (P4) Re-ground: report the change and echo the edited region with FRESH
-	// absolute numbers, so the model verifies the result and addresses its next edit
-	// against current line numbers — the mitigation for line-drift.
-	header := fmt.Sprintf("edited %s: replaced lines %d-%d (%d -> %d lines); file now %d line(s)",
-		path, lo, hi, hi-lo+1, len(newLines), len(out))
-	return header + "\n" + echoRegion(out, lo, len(newLines)), nil
-}
-
-// parseEditArg splits "<path>:<range> [content...]" into the path, its 1-based
-// inclusive range, and the replacement content (decoded with write_file's escapes).
-// It reuses parseReadArg for the "<path>:<range>" half so the range grammar is
-// IDENTICAL to read_file's — the safety property that lets the model edit the exact
-// numbers read_file showed it. No content token => delete (content ""). hasRange is
-// false when no range was given (edit_file requires one); badRange/badEscape carry
-// the teach-the-fix signals (P3).
-func parseEditArg(arg string) (path string, lo, hi int, hasRange bool, content, badRange, badEscape string) {
-	arg = strings.TrimSpace(arg)
-	spec := arg
-	if i := strings.IndexAny(arg, " \t"); i >= 0 {
-		spec = arg[:i]
-		content, badEscape = unescape(strings.TrimLeft(arg[i+1:], " \t"))
+	// (P4) Re-ground: report the change and echo the changed region with FRESH
+	// absolute numbers, so the model verifies it landed where intended.
+	startLine := 1 + strings.Count(src[:strings.Index(src, oldStr)], "\n")
+	newLineCount := 0
+	if newStr != "" {
+		newLineCount = strings.Count(newStr, "\n") + 1
 	}
-	path, lo, hi, hasRange, badRange = parseReadArg(spec)
-	return path, lo, hi, hasRange, content, badRange, badEscape
+	oldLineCount := strings.Count(oldStr, "\n") + 1
+	outLines := strings.Split(body, "\n")
+	if k := len(outLines); k > 0 && outLines[k-1] == "" {
+		outLines = outLines[:k-1] // drop the phantom line a trailing newline yields.
+	}
+	header := fmt.Sprintf("edited %s: replaced %d line(s) with %d at line %d; file now %d line(s)",
+		path, oldLineCount, newLineCount, startLine, len(outLines))
+	return header + "\n" + echoRegion(outLines, startLine, newLineCount), nil
 }
 
 // echoRegion renders a few lines of the post-edit file around the changed region,

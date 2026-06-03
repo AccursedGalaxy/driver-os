@@ -220,7 +220,7 @@ func TestRunNativeEditFileBackslashContentVerbatim(t *testing.T) {
 	start := "a\nOLD\nc\n"
 	repl := `re := "\d+"` + "\t" + `\\ literal \n here` // literal backslashes + a real tab
 	turns := [][]llm.ContentPart{
-		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "from": 2, "to": 2, "content": repl})},
+		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "old": "OLD", "new": repl})},
 		{llm.Text("ok")},
 	}
 	_, _, sb := runNative(t, map[string]string{"f.txt": start}, turns)
@@ -292,9 +292,9 @@ func TestRunNativeReadFileStructuredToWithoutFrom(t *testing.T) {
 }
 
 func TestRunNativeEditFileStructuredReplace(t *testing.T) {
-	// {path, from, to, content} replaces exactly the named lines.
+	// {path, old, new} replaces the unique occurrence of `old`.
 	turns := [][]llm.ContentPart{
-		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "from": 2, "to": 2, "content": "BB"})},
+		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "old": "b", "new": "BB"})},
 		{llm.Text("done")},
 	}
 	res, _, sb := runNative(t, map[string]string{"f.txt": "a\nb\nc\n"}, turns)
@@ -304,33 +304,21 @@ func TestRunNativeEditFileStructuredReplace(t *testing.T) {
 	if got, want := readback(t, sb, "f.txt"), "a\nBB\nc\n"; got != want {
 		t.Errorf("after replace = %q, want %q", got, want)
 	}
-	// No `:from-to` substring anywhere in the trace's recorded arg (it's typed JSON).
-	if strings.Contains(res.Steps[0].Arg, ":2-2") {
-		t.Errorf("Step.Arg carries a positional range substring: %q", res.Steps[0].Arg)
+	// The recorded arg carries the typed anchor fields, not a positional line range.
+	if !strings.Contains(res.Steps[0].Arg, "\"old\"") || strings.Contains(res.Steps[0].Arg, ":2-2") {
+		t.Errorf("Step.Arg should record typed old/new fields, not a line range: %q", res.Steps[0].Arg)
 	}
 }
 
 func TestRunNativeEditFileStructuredDelete(t *testing.T) {
-	// content OMITTED deletes the range (the *string pointer is nil).
+	// new == "" deletes the matched text (the anchor includes the line's newline).
 	turns := [][]llm.ContentPart{
-		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "from": 2, "to": 2})},
+		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "old": "b\n", "new": ""})},
 		{llm.Text("done")},
 	}
 	_, _, sb := runNative(t, map[string]string{"f.txt": "a\nb\nc\n"}, turns)
 	if got, want := readback(t, sb, "f.txt"), "a\nc\n"; got != want {
 		t.Errorf("after delete = %q, want %q", got, want)
-	}
-}
-
-func TestRunNativeEditFileStructuredToEOF(t *testing.T) {
-	// `to` OMITTED edits from `from` through end-of-file.
-	turns := [][]llm.ContentPart{
-		{structuredCall("c1", "edit_file", map[string]any{"path": "f.txt", "from": 2, "content": "X\nY"})},
-		{llm.Text("done")},
-	}
-	_, _, sb := runNative(t, map[string]string{"f.txt": "a\nb\nc\nd\n"}, turns)
-	if got, want := readback(t, sb, "f.txt"), "a\nX\nY\n"; got != want {
-		t.Errorf("after edit-to-EOF = %q, want %q", got, want)
 	}
 }
 
@@ -642,9 +630,9 @@ func TestRunNativeChurnNudgeFiresOnEdits(t *testing.T) {
 	// The grok fix: the nudge fires on edit-churn even when the model barely runs the
 	// tests (a run-only trigger never fires for it). 3 distinct edits -> nudge.
 	turns := [][]llm.ContentPart{
-		{structuredCall("e1", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "A"})},
-		{structuredCall("e2", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "B"})},
-		{structuredCall("e3", "edit_file", map[string]any{"path": "f.txt", "from": 1, "to": 1, "content": "C"})},
+		{structuredCall("e1", "edit_file", map[string]any{"path": "f.txt", "old": "x", "new": "A"})},
+		{structuredCall("e2", "edit_file", map[string]any{"path": "f.txt", "old": "A", "new": "B"})},
+		{structuredCall("e3", "edit_file", map[string]any{"path": "f.txt", "old": "B", "new": "C"})},
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
