@@ -155,7 +155,7 @@ const (
 	Unverified      Outcome = "unverified"        // the model finished, but the closing verification (VerifyCmd / last-run check) failed — a non-pass (P5/HP-5).
 	HitCap          Outcome = "hit_cap"           // ran out of iterations (P5 hard cap).
 	KilledRepeat    Outcome = "killed_repeat"     // exact same action maxRepeats times.
-	KilledSpiral    Outcome = "killed_spiral"     // noProgressWindow list_dir calls in a row.
+	KilledSpiral    Outcome = "killed_spiral"     // noProgressWindow discovery-only turns (list_dir/search) in a row.
 	KilledStagnant  Outcome = "killed_stagnant"   // the same failing `run` result maxStagnant times despite changing actions.
 	HitDeadline     Outcome = "hit_deadline"      // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
 	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
@@ -344,14 +344,15 @@ type Config struct {
 	DiagnoseAfterEdits int
 
 	// NavSpiralWindow overrides the explore-spiral detector's threshold — the number
-	// of consecutive `list_dir` calls (even with different args) that ends the run as
-	// KilledSpiral. 0 = the default noProgressWindow. It exists for the OBSERVE-only
-	// agent whose whole job is to survey a tree: a read-only critic legitimately does
-	// a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep before reading, which is
-	// 4 listings in a row and would trip the default detector before it critiques
-	// anything (council code mode, COUNCIL.md slice 4 / objection O7). Raising it for
-	// that caller is an OPT-IN relaxation — every other caller (issue-bot, eval, plan
-	// mode) leaves it 0 and keeps the strict default, so the harness is not weakened.
+	// of consecutive discovery-only turns (list_dir/search, even with different args)
+	// that ends the run as KilledSpiral. 0 = the default noProgressWindow. It exists
+	// for the OBSERVE-only agent whose whole job is to survey a tree: a read-only
+	// critic legitimately does a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep
+	// (or a burst of `search`es) before reading, which is several discovery turns in a
+	// row and would trip the default detector before it critiques anything (council
+	// code mode, COUNCIL.md slice 4 / objection O7). Raising it for that caller is an
+	// OPT-IN relaxation — every other caller (issue-bot, eval, plan mode) leaves it 0
+	// and keeps the strict default, so the harness is not weakened.
 	NavSpiralWindow int
 
 	// AnswerNudgeWindow arms a near-cap answer-forcer (native loop) for an OBSERVE-ONLY
@@ -451,7 +452,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	system := buildSystemPrompt(cfg.Tools) + recall(ctx, cfg.Memory, cfg.Task)
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
-	var lastAction, lastVerb string
+	var lastAction string
 	repeats := 0
 	sameVerb := 0
 	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
@@ -628,24 +629,25 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		lastAction = verb + " " + arg
 
-		// (b) explore-spiral: list_dir noProgressWindow times running, even with
-		// DIFFERENT args (list_dir a, b, c …) — which (a) can't see. Gated to
-		// list_dir on purpose: it's the only pure-navigation tool, so grinding it
-		// means wandering, not converging. read_file/run repetition is NOT a spiral
-		// — a re-read/re-run of the SAME arg is (a)'s job, and DIFFERENT args
-		// (paging a file, stepping a pipeline) are real progress.
-		if verb == "list_dir" && verb == lastVerb {
+		// (b) explore-spiral: discovery (list_dir/search) noProgressWindow turns
+		// running, even with DIFFERENT args (list_dir a, b, c … or search x, y, z …)
+		// — which (a) can't see. Keyed on the DISCOVERY CLASS: these tools return
+		// pointers and commit to nothing, so grinding them means wandering, not
+		// converging. read_file/edit/run is NOT discovery — a re-read/re-run of the
+		// SAME arg is (a)'s job, DIFFERENT args (paging a file, stepping a pipeline)
+		// are real progress, and a read after a search is reconnaissance that resets
+		// the count. (Native loop mirrors this with allCallsDiscovery.)
+		if discoveryTools[verb] {
 			sameVerb++
 			if sameVerb >= spiralWindow {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
-				res.Reason = fmt.Sprintf("no progress: %d list_dir calls in a row — switch to run or read_file, or answer", sameVerb)
+				res.Reason = fmt.Sprintf("no progress: %d discovery turns in a row (list_dir/search) — read or edit a specific target, or answer", sameVerb)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
-			sameVerb = 1
+			sameVerb = 0
 		}
-		lastVerb = verb
 
 		// ACT: run the named tool. The model only chose it; we execute it (P2).
 		toolStart := time.Now()

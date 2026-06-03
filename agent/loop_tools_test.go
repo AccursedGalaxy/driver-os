@@ -521,6 +521,75 @@ func TestRunNativeMixedTurnResetsSpiral(t *testing.T) {
 	}
 }
 
+func TestRunNativeSearchSpiralAcrossTurns(t *testing.T) {
+	// HP-2 generalization: the spiral detector keys on the discovery CLASS, not on
+	// list_dir alone, so search-churn — searching for a NEW pattern every turn,
+	// never reading a result — is the same wandering and must end as KilledSpiral.
+	// The detector runs on the model's CALLS before dispatch, so it fires regardless
+	// of whether ripgrep finds anything in the test sandbox.
+	files := map[string]string{"a.go": "package a\n"}
+	turns := [][]llm.ContentPart{
+		{structuredCall("1", "search", map[string]any{"pattern": "alpha"})},
+		{structuredCall("2", "search", map[string]any{"pattern": "beta"})},
+		{structuredCall("3", "search", map[string]any{"pattern": "gamma"})},
+		{structuredCall("4", "search", map[string]any{"pattern": "delta"})},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledSpiral {
+		t.Errorf("Outcome = %q (%s), want KilledSpiral — search-churn is a discovery spiral", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeMixedDiscoverySpiral(t *testing.T) {
+	// Alternating list_dir and search — no single verb repeats, so the old
+	// list_dir-only check never fired — is still pure discovery: pointers gathered,
+	// none followed. Keying on the discovery class catches it.
+	files := map[string]string{"a/x": "1", "b/x": "1"}
+	turns := [][]llm.ContentPart{
+		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("2", "search", map[string]any{"pattern": "alpha"})},
+		{structuredCall("3", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("4", "search", map[string]any{"pattern": "beta"})},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledSpiral {
+		t.Errorf("Outcome = %q (%s), want KilledSpiral — mixed list_dir/search wandering is a discovery spiral", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeSearchThenReadResetsSpiral(t *testing.T) {
+	// The false-positive guard: search-then-read reconnaissance — search for a
+	// symbol, then READ the file it points to — is productive and must NOT be killed.
+	// A read_file turn is not discovery-only, so it breaks the spiral run; this
+	// search/read/search/read pattern never reaches the window and answers cleanly.
+	// This is what makes including search safe (HP2-TEMPLATE-COLLAPSE.md).
+	files := map[string]string{"a.go": "package a\n", "b.go": "package b\n"}
+	turns := [][]llm.ContentPart{
+		{structuredCall("1", "search", map[string]any{"pattern": "package"})},
+		{structuredCall("2", "read_file", map[string]any{"path": "a.go"})},
+		{structuredCall("3", "search", map[string]any{"pattern": "import"})},
+		{structuredCall("4", "read_file", map[string]any{"path": "b.go"})},
+		{structuredCall("5", "search", map[string]any{"pattern": "func"})},
+		{llm.Text("found what I needed")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered — search-then-read recon must not trip the spiral", res.Outcome, res.Reason)
+	}
+}
+
 // failRun is a `run` call whose command fails deterministically with identical
 // output every time — the raw material for the stagnant-observation detector.
 func failRun(id string) llm.ToolCallPart {

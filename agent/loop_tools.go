@@ -218,11 +218,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P5) Two no-progress detectors, the same intent as the text loop but
 		// evaluated PER TURN (a native turn may legitimately fan out several calls):
 		// (a) tight loop — the model re-issues the IDENTICAL turn over and over;
-		// (b) explore-spiral — consecutive turns that do nothing but navigate with
-		//     list_dir, never escalating to run/read_file or answering. A turn that
-		//     mixes list_dir with any other tool is progress and resets the count, and
-		//     a single turn that fans out N parallel list_dir calls is ONE nav turn,
-		//     not N — so real parallel exploration is never mistaken for a spiral.
+		// (b) explore-spiral — consecutive turns that do nothing but DISCOVER with
+		//     list_dir/search, never escalating to run/read_file/edit or answering. A
+		//     turn that mixes discovery with any other tool is progress and resets the
+		//     count, and a single turn that fans out N parallel discovery calls is ONE
+		//     nav turn, not N — so real parallel exploration is never mistaken for a
+		//     spiral. (b) keys on the discovery CLASS so search-churn and mixed
+		//     list_dir/search wandering trip the same net the list_dir-only case did.
 		sig := turnSignature(calls, cfg.Tools)
 		// A repeat counts toward the tight-loop kill ONLY if the model's reasoning
 		// also didn't advance. A thinking model (Gemini) re-issues the SAME visible
@@ -256,11 +258,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		lastTurnSig = sig
 		lastReasoningSig = reasoningSig
 
-		if allCallsListDir(calls) { // (b)
+		if allCallsDiscovery(calls) { // (b)
 			if navRun++; navRun >= spiralWindow {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
 				res.Outcome = KilledSpiral
-				res.Reason = fmt.Sprintf("no progress: %d list_dir-only turns in a row — switch to run/read_file, or answer", navRun)
+				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
 		} else {
@@ -512,14 +514,28 @@ func turnSignature(calls []llm.ToolCallPart, tools map[string]Tool) string {
 	return strings.Join(parts, " | ")
 }
 
-// allCallsListDir reports whether EVERY call in a turn is list_dir — a pure
-// navigation turn. Gated to list_dir for the same reason as the text loop: it is
-// the only pure-navigation tool, so a run of list_dir-only turns means wandering,
-// while repeated read_file/run is either the tight-loop detector's job or real
-// paging/progress. A turn mixing list_dir with another tool is NOT pure nav.
-func allCallsListDir(calls []llm.ToolCallPart) bool {
+// discoveryTools are the pure-DISCOVERY built-ins: they return POINTERS — names
+// (list_dir) or matching-line locations (search) — rather than committing to a
+// target's content (read_file) or changing state (edit_file/write_file/run). A run
+// of discovery-only turns is the generalized explore-spiral: the model keeps
+// gathering pointers and never follows one (list_dir a, search x, list_dir b …).
+// read_file is deliberately EXCLUDED: paging/reads consume content (progress), a
+// re-read of the same arg is the reasoning-aware repeat detector's job, and folding
+// reads into churn would reintroduce the thinking-model false-kill (HARD-PROBLEMS.md
+// HP-2; see HP2-TEMPLATE-COLLAPSE.md for why the heavier working-set design collapses
+// to exactly this).
+var discoveryTools = map[string]bool{"list_dir": true, "search": true}
+
+// allCallsDiscovery reports whether EVERY call in a turn is a discovery tool — a
+// pure-discovery turn. It generalizes the old list_dir-only check to the discovery
+// CLASS, so search-churn (search x, search y, search z …) and mixed list_dir/search
+// wandering trip the same spiral the list_dir-only case did. A turn that reads,
+// edits, or runs is NOT discovery-only, so it breaks the run — search-then-read
+// reconnaissance is progress and resets the counter. A parallel fan-out of several
+// discovery calls in ONE turn is a single discovery turn, not several.
+func allCallsDiscovery(calls []llm.ToolCallPart) bool {
 	for _, c := range calls {
-		if c.Name != "list_dir" {
+		if !discoveryTools[c.Name] {
 			return false
 		}
 	}
