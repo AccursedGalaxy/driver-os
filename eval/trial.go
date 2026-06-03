@@ -21,6 +21,7 @@ import (
 type Trial struct {
 	Case    string
 	Model   string
+	RunID   string        // the agent run's stable ID (RunResult.ID) — the P1 spine, so a Trial can be correlated with its persisted transcript.
 	Index   int           // 1-based trial number within the cell.
 	Outcome agent.Outcome // the agent's self-reported terminal state.
 	Answer  string
@@ -32,6 +33,11 @@ type Trial struct {
 
 	Cost   float64 // USD cost of this trial's Usage at the pinned Pricing (meaningless unless Priced).
 	Priced bool    // whether the model had a Pricing entry — false => render "—", not $0.
+
+	// LatencyMs is the agent's wall-clock for this trial (summed model + tool time
+	// across steps). Derived from Steps so it survives in report.json after the full
+	// trace is dropped — lets the report separate slow runs from token-heavy ones.
+	LatencyMs int64
 
 	// Steps is the full think->act->observe trace, kept for per-trial archival but
 	// EXCLUDED from report.json (json:"-") so the aggregate report stays compact —
@@ -103,11 +109,15 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 
 	res, runErr := run(ctx, cfg)
 	if res != nil {
+		tr.RunID = res.ID
 		tr.Outcome = res.Outcome
 		tr.Answer = res.Answer
 		tr.Iters = res.Iterations
 		tr.Usage = res.Usage
 		tr.Steps = res.Steps
+		for _, s := range res.Steps {
+			tr.LatencyMs += s.ModelMs + s.ToolMs
+		}
 	}
 	tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)
 	if runErr != nil {

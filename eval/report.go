@@ -165,6 +165,29 @@ func (c Cell) PromptTokensP(p float64) int {
 	return percentileInt(xs, p)
 }
 
+// LatencyP is the pth percentile of per-trial agent wall-clock (ms) across the
+// cell — the time axis, told apart from token spend: a model can be cheap per
+// token yet slow per run (high reasoning latency, slow tools). 0 when no step
+// timing was captured (e.g. a pre-timing trace replay).
+func (c Cell) LatencyP(p float64) int64 {
+	xs := make([]int64, len(c.Trials))
+	for i, t := range c.Trials {
+		xs[i] = t.LatencyMs
+	}
+	return percentileInt64(xs, p)
+}
+
+// ReasoningTokensP is the pth percentile of reasoning tokens across all trials —
+// where a thinking model's completion spend actually goes (a subset of completion
+// tokens, already billed). 0 for non-thinking models, which is the useful signal.
+func (c Cell) ReasoningTokensP(p float64) int {
+	xs := make([]int, len(c.Trials))
+	for i, t := range c.Trials {
+		xs[i] = t.Usage.ReasoningTokens
+	}
+	return percentileInt(xs, p)
+}
+
 // CostP is the pth percentile of per-trial USD cost across the cell's PRICED
 // trials — the comparable cost-per-run number (a slow, token-hungry passer is
 // expensive even at a cheap per-token rate). ok=false when no trial was priced,
@@ -210,13 +233,18 @@ func (r *Report) SweepCost() (total float64, ok bool) {
 // is a comparable artifact, not a one-off. The CLI fills it (it owns time, git,
 // and the env), keeping this package pure and testable.
 type Manifest struct {
-	GeneratedAt string   `json:"generated_at"`
-	GitSHA      string   `json:"git_sha"`
-	GoVersion   string   `json:"go_version"`
-	TrialsPer   int      `json:"trials_per_cell"`
-	Models      []string `json:"models"`
-	Cases       []string `json:"cases"`
+	SchemaVersion string   `json:"schema_version"` // bump when Trial/Cell/Manifest shape changes, so a diff tool can refuse to compare incompatible reports instead of misreading absent-vs-zero fields.
+	GeneratedAt   string   `json:"generated_at"`
+	GitSHA        string   `json:"git_sha"`
+	GoVersion     string   `json:"go_version"`
+	TrialsPer     int      `json:"trials_per_cell"`
+	Models        []string `json:"models"`
+	Cases         []string `json:"cases"`
 }
+
+// ReportSchemaVersion is the current eval-report schema. v2 added LatencyMs on
+// Trial and the reason/latency columns; bump on any further shape change.
+const ReportSchemaVersion = "2"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
 // renders to Markdown (human) and JSON (machine-diffable, for regression diffs).
@@ -246,20 +274,22 @@ func (r *Report) Markdown() string {
 
 	for _, name := range order {
 		fmt.Fprintf(&b, "## %s\n\n", name)
-		b.WriteString("| model | pass-rate | 95% CI | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | $/trial p50 |\n")
-		b.WriteString("|-------|-----------|--------|-----------|----------|----------------------|----------------|-------------|\n")
+		b.WriteString("| model | pass-rate | 95% CI | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |\n")
+		b.WriteString("|-------|-----------|--------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|\n")
 		for _, c := range byCase[name] {
 			lo, hi := c.PassRateCI()
 			fp := ""
 			if c.FalsePositives() > 0 {
 				fp = " ⚠"
 			}
-			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | [%.2f, %.2f] | %d/%d%s | %s | %d/%d | %s | %s |\n",
+			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | [%.2f, %.2f] | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |\n",
 				c.Model, c.Passes(), c.N(), c.PassRate(), lo, hi,
 				c.FalsePositives(), c.N(), fp,
 				renderOutcomes(c.Outcomes()),
 				c.ItersP(50, true), c.ItersP(90, true),
 				humanInt(c.PromptTokensP(50)),
+				humanInt(c.ReasoningTokensP(50)),
+				humanMs(c.LatencyP(50)),
 				renderCostP(c))
 		}
 		b.WriteString("\n")
@@ -398,6 +428,30 @@ func percentileInt(xs []int, p float64) int {
 	return s[rank]
 }
 
+// percentileInt64 is percentileInt for millisecond durations (int64). Kept
+// separate so latency math never narrows through int on a 32-bit build.
+func percentileInt64(xs []int64, p float64) int64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := append([]int64(nil), xs...)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	if p <= 0 {
+		return s[0]
+	}
+	if p >= 100 {
+		return s[len(s)-1]
+	}
+	rank := int(math.Ceil(p/100*float64(len(s)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(s) {
+		rank = len(s) - 1
+	}
+	return s[rank]
+}
+
 // percentileFloat is percentileInt for USD costs — nearest-rank on a sorted
 // copy, empty input is 0. Kept separate from percentileInt so neither pays a
 // conversion cost or loses precision.
@@ -472,6 +526,22 @@ func humanInt(n int) string {
 		return fmt.Sprintf("%.1fK", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// humanMs renders a millisecond duration compactly: "850ms", "12.3s", "1.5m".
+// 0 (no timing captured) renders as "—" so a pre-timing replay is not read as
+// an instant run.
+func humanMs(ms int64) string {
+	if ms <= 0 {
+		return "—"
+	}
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	if ms < 60000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%.1fm", float64(ms)/60000)
 }
 
 func nonEmpty(s, fallback string) string {

@@ -104,6 +104,95 @@ func TestRunKilledRepeat(t *testing.T) {
 	}
 }
 
+// scriptedRz is a scripted provider that also attaches an opaque reasoning trace
+// to each turn. advancing=true makes the trace differ every call (a thinking model
+// still moving its chain of thought); advancing=false freezes it (a stalled trace).
+// It drives the two-threshold tight-loop detector (maxRepeats vs maxReasoningRepeats).
+type scriptedRz struct {
+	replies   []string
+	advancing bool
+	calls     int
+}
+
+func (s *scriptedRz) Name() string                   { return "scripted-rz" }
+func (s *scriptedRz) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (s *scriptedRz) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("scripted-rz")
+}
+
+func (s *scriptedRz) Generate(_ context.Context, _ llm.Request) (*llm.Response, error) {
+	i := s.calls
+	s.calls++
+	if i >= len(s.replies) {
+		i = len(s.replies) - 1
+	}
+	raw := `"frozen-thought"`
+	if s.advancing {
+		raw = `"thought-` + strings.Repeat("x", s.calls) + `"` // differs every call.
+	}
+	return &llm.Response{
+		Content: []llm.ContentPart{llm.Text(s.replies[i]), llm.ReasoningPart{Raw: []byte(raw)}},
+		Usage:   llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, ReasoningTokens: 3},
+	}, nil
+}
+
+func TestRunReasoningAdvancedUsesLenientThreshold(t *testing.T) {
+	// A thinking model re-issues the SAME action while its reasoning trace advances.
+	// The strict maxRepeats=2 would kill at iter 3; the lenient maxReasoningRepeats=6
+	// must let it run to the cap instead. read_file (not list_dir) to keep the spiral
+	// detector out of it.
+	sp := &scriptedRz{replies: []string{"read_file x"}, advancing: true}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome == KilledRepeat {
+		t.Fatalf("Outcome = KilledRepeat — advancing reasoning should defer to maxReasoningRepeats, not strict maxRepeats")
+	}
+	if res.Outcome != HitCap {
+		t.Fatalf("Outcome = %q, want %q (ran to cap under the lenient threshold)", res.Outcome, HitCap)
+	}
+	for _, s := range res.Steps[1:] { // turn 1 has no prior trace to compare.
+		if !s.ReasoningAdvanced {
+			t.Errorf("step %d ReasoningAdvanced = false, want true", s.Iter)
+		}
+	}
+}
+
+func TestRunReasoningFrozenUsesStrictThreshold(t *testing.T) {
+	// A frozen reasoning trace (unchanged bytes every turn) is a real stall: the
+	// detector must fall back to the strict maxRepeats and kill, exactly as it does
+	// for a non-thinking model.
+	sp := &scriptedRz{replies: []string{"read_file x"}, advancing: false}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledRepeat {
+		t.Fatalf("Outcome = %q, want %q (frozen trace -> strict threshold)", res.Outcome, KilledRepeat)
+	}
+}
+
+func TestRunCapturesStepTiming(t *testing.T) {
+	// Every step records a model-call duration; a tool turn also records a tool
+	// duration. The answer turn dispatches no tool, so its ToolMs stays 0.
+	res, _ := runScript(t, map[string]string{"go.mod": "module x\n"},
+		[]string{"list_dir .", "answer done"})
+	if len(res.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2", len(res.Steps))
+	}
+	if res.Steps[0].ToolMs < 0 || res.Steps[0].ModelMs < 0 {
+		t.Errorf("negative timing on tool turn: %+v", res.Steps[0])
+	}
+	if res.Steps[1].ToolMs != 0 {
+		t.Errorf("answer turn ToolMs = %d, want 0 (no tool dispatched)", res.Steps[1].ToolMs)
+	}
+}
+
 func TestRunRespectsConfigMaxIterations(t *testing.T) {
 	// A model that never answers, with distinct non-list_dir actions so neither
 	// no-progress detector fires — OUR configured cap (3), not DefaultMaxIterations,

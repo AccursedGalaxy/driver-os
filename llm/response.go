@@ -13,11 +13,16 @@ const (
 
 // Usage reports token accounting for a request. CachedTokens is the portion of
 // PromptTokens served from a prompt cache, where the provider reports it.
+// ReasoningTokens is the portion of CompletionTokens the model spent on hidden
+// reasoning (thinking models: Gemini, o-series, DeepSeek). It is a SUBSET of
+// CompletionTokens — already billed inside it — so never add it to a total; it
+// is broken out only to see where completion spend goes.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	CachedTokens     int
+	ReasoningTokens  int
 }
 
 // Response is a provider-agnostic generation result. Raw holds the underlying

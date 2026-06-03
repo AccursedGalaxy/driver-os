@@ -137,6 +137,10 @@ func Ollama(model string) *Provider {
 func (p *Provider) Name() string                   { return p.name }
 func (p *Provider) Capabilities() llm.Capabilities { return p.caps }
 
+// Model is the requested model slug (e.g. "openai/gpt-5.5"). It is the caller's
+// label for a run transcript; the actually-served model rides on Response.Model.
+func (p *Provider) Model() string { return p.model }
+
 // Generate runs a single non-streaming completion.
 func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response, error) {
 	params, reqOpts := p.buildParams(req)
@@ -479,6 +483,7 @@ func usageFrom(u openai.CompletionUsage) llm.Usage {
 		CompletionTokens: int(u.CompletionTokens),
 		TotalTokens:      int(u.TotalTokens),
 		CachedTokens:     int(u.PromptTokensDetails.CachedTokens),
+		ReasoningTokens:  int(u.CompletionTokensDetails.ReasoningTokens),
 	}
 }
 

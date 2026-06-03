@@ -30,13 +30,16 @@ import (
 
 // RunNative executes the agent against a tool-capable provider. Its signature and
 // RunResult match Run exactly, so a caller swaps loops without other changes.
-func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
+func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
+	// (P1 spine) Same run-identity stamping as Run: ID + wall-clock on every exit path.
+	runID, startedAt := newRunID(), time.Now()
+	defer func() { stampRun(out, runID, startedAt) }()
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
 		maxIter = DefaultMaxIterations

@@ -205,7 +205,7 @@ func TestGenerateParsesResponse(t *testing.T) {
 			"id": "chatcmpl-1",
 			"model": "test-model-resolved",
 			"choices": [{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello there"}}],
-			"usage": {"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":4}}
+			"usage": {"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2}}
 		}`)
 	})
 
@@ -229,7 +229,7 @@ func TestGenerateParsesResponse(t *testing.T) {
 	if resp.FinishReason != llm.FinishStop {
 		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, llm.FinishStop)
 	}
-	want := llm.Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14, CachedTokens: 4}
+	want := llm.Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14, CachedTokens: 4, ReasoningTokens: 2}
 	if resp.Usage != want {
 		t.Errorf("Usage = %+v, want %+v", resp.Usage, want)
 	}

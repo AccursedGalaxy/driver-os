@@ -175,6 +175,16 @@ type Step struct {
 	Observation string    // the tool result fed back (empty on the answer turn).
 	Grounded    bool      // had any tool returned a real observation by end of this step.
 	Usage       llm.Usage // token accounting for THIS turn's model call.
+	// ModelMs/ToolMs split the turn's wall-clock so provider latency and tool
+	// execution can be told apart (a 25s `run` vs a 25s slow model look identical
+	// in iteration counts). ToolMs is 0 on the answer turn (no tool dispatched).
+	ModelMs int64
+	ToolMs  int64
+	// ReasoningAdvanced is true when this turn's (opaque) provider reasoning trace
+	// DIFFERED from the previous turn's — a thinking model still moving even if its
+	// visible action repeats. It selects the lenient tight-loop threshold; see
+	// maxReasoningRepeats.
+	ReasoningAdvanced bool
 }
 
 // RunResult is the structured outcome of a Run: the typed Outcome, the answer
@@ -183,6 +193,15 @@ type Step struct {
 // whether a case ran against an immutable fixture or the live repo, so the
 // working dir travels with the result instead of being implicit.
 type RunResult struct {
+	// ID is a stable, time-sortable identifier for this run ("<YYYYMMDD-HHMMSS>-<hex>"),
+	// stamped by Run/RunNative. It is the spine: a transcript, an eval Trial, a council
+	// AgentTrace, and a commit-msg dogfood record can all reference the SAME run by ID
+	// instead of each re-embedding their own copy.
+	ID string
+	// StartedAt/EndedAt bound the run's wall-clock (stamped by the loop). Distinct from
+	// the per-step ModelMs/ToolMs, which sum only time spent IN model calls and tools.
+	StartedAt  time.Time
+	EndedAt    time.Time
 	Task       string
 	Root       string  // the dir the sandbox was rooted at (Config.Root).
 	Outcome    Outcome // how the run ended.
@@ -384,13 +403,18 @@ func checkIsolation(cfg Config) *RunResult {
 	return nil
 }
 
-func Run(ctx context.Context, cfg Config) (*RunResult, error) {
+func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
+	// Stamp the run identity + wall-clock bounds on whatever result we return, from
+	// every exit path, without threading it through each one (P1 spine: a run is
+	// addressable by ID). Registered after the pre-run refusal, which never ran.
+	runID, startedAt := newRunID(), time.Now()
+	defer func() { stampRun(out, runID, startedAt) }()
 
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
@@ -429,6 +453,11 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	var lastAction, lastVerb string
 	repeats := 0
 	sameVerb := 0
+	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
+	// ReasoningPart.Raw). A thinking model whose trace keeps changing while its
+	// visible action repeats gets the lenient tight-loop threshold (maxReasoningRepeats);
+	// a frozen or absent trace falls back to the strict maxRepeats. See the repeat detector.
+	var lastReasoning string
 
 	// (P5) Stagnant-observation state + the last-run-failed flag the verification
 	// fallback reads. lastRunFP is the fingerprint of the most recent failing `run`
@@ -488,12 +517,14 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		// possibly-shrunk transcript we carry forward.
 		var resp *llm.Response
 		var err error
+		modelStart := time.Now()
 		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
 			System:      system,
 			Messages:    messages,
 			Temperature: &temp,
 			MaxTokens:   maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
 		})
+		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
 			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
@@ -524,9 +555,16 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		// The model's turn becomes part of the state we carry forward (P1).
 		messages = append(messages, llm.Assistant(reply))
 
+		// (P5) Did the model's hidden reasoning move this turn? Compare the opaque
+		// trace to the previous turn's BEFORE updating the tracker. Empty trace
+		// (non-thinking model) counts as not-advanced, so it keeps the strict threshold.
+		reasoning := reasoningTrace(resp)
+		reasoningAdvanced := reasoning != "" && reasoning != lastReasoning
+		lastReasoning = reasoning
+
 		// The harness DISPOSES: we parse the proposed action ourselves (P2, P7).
 		verb, arg := parseAction(reply, cfg.Tools)
-		step := Step{Iter: i, Reply: reply, Verb: verb, Arg: arg, Usage: resp.Usage}
+		step := Step{Iter: i, Reply: reply, Verb: verb, Arg: arg, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced}
 
 		// ---- Principle 5: a done-signal the model can emit. ----
 		if verb == "answer" {
@@ -566,10 +604,18 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		}
 
 		// ---- Principle 5: TWO no-progress detectors. ----
-		// (a) tight loop: the same action (verb+arg) repeated.
+		// (a) tight loop: the same action (verb+arg) repeated. Two thresholds: a
+		// thinking model whose reasoning ADVANCED this turn re-issues the same visible
+		// action while its chain of thought moves (read -> think -> think -> act), so the
+		// strict maxRepeats=2 false-kills it mid-thought; give it maxReasoningRepeats
+		// before cutting. Frozen or absent reasoning is a real stall -> strict threshold.
 		if verb+" "+arg == lastAction {
 			repeats++
-			if repeats >= maxRepeats {
+			threshold := maxRepeats
+			if reasoningAdvanced {
+				threshold = maxReasoningRepeats
+			}
+			if repeats >= threshold {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", lastAction, repeats)
@@ -600,7 +646,9 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		lastVerb = verb
 
 		// ACT: run the named tool. The model only chose it; we execute it (P2).
+		toolStart := time.Now()
 		observation := dispatch(loopCtx, cfg.Tools, verb, arg)
+		step.ToolMs = time.Since(toolStart).Milliseconds()
 
 		// A successful tool observation means the model has now seen REAL external
 		// state this run — anything it answers from here is grounded, so worth
@@ -893,6 +941,23 @@ func buildSystemPrompt(tools map[string]Tool) string {
 
 // ---- small helpers ----
 
+// reasoningTrace concatenates the opaque provider reasoning blobs (ReasoningPart.Raw)
+// on a response, in order. It is compared turn-to-turn ONLY for equality — the loop
+// never interprets the bytes (Gemini's is an encrypted thought signature). Empty when
+// the model emitted no reasoning trace (a non-thinking model).
+func reasoningTrace(resp *llm.Response) string {
+	if resp == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range resp.Content {
+		if rp, ok := p.(llm.ReasoningPart); ok {
+			b.Write(rp.Raw)
+		}
+	}
+	return b.String()
+}
+
 // addUsage sums two Usage values field-by-field so RunResult.Usage accumulates
 // the whole run's token cost.
 func addUsage(a, b llm.Usage) llm.Usage {
@@ -901,6 +966,7 @@ func addUsage(a, b llm.Usage) llm.Usage {
 		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
 		TotalTokens:      a.TotalTokens + b.TotalTokens,
 		CachedTokens:     a.CachedTokens + b.CachedTokens,
+		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
 	}
 }
 
