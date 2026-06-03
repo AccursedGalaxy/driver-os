@@ -9,16 +9,18 @@ decision.
 
 ## Supported providers
 
-| Provider          | Adapter         | Env var              |
-|-------------------|-----------------|----------------------|
-| OpenAI            | `openaicompat`  | `OPENAI_API_KEY`     |
-| OpenRouter        | `openaicompat`  | `OPENROUTER_API_KEY` |
-| X.AI (Grok)       | `openaicompat`  | `X_AI_API_KEY`       |
-| Local (Ollama, …) | `openaicompat`  | — (keyless)          |
-| Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  |
+| Provider          | Adapter         | Env var              | `-provider` value | Status |
+|-------------------|-----------------|----------------------|-------------------|--------|
+| OpenAI            | `openaicompat`  | `OPENAI_API_KEY`     | `openai`          | ✅ |
+| OpenRouter        | `openaicompat`  | `OPENROUTER_API_KEY` | `openrouter`      | ✅ |
+| X.AI (Grok)       | `openaicompat`  | `X_AI_API_KEY`       | `xai`             | ✅ |
+| Local (Ollama, …) | `openaicompat`  | — (keyless)          | `ollama`          | ✅ |
+| Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | —                 | 🚧 not yet wired |
 
-Four of the five speak the OpenAI Chat Completions wire format, so a single
-adapter covers them; Claude uses its native API (in a later build step).
+The first four speak the OpenAI Chat Completions wire format, so a single adapter
+covers them, and `cmd/agent` can select any of them with `-provider`. Claude is
+designed to use its native API (DESIGN.md, decision 3) but the `anthropic` adapter
+is **not built yet** — the CLI cannot target it.
 
 ## Quick start
 
@@ -55,6 +57,40 @@ answer instead of re-exploring.
 go run ./cmd/agent -task "What module path does this project declare?"
 go run ./cmd/agent -task "What is this project's module path?"  # recalls from run 1
 go run ./cmd/agent -memory=false ...                            # disable memory
+```
+
+### Driving it from scripts
+
+`cmd/agent` obeys the Unix contract, so it composes in a pipe, a Makefile, or CI
+(full contract in [CLI-SCRIPTABLE.md](CLI-SCRIPTABLE.md)):
+
+- **`-format text|json|ndjson`** — `text` (default) prints the answer + a `SUMMARY`
+  line for humans; `json` emits one result object; `ndjson` streams one event per
+  turn ending in a terminal `result` event. **stdout is the data channel; the live
+  trace and banners always go to stderr**, so `agent -format=json … | jq .answer`
+  just works.
+- **Exit codes carry the outcome**: `0` answered · `2` unverified · `3` resource
+  cap (iterations/wall/context) · `4` stuck (a loop detector fired) · `5`
+  provider/transport error · `6` refused on policy · `1` setup error. Branch on
+  `$?` to retry, escalate, or give up.
+- **`-provider` / `-model`** — pick the backend and model on the command line
+  instead of via env (the `*_MODEL` vars still work as defaults; the flag wins).
+- **`-task -`** — read the task from stdin: `cat issue.md | agent -task -`.
+- **`-review` non-interactively** — `-approve interactive|policy|never` decides a
+  gated `run` (policy = auto-allow the safe allowlist, block the rest), and
+  `-review-action prompt|commit|discard|keep` decides the diff at the end.
+  Interactive prompts use `/dev/tty`, so they coexist with `-task -` and never
+  pollute stdout; with no terminal an interactive policy fails fast instead of
+  hanging.
+
+```sh
+# machine-readable, fully unattended:
+echo "what is the module path?" \
+  | agent -task - -format=json -provider=openrouter -model=openai/gpt-4o-mini
+# stream progress events, keep only the final result:
+agent -format=ndjson -task "run the tests, report failures" | jq -c 'select(.type=="result")'
+# scripted edit: auto-allow safe commands, leave the diff unstaged for inspection:
+agent -review -approve=policy -review-action=keep -task "fix the failing test"
 ```
 
 Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored — delete to
