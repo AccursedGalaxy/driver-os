@@ -759,3 +759,44 @@ func TestRunNativeRepeatDetectorOnStructuredArgs(t *testing.T) {
 		t.Errorf("Outcome = %q, want KilledRepeat", res.Outcome)
 	}
 }
+
+func TestRunNativeReasoningAdvanceEscapesRepeatDetector(t *testing.T) {
+	// The Gemini fix: a THINKING model re-issues the same visible action across turns
+	// while its (opaque) reasoning advances — that's hidden progress, not a tight
+	// loop, so it must NOT be killed at maxRepeats. Same read_file 3×, each with a
+	// DIFFERENT reasoning trace, then the model answers: the run reaches Answered
+	// instead of KilledRepeat. (Contrast TestRunNativeRepeatDetectorOnStructuredArgs,
+	// where the identical call carries no reasoning and IS killed.)
+	call := structuredCall("c", "read_file", map[string]any{"path": "f.txt"})
+	turns := [][]llm.ContentPart{
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"a"}]`)}, call},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"b"}]`)}, call},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"c"}]`)}, call},
+		{llm.Text("the bug is in percent.go")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered — advancing reasoning is progress, not a tight loop", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeFrozenReasoningStillKilled(t *testing.T) {
+	// The other half: a reasoning model whose action AND reasoning both froze (the
+	// identical block byte-for-byte every turn) is genuinely stalled and must still
+	// trip KilledRepeat — the leniency is only for reasoning that actually moves.
+	frozen := llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"same"}]`)}
+	call := structuredCall("c", "read_file", map[string]any{"path": "f.txt"})
+	turns := [][]llm.ContentPart{{frozen, call}, {frozen, call}, {frozen, call}, {frozen, call}}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledRepeat {
+		t.Errorf("Outcome = %q, want KilledRepeat — frozen reasoning is a real stall", res.Outcome)
+	}
+}

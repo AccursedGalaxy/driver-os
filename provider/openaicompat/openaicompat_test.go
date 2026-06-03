@@ -97,6 +97,68 @@ func TestGenerateToolCallRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReasoningDetailsRoundTrip locks in the Gemini fix: a thinking model returns
+// `reasoning_details` (an encrypted "thought signature" on the assistant message),
+// the adapter must (1) surface it as an llm.ReasoningPart and (2) replay it
+// VERBATIM on the assistant turn when that turn is re-sent — OpenRouter requires
+// the block sequence to match the original outputs, and dropping the encrypted
+// blob makes Gemini lose its chain of thought across tool calls and spiral.
+func TestReasoningDetailsRoundTrip(t *testing.T) {
+	const reasoning = `[{"type":"reasoning.encrypted","data":"ENC_BLOB","format":"google-gemini-v1","id":"call_1","index":0}]`
+
+	var gotBody map[string]any
+	p := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","model":"m","choices":[{"finish_reason":"tool_calls","message":{
+			"role":"assistant","content":null,
+			"tool_calls":[{"id":"call_1","type":"function","function":{"name":"run","arguments":"{\"command\":\"go test\"}"}}],
+			"reasoning_details":`+reasoning+`}}],"usage":{}}`)
+	})
+
+	// (1) parse: the response surfaces a ReasoningPart carrying the raw block.
+	resp, err := p.Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.User("go")}})
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	var got string
+	for _, part := range resp.Content {
+		if rp, ok := part.(llm.ReasoningPart); ok {
+			got = string(rp.Raw)
+		}
+	}
+	if got == "" {
+		t.Fatalf("response carried no ReasoningPart; content=%#v", resp.Content)
+	}
+
+	// (2) replay: re-sending that assistant turn must put reasoning_details back on
+	// the wire, with the encrypted data and id/index/format intact.
+	_, err = p.Generate(context.Background(), llm.Request{Messages: []llm.Message{
+		llm.User("go"),
+		{Role: llm.RoleAssistant, Parts: resp.Content},
+		llm.ToolResultMsg("call_1", "ok", false),
+	}})
+	if err != nil {
+		t.Fatalf("Generate (replay) error: %v", err)
+	}
+	var asst map[string]any
+	for _, mm := range gotBody["messages"].([]any) {
+		if m := mm.(map[string]any); m["role"] == "assistant" {
+			asst = m
+		}
+	}
+	rd, ok := asst["reasoning_details"].([]any)
+	if !ok || len(rd) != 1 {
+		t.Fatalf("replayed assistant message lacks reasoning_details array: %v", asst["reasoning_details"])
+	}
+	block := rd[0].(map[string]any)
+	if block["data"] != "ENC_BLOB" || block["type"] != "reasoning.encrypted" ||
+		block["format"] != "google-gemini-v1" || block["id"] != "call_1" {
+		t.Errorf("replayed reasoning block mangled: %v", block)
+	}
+}
+
 func TestGenerateEmptyToolCallArgsSerializeAsObject(t *testing.T) {
 	// Replaying an assistant tool call that had NO arguments must put "{}" on the
 	// wire, never "" — the arguments field is a JSON string and an empty string is

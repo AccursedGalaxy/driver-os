@@ -68,6 +68,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	// a 4-turn spiral. lastTurnSig dedupes whole turns; navRun counts consecutive
 	// list_dir-only turns.
 	var lastTurnSig string
+	var lastReasoningSig string // (P5) the prior turn's reasoning fingerprint — see the repeat detector.
 	repeats, navRun := 0, 0
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
@@ -194,8 +195,28 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 		//     a single turn that fans out N parallel list_dir calls is ONE nav turn,
 		//     not N — so real parallel exploration is never mistaken for a spiral.
 		sig := turnSignature(calls, cfg.Tools)
+		// A repeat counts toward the tight-loop kill ONLY if the model's reasoning
+		// also didn't advance. A thinking model (Gemini) re-issues the SAME visible
+		// action across turns while its encrypted chain of thought moves forward — the
+		// action repeats but real, hidden progress is happening, and it converges given
+		// room (the Gemini repofix diagnosis: instakilling at maxRepeats=2 was a false
+		// positive). A non-reasoning model returns no reasoning, so reasoningSig is ""
+		// every turn and this reduces to the old action-only detector exactly. A
+		// reasoning model that has TRULY stalled (its trace froze too) still trips it;
+		// the iteration cap + wall-clock + failing-run/list_dir detectors remain the
+		// backstops for a thinking model that wanders without ever stalling its trace.
+		reasoningSig := reasoningSignature(resp.Content)
 		if sig == lastTurnSig { // (a)
-			if repeats++; repeats >= maxRepeats {
+			// Pick the threshold by whether the model is actively reasoning: a turn
+			// whose reasoning trace MOVED gets the lenient ceiling (hidden progress —
+			// don't false-kill it mid-thought), a frozen or absent trace gets the strict
+			// one (a true tight loop). Either way the spiral is bounded — the lenient
+			// ceiling still cuts a 20x re-read long before the iteration cap.
+			limit := maxRepeats
+			if reasoningSig != lastReasoningSig {
+				limit = maxReasoningRepeats
+			}
+			if repeats++; repeats >= limit {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
@@ -205,6 +226,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			repeats = 0
 		}
 		lastTurnSig = sig
+		lastReasoningSig = reasoningSig
 
 		if allCallsListDir(calls) { // (b)
 			if navRun++; navRun >= noProgressWindow {
@@ -399,6 +421,23 @@ func compactJSON(raw json.RawMessage) string {
 		return buf.String()
 	}
 	return string(raw)
+}
+
+// reasoningSignature fingerprints a turn's opaque reasoning trace (llm.ReasoningPart,
+// e.g. OpenRouter `reasoning_details`) so the tight-loop detector can distinguish
+// "same action, NEW thought" (a thinking model still working) from "same action,
+// same thought" (a genuine stall). It is empty when the model returned no reasoning,
+// which makes the repeat detector behave identically to the action-only version for
+// non-reasoning providers. The raw bytes are used verbatim — the content is opaque,
+// so any change at all counts as the reasoning having moved.
+func reasoningSignature(parts []llm.ContentPart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if rp, ok := p.(llm.ReasoningPart); ok {
+			b.Write(rp.Raw)
+		}
+	}
+	return b.String()
 }
 
 // turnSignature is the deterministic per-turn dedupe key for the no-progress
