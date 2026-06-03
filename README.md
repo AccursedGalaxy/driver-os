@@ -132,10 +132,30 @@ Notes:
 
 ## Status
 
-Build order (see DESIGN.md, decision 11). **Done:** core types + registry, the
-`openaicompat` adapter (chat + `iter.Seq2` streaming), normalized errors,
-end-to-end tested. **Next:** native `anthropic` adapter → tools (self-contained,
-dual schema) → `Runner` (tool-exec loop) → comparison/fan-in harness.
+The original library build order (DESIGN.md, decision 11) is **complete**: core
+types + registry, the `openaicompat` adapter (chat + `iter.Seq2` streaming), the
+native `anthropic` adapter, self-contained dual-schema tools, the `Runner`
+tool-exec loop, and the comparison/fan-in harness — all end-to-end tested.
+
+On top of that foundation the project has grown into an agent-harness research
+platform:
+
+- **Agent loop** (`cmd/agent`) — think→act→observe over the sandbox tools, with
+  cross-run memory ([mneme](https://github.com/AccursedGalaxy/mneme)),
+  reasoning-trace round-tripping, per-turn timing, and stuck-detection backed by
+  a build-diagnostics feed (see `CODE-INTELLIGENCE.md`).
+- **Sandbox** (`SANDBOX.md`, `SESSION.md`) — one effect boundary, three isolation
+  tiers (local / docker-runc / docker-gVisor), plus a long-lived process host and
+  stateful shell sessions.
+- **Eval harness** (`eval/`) — multiple suites including a dogfood corpus
+  regression scored against real human verdicts (see `DOGFOOD.md`).
+- **Council** (`COUNCIL.md`) — adversarial multi-model review (author ↔ critic ↔
+  referee) plus a structured consult/Q&A mode; every run recorded as dogfood
+  corpus.
+- **Dogfood integrations** — `cmd/commit-msg` (commit-message generator) and
+  `cmd/issue-bot`.
+
+The open research backlog lives in `HARD-PROBLEMS.md`.
 
 ## Develop
 

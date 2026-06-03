@@ -73,14 +73,21 @@ System-prompt placement (top-level for Claude, message-role for OpenAI), exact
 `Chunk` shape (text delta + tool-call deltas + terminal usage), and `.env` loading
 are implementation details resolved inside the adapters.
 
-## Build order (decision 11 = A, thin vertical slice)
+## Build order (decision 11 = A, thin vertical slice) — ✅ complete
 
-1. **Slice (this cut):** `llm` core types + `Registry`; `openaicompat` chat
-   (non-streaming); `cmd/playground` proving a real round-trip against OpenRouter
-   and X.AI (the keys present in `.env`). End-to-end tested.
-2. Streaming (`iter.Seq2`) on `openaicompat`.
-3. `anthropic` native adapter.
-4. Tools (self-contained, dual schema) surfaced in responses.
-5. `Runner` — tool-exec loop.
-6. Comparison / fan-in harness (merge adapter, race/compare N providers).
+All six original slices shipped and are end-to-end tested:
+
+1. ✅ `llm` core types + `Registry`; `openaicompat` chat (non-streaming);
+   `cmd/playground` proving a real round-trip against OpenRouter and X.AI.
+2. ✅ Streaming (`iter.Seq2`) on `openaicompat`.
+3. ✅ `anthropic` native adapter.
+4. ✅ Tools (self-contained, dual schema) surfaced in responses.
+5. ✅ `Runner` — tool-exec loop.
+6. ✅ Comparison / fan-in harness (merge adapter, race/compare N providers).
+
+Work since then has built an agent-harness research platform on this core —
+the agent loop with cross-run memory, the sandbox isolation tiers
+(`SANDBOX.md`, `SESSION.md`), the eval + dogfood harness (`DOGFOOD.md`), and
+the council adversarial-review feature (`COUNCIL.md`). The open research
+backlog is tracked in `HARD-PROBLEMS.md`.
 ```
