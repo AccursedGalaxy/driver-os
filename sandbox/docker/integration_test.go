@@ -64,6 +64,22 @@ func TestConformanceDocker(t *testing.T) {
 	})
 }
 
+// TestSessionConformanceDocker holds the docker Session to the SAME stateful
+// contract as the local Session — cwd/env persist across `docker exec` calls,
+// sessions are isolated, etc. This is the real proof the shell-wrapper survives a
+// genuinely stateless `docker exec` (busybox ash in the container), not just the
+// host shell.
+func TestSessionConformanceDocker(t *testing.T) {
+	requireDocker(t)
+	sandboxtest.RunSessionConformance(t, func(t *testing.T, dir string) (sandbox.Sessioner, func()) {
+		sb, err := New(context.Background(), dir, Options{})
+		if err != nil {
+			t.Fatalf("docker.New: %v", err)
+		}
+		return sb, func() { _ = sb.Close() }
+	})
+}
+
 // TestNetworkNoneBlocksEgress proves --network none (the default) actually stops
 // outbound traffic — the core containment property for untrusted code (criterion
 // #3). With no interface but loopback, any connect to a routable IP fails.

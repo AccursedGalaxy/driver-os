@@ -189,10 +189,20 @@ type Config struct {
 	Model   llm.Provider    // required: the (context) -> text engine.
 	Sandbox sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
 	Memory  mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
-	Tools   map[string]Tool // optional: nil = DefaultTools(Sandbox).
-	Task    string          // required: the goal.
-	Root    string          // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
-	Obs     Observer        // optional: live progress sink; nil = silent.
+
+	// VerifySandbox is the sandbox the CLOSING gates (VerifyCmd/DiagnoseCmd) run on,
+	// when it must differ from Sandbox. nil ⇒ Sandbox (the historical behavior; every
+	// session-off caller, incl. all eval sweeps, leaves it nil). It exists for the
+	// -session mode: the model's `run` tool acts through a STATEFUL session
+	// (Sandbox), but the verification commands must run in a clean context — a model
+	// that `cd`s away, or `export`s something odd, must not bend `go build ./...` or
+	// the diagnostics feed. Both still hit the same warm container, so there is no
+	// cache cost. See ../SESSION.md.
+	VerifySandbox sandbox.Sandbox
+	Tools         map[string]Tool // optional: nil = DefaultTools(Sandbox).
+	Task          string          // required: the goal.
+	Root          string          // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
+	Obs           Observer        // optional: live progress sink; nil = silent.
 
 	// MinIsolation is the SAFETY PRECONDITION (P2/§5): the weakest sandbox isolation
 	// this run will tolerate. Before the first model call, Run/RunNative refuse with
@@ -680,11 +690,22 @@ const finishNudgeNative = "[hint: your last build/test run passed and you haven'
 // client slots behind, leaving the loops' surfacing logic untouched. A "" command, an
 // infra failure to even start it, or a clean build all yield clean=true and no report
 // — we never fabricate a build error out of an infrastructure fault (P6).
+// verifySandbox is the sandbox the closing verification/diagnostics commands run
+// on: VerifySandbox when set, else Sandbox. The split lets -session route the
+// model's `run` tool through a stateful session while these trust-critical gates
+// run in a clean context (see Config.VerifySandbox / ../SESSION.md).
+func (c Config) verifySandbox() sandbox.Sandbox {
+	if c.VerifySandbox != nil {
+		return c.VerifySandbox
+	}
+	return c.Sandbox
+}
+
 func diagnoseSource(ctx context.Context, cfg Config, timeout time.Duration) (report string, clean bool) {
 	if cfg.DiagnoseCmd == "" {
 		return "", true
 	}
-	out, err := runOp(ctx, cfg.Sandbox, cfg.DiagnoseCmd, timeout)
+	out, err := runOp(ctx, cfg.verifySandbox(), cfg.DiagnoseCmd, timeout)
 	if err != nil || !isRunFailure(out) {
 		return "", true
 	}
@@ -715,7 +736,7 @@ func upgradeIfVerified(cfg Config, res *RunResult, runTimeout time.Duration) *Ru
 	// the run ended because the wall-clock budget (loop ctx) just expired — otherwise
 	// a HitDeadline on already-correct code could never be upgraded. Bounded by runOp's
 	// own timeout so it can't itself hang.
-	out, err := runOp(context.Background(), cfg.Sandbox, cfg.VerifyCmd, runTimeout)
+	out, err := runOp(context.Background(), cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
 	if err == nil && !isRunFailure(out) {
 		res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, cfg.VerifyCmd)
 		res.Outcome = Answered
@@ -742,7 +763,7 @@ func upgradeIfVerified(cfg Config, res *RunResult, runTimeout time.Duration) *Ru
 // With neither configured it returns "" (the historical behavior: trust the answer).
 func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) string {
 	if cfg.VerifyCmd != "" {
-		out, err := runOp(ctx, cfg.Sandbox, cfg.VerifyCmd, runTimeout)
+		out, err := runOp(ctx, cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
 		if err != nil { // couldn't even start it — we cannot confirm success.
 			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err)
 		}

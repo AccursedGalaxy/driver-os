@@ -25,6 +25,18 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// TestSessionConformance runs the shared Session contract against the local
+// backend (always, no daemon). It is the parity baseline for the docker session.
+func TestSessionConformance(t *testing.T) {
+	sandboxtest.RunSessionConformance(t, func(t *testing.T, dir string) (sandbox.Sessioner, func()) {
+		sb, err := New(dir)
+		if err != nil {
+			t.Fatalf("local.New: %v", err)
+		}
+		return sb, func() { _ = sb.Close() }
+	})
+}
+
 func newTest(t *testing.T) (*Sandbox, string) {
 	t.Helper()
 	root := t.TempDir()
