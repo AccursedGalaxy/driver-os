@@ -323,6 +323,32 @@ type Config struct {
 	// red mid-flight, so the feed must NOT nag after the first edit, only once the model is
 	// clearly not converging. 0 = off (DiagnoseCmd is also required to arm).
 	DiagnoseAfterEdits int
+
+	// NavSpiralWindow overrides the explore-spiral detector's threshold — the number
+	// of consecutive `list_dir` calls (even with different args) that ends the run as
+	// KilledSpiral. 0 = the default noProgressWindow. It exists for the OBSERVE-only
+	// agent whose whole job is to survey a tree: a read-only critic legitimately does
+	// a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep before reading, which is
+	// 4 listings in a row and would trip the default detector before it critiques
+	// anything (council code mode, COUNCIL.md slice 4 / objection O7). Raising it for
+	// that caller is an OPT-IN relaxation — every other caller (issue-bot, eval, plan
+	// mode) leaves it 0 and keeps the strict default, so the harness is not weakened.
+	NavSpiralWindow int
+
+	// AnswerNudgeWindow arms a near-cap answer-forcer (native loop) for an OBSERVE-ONLY
+	// agent: when > 0 and the run is within this many turns of the iteration cap, a
+	// one-time hint tells the model to stop using tools and give its final answer NOW.
+	// It is the observe-only sibling of FinishNudgeWindow: that finisher is gated on a
+	// green `run` and stable files, which a read-only agent (no `run`, no edits) never
+	// has — so it can never fire for a critic. DOGFOOD (council slice 4): a code critic
+	// over a repo issued a read_file/search every single turn and NEVER emitted a
+	// no-tool-call answer turn, hitting the cap with zero output on every budget tried —
+	// the native loop only terminates on a text answer the model wouldn't produce on its
+	// own. This nudge manufactures the answer attempt. It fires ONLY when the toolset is
+	// observe-only (isObserveOnly — an allowlist of read-only built-ins, fail-closed);
+	// an effectful/coding run leaves it inert and uses FinishNudgeWindow instead, so a
+	// nudged premature "done" can never mask unverified broken work. 0 = off.
+	AnswerNudgeWindow int
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -379,6 +405,10 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	runTimeout := cfg.RunTimeout
 	if runTimeout <= 0 {
 		runTimeout = defaultRunTimeout
+	}
+	spiralWindow := cfg.NavSpiralWindow
+	if spiralWindow <= 0 {
+		spiralWindow = noProgressWindow
 	}
 	if cfg.Tools == nil {
 		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
@@ -558,7 +588,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		// (paging a file, stepping a pipeline) are real progress.
 		if verb == "list_dir" && verb == lastVerb {
 			sameVerb++
-			if sameVerb >= noProgressWindow {
+			if sameVerb >= spiralWindow {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d list_dir calls in a row — switch to run or read_file, or answer", sameVerb)
@@ -694,6 +724,13 @@ const finishNudgeText = "\n\n[hint: your last build/test run passed and you have
 const finishNudgeNative = "[hint: your last build/test run passed and you haven't edited any files for several turns — " +
 	"the task may already be complete. If it is, FINISH NOW: reply with your final answer as plain text and do NOT call a tool. " +
 	"If something still remains, keep working.]"
+
+// answerNudgeNative is the near-cap answer-forcer hint (see Config.AnswerNudgeWindow)
+// for an observe-only agent that has no build signal to gate the finisher on. It
+// tells the model to stop reading and answer from what it has, because an unanswered
+// run wastes the whole budget.
+const answerNudgeNative = "[hint: you are almost out of turns. STOP exploring now and give your FINAL answer as plain text — " +
+	"do NOT call another tool. Answer from what you have already read; an unanswered run produces nothing.]"
 
 // diagnoseSource runs cfg.DiagnoseCmd as slice 1's diagnostics SOURCE (a fast
 // compile/type check — go build/go vet via the sandbox) and reports its output and

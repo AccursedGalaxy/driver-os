@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"strings"
 	"testing"
@@ -412,6 +413,86 @@ func TestRunNativeListDirSpiralAcrossTurns(t *testing.T) {
 	}
 	if res.Outcome != KilledSpiral {
 		t.Errorf("Outcome = %q (%s), want KilledSpiral", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeNavSpiralWindowRelaxes(t *testing.T) {
+	// NavSpiralWindow raises the spiral threshold for an OBSERVE-only caller (the
+	// council code critic): the same four list_dir-only turns that trip the default
+	// detector (above) survive when the window is 8, then the run answers. The
+	// opt-in relaxation must not weaken the default for everyone else — the test
+	// above proves the default still fires.
+	files := map[string]string{"a/x": "1", "b/x": "1", "c/x": "1", "d/x": "1"}
+	turns := [][]llm.ContentPart{
+		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("2", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("3", "list_dir", map[string]any{"path": "c"})},
+		{structuredCall("4", "list_dir", map[string]any{"path": "d"})},
+		{llm.Text("[]")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10, NavSpiralWindow: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered — NavSpiralWindow=8 should not kill 4 list_dir turns", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeAnswerNudgeForcesAnswer(t *testing.T) {
+	// DOGFOOD slice 4: an observe-only critic that calls a tool EVERY turn never
+	// emits a no-tool-call answer turn and hits the cap with no output. AnswerNudgeWindow
+	// injects a near-cap "stop and answer" hint; this script reads on every turn until
+	// the nudge arrives, then answers — proving the nudge converts a would-be hit_cap
+	// into Answered. With the window OFF (default) the same script hits the cap.
+	// Distinct files each turn so the tight-repeat detector (same verb+arg) doesn't
+	// fire before the nudge — this models a critic genuinely reading new files.
+	files := map[string]string{"f0": "a", "f1": "a", "f2": "a", "f3": "a", "f4": "a", "f5": "a"}
+	mkTurns := func() [][]llm.ContentPart {
+		turns := [][]llm.ContentPart{}
+		for i := 0; i < 6; i++ {
+			turns = append(turns, []llm.ContentPart{structuredCall("r", "read_file", map[string]any{"path": fmt.Sprintf("f%d", i)})})
+		}
+		return append(turns, []llm.ContentPart{llm.Text("[]")})
+	}
+	nudged := func(reqs []llm.Request) bool {
+		for _, req := range reqs {
+			for _, m := range req.Messages {
+				if m.Role == llm.RoleUser && strings.Contains(m.Text(), "STOP exploring now") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	// Observe-only toolset (no run/write/edit): the nudge is SAFE and fires.
+	ro := DefaultTools(sbWith(t, files), time.Second)
+	delete(ro, "run")
+	delete(ro, "write_file")
+	delete(ro, "edit_file")
+	ns := &nativeScript{turns: mkTurns()}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Tools: ro, Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered with AnswerNudgeWindow set", res.Outcome, res.Reason)
+	}
+	if !nudged(ns.calls) {
+		t.Error("observe-only + AnswerNudgeWindow: the answer-forcing hint was never injected")
+	}
+
+	// O2 safety gate: a FULL toolset (has run/write/edit) with no verify gate must NOT
+	// fire the nudge — else a coding caller's premature "done" would be accepted unchecked.
+	ns2 := &nativeScript{turns: mkTurns()}
+	_, err = RunNative(context.Background(), Config{Model: ns2, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nudged(ns2.calls) {
+		t.Error("full toolset without a verify gate must NOT receive the answer nudge (O2 safety)")
 	}
 }
 

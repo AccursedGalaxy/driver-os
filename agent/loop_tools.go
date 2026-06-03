@@ -45,6 +45,10 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	if maxTok <= 0 {
 		maxTok = DefaultMaxTokens
 	}
+	spiralWindow := cfg.NavSpiralWindow
+	if spiralWindow <= 0 {
+		spiralWindow = noProgressWindow
+	}
 	runTimeout := cfg.RunTimeout
 	if runTimeout <= 0 {
 		runTimeout = defaultRunTimeout
@@ -52,6 +56,16 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	if cfg.Tools == nil {
 		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
 	}
+
+	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
+	// that can't have left work half-done, so a forced "stop and answer" can't mask an
+	// unverified broken state. We do NOT extend it to verified coding runs — VerifyLastRun
+	// misses a passed-then-edited-broken run, and VerifyCmd-without-VerifyContinue would
+	// burn the repair turns (dogfood slice 4, round 3, O1/O2). isObserveOnly is an
+	// ALLOWLIST (every tool is a known read-only built-in) so it FAILS CLOSED: a custom
+	// effectful tool the harness doesn't recognize makes the run not-observe-only and the
+	// nudge stays out (O3). Coding runs use FinishNudgeWindow instead.
+	answerNudgeOK := isObserveOnly(cfg.Tools)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 
@@ -93,6 +107,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	lastRunPassed := false
 	lastEditIter := 0
 	finishNudged := false
+	answerNudged := false
 
 	start := time.Now() // (P5) wall-clock budget anchor; see MaxWallClock.
 	// A deadline-bound context so a slow IN-FLIGHT call (a reasoning-heavy Generate,
@@ -229,7 +244,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 		lastReasoningSig = reasoningSig
 
 		if allCallsListDir(calls) { // (b)
-			if navRun++; navRun >= noProgressWindow {
+			if navRun++; navRun >= spiralWindow {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d list_dir-only turns in a row — switch to run/read_file, or answer", navRun)
@@ -340,11 +355,39 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			messages = append(messages, llm.User(finishNudgeNative))
 			finishNudged = true
 		}
+
+		// Unconditional near-cap answer-forcer for an observe-only agent (no build
+		// signal to gate on). Fires at most once, leaving a turn to act. See
+		// Config.AnswerNudgeWindow (council code critic).
+		if !answerNudged && cfg.AnswerNudgeWindow > 0 && answerNudgeOK && i < maxIter &&
+			maxIter-i <= cfg.AnswerNudgeWindow {
+			cfg.Obs.Note("near cap — nudging the agent to stop exploring and answer")
+			messages = append(messages, llm.User(answerNudgeNative))
+			answerNudged = true
+		}
 	}
 
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
 	return upgradeIfVerified(cfg, res, runTimeout), nil
+}
+
+// observeOnlyTools is the allowlist of built-in tools that cannot mutate state or
+// execute code. isObserveOnly checks membership against it rather than denylisting
+// known effect tools, so it FAILS CLOSED: a custom or future effectful tool the
+// harness doesn't know about is NOT observe-only (dogfood slice 4, round 3, O3).
+var observeOnlyTools = map[string]bool{"list_dir": true, "read_file": true, "search": true}
+
+// isObserveOnly reports whether EVERY tool in the set is a known read-only built-in.
+// An agent so equipped can't leave work half-done, so the near-cap answer-forcer is
+// safe to fire for it (see Config.AnswerNudgeWindow). Empty set => true (no effects).
+func isObserveOnly(tools map[string]Tool) bool {
+	for name := range tools {
+		if !observeOnlyTools[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // dispatchNative runs the tool a call names and turns any failure into an error
