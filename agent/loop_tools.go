@@ -82,6 +82,13 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 	edits := 0      // count of edit_file calls this session (the other churn signal).
 	nudged := false // the churn nudge fires at most once.
 
+	// (HP-4) Near-cap finisher state, mirroring the text loop: lastRunPassed is the
+	// "build/test green" half of the done-signal, lastEditIter the iteration of the
+	// most recent file mutation (0 = none), finishNudged the once-only latch.
+	lastRunPassed := false
+	lastEditIter := 0
+	finishNudged := false
+
 	start := time.Now() // (P5) wall-clock budget anchor; see MaxWallClock.
 	// A deadline-bound context so a slow IN-FLIGHT call (a reasoning-heavy Generate,
 	// a hung provider) is cancelled AT the budget — the between-turn check alone
@@ -227,6 +234,7 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			kill := false
 			if c.Name == "run" {
 				lastRunFailed = isRunFailure(obs)
+				lastRunPassed = isRunSuccess(obs) // (HP-4) the green/red of the most recent run.
 				if lastRunFailed {
 					failRuns++
 				}
@@ -242,6 +250,9 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 			}
 			if c.Name == "edit_file" {
 				edits++
+			}
+			if c.Name == "write_file" || c.Name == "edit_file" {
+				lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
 			}
 			// (P3) Churn nudge: fire once when EITHER wandering signal crosses the
 			// threshold — repeated failing test-runs (gpt-oss) OR many edit_file calls
@@ -265,6 +276,21 @@ func RunNative(ctx context.Context, cfg Config) (*RunResult, error) {
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
 			}
+		}
+
+		// (HP-4) Near-cap finisher, evaluated once per TURN (after all of this turn's
+		// tool results are in the transcript, so the conversation stays well-formed):
+		// when the budget is nearly spent AND the world looks settled — the last `run`
+		// was green and the files have been stable for the window — append a standalone
+		// hint manufacturing the finish ATTEMPT the spinner never makes. The model reads
+		// it next turn; the i < maxIter guard leaves it a turn to act. See
+		// Config.FinishNudgeWindow.
+		if !finishNudged && cfg.FinishNudgeWindow > 0 && i < maxIter &&
+			maxIter-i <= cfg.FinishNudgeWindow &&
+			lastRunPassed && i-lastEditIter >= cfg.FinishNudgeWindow {
+			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
+			messages = append(messages, llm.User(finishNudgeNative))
+			finishNudged = true
 		}
 	}
 

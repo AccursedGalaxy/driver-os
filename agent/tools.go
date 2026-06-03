@@ -737,6 +737,16 @@ func isRunFailure(obs string) bool {
 	return strings.HasPrefix(obs, "exit ") && !strings.HasPrefix(obs, "exit 0 ")
 }
 
+// isRunSuccess reports whether a formatRun observation is a clean `exit 0` — the
+// "build/test green" half of HP-4's near-cap finisher signal. It is deliberately
+// NOT the negation of isRunFailure: a `run` the sandbox couldn't even start yields
+// an "ERROR: …" observation (P6), which is neither a non-zero exit NOR a success,
+// so BOTH predicates return false for it. The finisher must key on a real green
+// run, not on the mere absence of a red one.
+func isRunSuccess(obs string) bool {
+	return strings.HasPrefix(obs, "exit 0 ")
+}
+
 // runFingerprint reduces a formatRun observation to the parts that are STABLE
 // across identical re-runs, for the stagnant-observation detector's equality
 // check. It drops the "(<dur>)" parenthetical from the leading "exit <code> (...)"

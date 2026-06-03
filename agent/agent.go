@@ -260,6 +260,27 @@ type Config struct {
 	// the plain terminal gate would just record a non-pass. Bounded by MaxIterations;
 	// requires VerifyCmd.
 	VerifyContinue bool
+
+	// FinishNudgeWindow arms HP-4's near-cap FINISHER. When > 0, and the run is
+	// within this many turns of the iteration cap, AND the world looks SETTLED — the
+	// most recent `run` exited 0 (build/test green) and no file has been mutated
+	// (write_file/edit_file) for this many turns — a one-time hint is injected telling
+	// the model the task appears complete and to finish now (or say what remains). It
+	// manufactures the finish ATTEMPT the spinners never make: the gemini/grok runs
+	// that burn to the cap on ALREADY-GREEN code (hit_cap-but-passing), which
+	// upgradeIfVerified only rescues at the very end. The nudge is SAFE: the resulting
+	// finish still routes through verifyTermination, so a premature/false "done" is
+	// caught (and under VerifyContinue becomes more work, not a stop). Gated on a green
+	// `run` on purpose — with no build/test executed there is no grounded done-signal,
+	// so the finisher stays out and the cap/other detectors bound those runs. 0 = off.
+	//
+	// Eval-validated (selfhist, gemini-3.1-pro, window=3): it converts hit_cap-but-passing
+	// into clean `answered` (fired on the 2 settled trials, stayed out on the red-build
+	// one — 0 false-positives). NOTE the window governs WHAT it buys: a small window
+	// fires LATE (iter 27–29 of 30), so it cleans the OUTCOME SIGNAL but does not cut
+	// tokens — the run still reaches the cap. To cut spend, widen the window so it fires
+	// earlier (e.g. 8–10), trading against interrupting a model still doing real work.
+	FinishNudgeWindow int
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -347,6 +368,14 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 	failRuns := 0   // count of failing `run` results this session (a churn signal).
 	edits := 0      // count of edit_file calls this session (the other churn signal).
 	nudged := false // the churn nudge fires at most once.
+
+	// (HP-4) Near-cap finisher state. lastRunPassed is the "build/test green" half of
+	// the done-signal (the most recent `run` exited 0); lastEditIter is the iteration
+	// of the most recent file mutation (0 = none yet), so i-lastEditIter measures how
+	// long the files have been stable; finishNudged fires the hint at most once.
+	lastRunPassed := false
+	lastEditIter := 0
+	finishNudged := false
 
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
@@ -513,6 +542,7 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		// above can't see. Track it on the observation, not the action.
 		if verb == "run" {
 			lastRunFailed = isRunFailure(observation)
+			lastRunPassed = isRunSuccess(observation) // (HP-4) the green/red of the most recent run.
 			if lastRunFailed {
 				failRuns++
 			}
@@ -534,6 +564,9 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		if verb == "edit_file" {
 			edits++
 		}
+		if verb == "write_file" || verb == "edit_file" {
+			lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
+		}
 
 		// (P3) Churn nudge: fire once when EITHER signal of wandering crosses the
 		// threshold — repeated failing test-runs (the gpt-oss churn) OR many
@@ -543,6 +576,20 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 		if !nudged && cfg.ChurnNudgeRuns > 0 && (failRuns >= cfg.ChurnNudgeRuns || edits >= cfg.ChurnNudgeRuns) {
 			observation += churnNudge
 			nudged = true
+		}
+
+		// (HP-4) Near-cap finisher: when the budget is nearly spent AND the world looks
+		// settled — the last `run` was green and the files have been stable for the
+		// window — manufacture the finish ATTEMPT the spinner never makes. Appended to
+		// THIS observation so the model reads it next turn. One-time; the i < maxIter
+		// guard guarantees the model gets at least one more turn to act on it (a hint on
+		// the very last turn would be wasted). See Config.FinishNudgeWindow.
+		if !finishNudged && cfg.FinishNudgeWindow > 0 && i < maxIter &&
+			maxIter-i <= cfg.FinishNudgeWindow &&
+			lastRunPassed && i-lastEditIter >= cfg.FinishNudgeWindow {
+			observation += finishNudgeText
+			finishNudged = true
+			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 		}
 
 		// OBSERVE: the result — including any error — is appended as the next thing
@@ -566,6 +613,21 @@ func Run(ctx context.Context, cfg Config) (*RunResult, error) {
 const churnNudge = "\n\n[hint: the tests have failed several times. If you've been making incremental edits, " +
 	"stop and rewrite the whole file in ONE write_file with a complete, correct implementation — " +
 	"that is usually faster than chasing line-by-line edits, and avoids line-number drift.]"
+
+// finishNudgeText / finishNudgeNative are HP-4's one-time near-cap finisher hint
+// (see Config.FinishNudgeWindow): injected once a session is within the window of the
+// cap with a green last `run` and stable files. They differ ONLY in how each loop
+// finishes — the text loop answers with the `answer` verb, the native loop stops
+// calling tools and replies in plain text — so each names the right finish move for
+// its protocol. finishNudgeText is appended to a text observation (hence the leading
+// blank line); finishNudgeNative is a standalone user message (no leading newlines).
+const finishNudgeText = "\n\n[hint: your last build/test run passed and you haven't edited any files for several turns — " +
+	"the task may already be complete. If it is, FINISH NOW with `answer <one-line summary of what you did>`. " +
+	"If something still remains, say what and keep working.]"
+
+const finishNudgeNative = "[hint: your last build/test run passed and you haven't edited any files for several turns — " +
+	"the task may already be complete. If it is, FINISH NOW: reply with your final answer as plain text and do NOT call a tool. " +
+	"If something still remains, keep working.]"
 
 // upgradeIfVerified flips a non-Answered terminal outcome (a kill or the iteration
 // cap) to Answered when VerifyCmd actually passes (P5/HP-5). The verify command is
