@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,71 @@ func TestSessionConformanceDocker(t *testing.T) {
 		}
 		return sb, func() { _ = sb.Close() }
 	})
+}
+
+// TestProcessConformanceDocker holds the docker ProcessHost to the SAME contract
+// as local — the real proof that the `docker exec -i` stream-plumbing and the
+// pidfile-based in-container kill survive a genuinely containerized process, not
+// just a host child.
+func TestProcessConformanceDocker(t *testing.T) {
+	requireDocker(t)
+	sandboxtest.RunProcessConformance(t, func(t *testing.T, dir string) (sandbox.ProcessHost, func()) {
+		sb, err := New(context.Background(), dir, Options{})
+		if err != nil {
+			t.Fatalf("docker.New: %v", err)
+		}
+		return sb, func() { _ = sb.Close() }
+	})
+}
+
+// TestProcessKillReapsInContainer is the one that matters: it proves Kill actually
+// terminates the IN-CONTAINER process, not just the local `docker exec` client.
+// Killing the client alone would ORPHAN the in-container process (the documented
+// docker gotcha) — and the conformance suite couldn't catch that, because Wait
+// returns the moment the client dies regardless. Here we observe the real process
+// via pgrep before and after Kill.
+func TestProcessKillReapsInContainer(t *testing.T) {
+	requireDocker(t)
+	sb := newReal(t, t.TempDir(), Options{})
+	p, err := sb.StartProcess(context.Background(), sandbox.Command{Path: "sleep", Args: []string{"300"}})
+	if err != nil {
+		t.Fatalf("StartProcess(sleep): %v", err)
+	}
+	// Count "sleep" processes rather than presence: the container's keep-alive is
+	// itself `sleep infinity`, so our `sleep 300` is the +1. After Start there must
+	// be one more than the baseline; after Kill it must drop back.
+	base := countProc(t, sb, "sleep") - 1 // baseline excluding ours (the keep-alive).
+	if got := countProc(t, sb, "sleep"); got <= base {
+		_ = p.Kill()
+		t.Fatalf("our sleep is not running in the container after StartProcess (count=%d, base=%d)", got, base)
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for countProc(t, sb, "sleep") > base {
+		if time.Now().After(deadline) {
+			t.Fatal("in-container `sleep` still alive 10s after Kill — it was ORPHANED, not reaped")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// countProc returns how many processes named exactly `name` run inside the
+// container (procps `pgrep -x` is in the sandbox image).
+func countProc(t *testing.T, sb *Sandbox, name string) int {
+	t.Helper()
+	res, err := sb.Exec(context.Background(), sandbox.Command{
+		Path: "sh", Args: []string{"-c", "pgrep -x " + name + " | wc -l"},
+	})
+	if err != nil {
+		t.Fatalf("pgrep Exec: %v", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(res.Stdout)))
+	if err != nil {
+		t.Fatalf("parse pgrep count %q: %v", res.Stdout, err)
+	}
+	return n
 }
 
 // TestNetworkNoneBlocksEgress proves --network none (the default) actually stops

@@ -25,6 +25,7 @@ package sandbox
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"time"
 )
@@ -193,4 +194,61 @@ type Sessioner interface {
 type Session interface {
 	Exec(ctx context.Context, cmd Command) (*Result, error)
 	Close() error
+}
+
+// ProcessHost is an OPTIONAL capability a backend may add: starting a LONG-LIVED
+// process and holding its streams open, the counterpart to Exec's
+// run-to-completion. Exec captures a finished command's output; a process host
+// keeps stdin/stdout live for the process's whole lifetime — the shape an
+// interactive server (a language server spoken to over stdio) needs. Discover it
+// the same way as Sessioner:
+//
+//	if ph, ok := sb.(sandbox.ProcessHost); ok {
+//		p, err := ph.StartProcess(ctx, cmd)
+//		// ... write p.Stdin(), read p.Stdout(), defer p.Kill() ...
+//	}
+//
+// It is deliberately PROTOCOL-AGNOSTIC: it ships bytes both ways and reaps the
+// process, nothing more. Message framing (e.g. LSP's Content-Length) belongs in
+// the client that drives it, not here — that is what keeps a single ProcessHost
+// able to host any long-lived tool, not just one.
+//
+// Like Exec, the process runs inside the backend's isolation boundary (the
+// container for docker; a host child confined to the workspace for local). Unlike
+// Exec, it does NOT route through the review gate — a long-lived server is trusted
+// infrastructure the harness starts, not a model-issued command, so the gated/
+// session wrappers do not forward this capability (a caller that needs it asks the
+// base sandbox, like the verification gate does).
+type ProcessHost interface {
+	// StartProcess launches cmd as a long-lived process and returns a handle to its
+	// live streams. cmd.Path/Args/Dir/Env are honored exactly as Exec honors them
+	// (Dir is fenced; Env is merged over the base). cmd.Stdin and cmd.Timeout are
+	// IGNORED: stdin is the live Process.Stdin() writer, not a fixed byte slice, and
+	// lifetime is caller-managed via Kill/Wait, not a deadline. err is reserved for
+	// the process failing to START; once started, its exit is observed via Wait.
+	StartProcess(ctx context.Context, cmd Command) (Process, error)
+}
+
+// Process is a running long-lived process started by a ProcessHost. The caller
+// drives stdin/stdout directly; stderr is drained for it (so the process can never
+// stall on a full stderr pipe — P4). Always Kill it (defer), even after a clean
+// exit, so the handle's resources are released.
+type Process interface {
+	// Stdin is the live input stream: bytes written here reach the process's stdin.
+	Stdin() io.Writer
+	// Stdout is the live output stream: the process's stdout. The caller is expected
+	// to read it continuously (a stdio protocol client parses it as it arrives).
+	Stdout() io.Reader
+	// StderrSnapshot returns a copy of the most recent stderr output (a bounded tail
+	// — older bytes are dropped). It is drained in the background so it never blocks
+	// the process; read it after a crash to learn why.
+	StderrSnapshot() []byte
+	// Wait blocks until the process exits and returns its exit status as an error
+	// (nil on a clean exit). It is MEMOIZED: safe to call repeatedly and from
+	// multiple goroutines, always returning the same result — so a crash-watcher
+	// (`go func(){ ...p.Wait()... }()`) and teardown can both call it.
+	Wait() error
+	// Kill terminates the process. It is idempotent: a second call, or a call after
+	// the process already exited, is a no-op.
+	Kill() error
 }

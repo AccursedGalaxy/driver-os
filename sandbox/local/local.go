@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/sandbox"
@@ -30,6 +31,12 @@ import (
 type Sandbox struct {
 	root     string // absolute, cleaned — the lexical fence boundary.
 	realRoot string // root with all symlinks resolved — the symlink-safe boundary.
+
+	// procMu guards procs: the live StartProcess children. The local backend has no
+	// container to reap on teardown (unlike docker's `rm -f`), so Close must kill any
+	// the caller forgot — else a crashed/abandoned run leaks host processes.
+	procMu sync.Mutex
+	procs  []sandbox.Process
 }
 
 // compile-time proof we satisfy the interface(s).
@@ -280,7 +287,25 @@ func (s *Sandbox) ListDir(ctx context.Context, path string) ([]sandbox.DirEntry,
 	return out, nil
 }
 
-// Close releases resources. The local backend holds none, so this is a no-op —
-// but callers should always Close so swapping in a container/VM backend (which
-// very much does need teardown) is a drop-in change.
-func (s *Sandbox) Close() error { return nil }
+// Close releases resources. For plain Exec the local backend holds none; but any
+// long-lived StartProcess children are killed here so an abandoned run can't leak
+// host processes (the local counterpart to docker's `rm -f`). Callers should still
+// Kill processes they own; this is the backstop.
+func (s *Sandbox) Close() error {
+	s.procMu.Lock()
+	procs := s.procs
+	s.procs = nil
+	s.procMu.Unlock()
+	for _, p := range procs {
+		_ = p.Kill()
+	}
+	return nil
+}
+
+// trackProcess records a live process so Close can reap it. Returns p for chaining.
+func (s *Sandbox) trackProcess(p sandbox.Process) sandbox.Process {
+	s.procMu.Lock()
+	s.procs = append(s.procs, p)
+	s.procMu.Unlock()
+	return p
+}

@@ -37,6 +37,18 @@ func TestSessionConformance(t *testing.T) {
 	})
 }
 
+// TestProcessConformance runs the shared ProcessHost contract against the local
+// backend (always, no daemon) — the parity baseline for the docker process host.
+func TestProcessConformance(t *testing.T) {
+	sandboxtest.RunProcessConformance(t, func(t *testing.T, dir string) (sandbox.ProcessHost, func()) {
+		sb, err := New(dir)
+		if err != nil {
+			t.Fatalf("local.New: %v", err)
+		}
+		return sb, func() { _ = sb.Close() }
+	})
+}
+
 func newTest(t *testing.T) (*Sandbox, string) {
 	t.Helper()
 	root := t.TempDir()
