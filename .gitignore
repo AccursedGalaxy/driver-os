@@ -7,6 +7,8 @@ CLAUDE.md
 *.out
 *.test
 __debug_bin*
+# stray root-level `go build` output (binary named after its cmd dir)
+/counciltest
 
 # agent long-term memory (mneme sqlite store)
 *.db
