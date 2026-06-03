@@ -1,4 +1,11 @@
-.PHONY: deps-clone sandbox-image sandbox-integration
+.PHONY: deps-clone sandbox-image sandbox-integration install-council
+
+# Install the council CLI onto PATH (~/.local/bin) so any Claude Code session's
+# /council skill can call `council` directly. Re-run after changing cmd/council
+# or the council/ packages. See COUNCIL.md and ~/.claude/skills/council/SKILL.md.
+install-council:
+	GOBIN=$(HOME)/.local/bin go install ./cmd/council
+	@echo ">> installed council to $(HOME)/.local/bin/council"
 
 # Build the trusted base image the docker sandbox backend runs untrusted commands
 # in (sh, rg, git, go). Tag matches docker.DefaultImage. Run once (and after any
