@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"os"
+)
 
 // Observer receives live progress events from a Run. It is the seam that lets
 // ONE loop serve two callers: the CLI passes a printing Observer to reproduce
@@ -25,19 +29,28 @@ func (nopObserver) Observation(string) {}
 func (nopObserver) Note(string)        {}
 func (nopObserver) Done(string)        {}
 
-// stdoutObserver prints the exact lines the old single-file loop printed, so
-// cmd/agent behaves identically after the extraction. oneLine lives in the
-// agent package, so the observer stays a thin formatter over it.
-type stdoutObserver struct{}
+// writerObserver prints the exact lines the old single-file loop printed, so
+// cmd/agent behaves identically after the extraction — but to a CALLER-CHOSEN
+// writer. The live trace is diagnostics, not the run's data payload, so the CLI
+// routes it to stderr (CLI-SCRIPTABLE.md D1: stdout is the data channel) while a
+// human still sees it on the terminal. oneLine lives in the agent package, so the
+// observer stays a thin formatter over it.
+type writerObserver struct{ w io.Writer }
+
+// NewWriterObserver returns an Observer that prints the live loop trace to w.
+func NewWriterObserver(w io.Writer) Observer { return writerObserver{w} }
 
 // NewStdoutObserver returns an Observer that prints the live loop trace to
-// stdout — the CLI's rendering of a Run.
-func NewStdoutObserver() Observer { return stdoutObserver{} }
+// stdout. Retained for callers that want the historical stdout rendering;
+// cmd/agent now routes the trace to stderr via NewWriterObserver (D1).
+func NewStdoutObserver() Observer { return writerObserver{os.Stdout} }
 
-func (stdoutObserver) Iteration(i, max int) {
-	fmt.Printf("\n========== iteration %d/%d ==========\n", i, max)
+func (o writerObserver) Iteration(i, max int) {
+	fmt.Fprintf(o.w, "\n========== iteration %d/%d ==========\n", i, max)
 }
-func (stdoutObserver) Model(reply string)      { fmt.Printf("model: %s\n", reply) }
-func (stdoutObserver) Observation(text string) { fmt.Printf("observation: %s\n", oneLine(text)) }
-func (stdoutObserver) Note(msg string)         { fmt.Println(msg) }
-func (stdoutObserver) Done(answer string)      { fmt.Printf("\n>>> DONE: %s\n", answer) }
+func (o writerObserver) Model(reply string) { fmt.Fprintf(o.w, "model: %s\n", reply) }
+func (o writerObserver) Observation(text string) {
+	fmt.Fprintf(o.w, "observation: %s\n", oneLine(text))
+}
+func (o writerObserver) Note(msg string)    { fmt.Fprintln(o.w, msg) }
+func (o writerObserver) Done(answer string) { fmt.Fprintf(o.w, "\n>>> DONE: %s\n", answer) }
