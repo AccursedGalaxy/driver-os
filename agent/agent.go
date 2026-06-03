@@ -404,17 +404,18 @@ func checkIsolation(cfg Config) *RunResult {
 }
 
 func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
+	// Stamp the run identity + wall-clock bounds on whatever result we return, from
+	// every exit path, without threading it through each one (P1 spine: a run is
+	// addressable by ID). Registered BEFORE the isolation refusal so even a refused
+	// run gets an ID — otherwise the default CLI transcript write fails on an empty ID.
+	runID, startedAt := newRunID(), time.Now()
+	defer func() { stampRun(out, runID, startedAt) }()
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
-	// Stamp the run identity + wall-clock bounds on whatever result we return, from
-	// every exit path, without threading it through each one (P1 spine: a run is
-	// addressable by ID). Registered after the pre-run refusal, which never ran.
-	runID, startedAt := newRunID(), time.Now()
-	defer func() { stampRun(out, runID, startedAt) }()
 
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
@@ -558,7 +559,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P5) Did the model's hidden reasoning move this turn? Compare the opaque
 		// trace to the previous turn's BEFORE updating the tracker. Empty trace
 		// (non-thinking model) counts as not-advanced, so it keeps the strict threshold.
-		reasoning := reasoningTrace(resp)
+		// reasoningSignature is shared with the native loop (loop_tools.go) — one helper.
+		reasoning := reasoningSignature(resp.Content)
 		reasoningAdvanced := reasoning != "" && reasoning != lastReasoning
 		lastReasoning = reasoning
 
@@ -940,23 +942,6 @@ func buildSystemPrompt(tools map[string]Tool) string {
 }
 
 // ---- small helpers ----
-
-// reasoningTrace concatenates the opaque provider reasoning blobs (ReasoningPart.Raw)
-// on a response, in order. It is compared turn-to-turn ONLY for equality — the loop
-// never interprets the bytes (Gemini's is an encrypted thought signature). Empty when
-// the model emitted no reasoning trace (a non-thinking model).
-func reasoningTrace(resp *llm.Response) string {
-	if resp == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, p := range resp.Content {
-		if rp, ok := p.(llm.ReasoningPart); ok {
-			b.Write(rp.Raw)
-		}
-	}
-	return b.String()
-}
 
 // addUsage sums two Usage values field-by-field so RunResult.Usage accumulates
 // the whole run's token cost.

@@ -31,15 +31,17 @@ import (
 // RunNative executes the agent against a tool-capable provider. Its signature and
 // RunResult match Run exactly, so a caller swaps loops without other changes.
 func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
+	// (P1 spine) Same run-identity stamping as Run, registered BEFORE the isolation
+	// refusal so a refused run is addressable too (its transcript write won't fail
+	// on an empty ID).
+	runID, startedAt := newRunID(), time.Now()
+	defer func() { stampRun(out, runID, startedAt) }()
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
-	// (P1 spine) Same run-identity stamping as Run: ID + wall-clock on every exit path.
-	runID, startedAt := newRunID(), time.Now()
-	defer func() { stampRun(out, runID, startedAt) }()
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
 		maxIter = DefaultMaxIterations
@@ -136,6 +138,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// returning the possibly-shrunk transcript we carry forward.
 		var resp *llm.Response
 		var err error
+		modelStart := time.Now()
 		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
 			System:      system,
 			Messages:    messages,
@@ -143,6 +146,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			Temperature: &temp,
 			MaxTokens:   maxTok,
 		})
+		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
 			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
@@ -163,12 +167,19 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
 
+		// (P5) Hidden-reasoning progress for THIS turn, computed once: it selects the
+		// tight-loop threshold below AND is recorded on every Step of the turn so a
+		// transcript can show when the lenient ceiling applied. Empty trace (a
+		// non-thinking model) => not advanced, so the detector stays strict.
+		reasoningSig := reasoningSignature(resp.Content)
+		reasoningAdvanced := reasoningSig != "" && reasoningSig != lastReasoningSig
+
 		calls := toolCalls(resp.Content)
 
 		// (P5) Termination: the model stopped calling tools and answered in prose.
 		if len(calls) == 0 {
 			answer := strings.TrimSpace(resp.Text())
-			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage})
+			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced})
 			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
@@ -223,7 +234,6 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// reasoning model that has TRULY stalled (its trace froze too) still trips it;
 		// the iteration cap + wall-clock + failing-run/list_dir detectors remain the
 		// backstops for a thinking model that wanders without ever stalling its trace.
-		reasoningSig := reasoningSignature(resp.Content)
 		if sig == lastTurnSig { // (a)
 			// Pick the threshold by whether the model is actively reasoning: a turn
 			// whose reasoning trace MOVED gets the lenient ceiling (hidden progress —
@@ -235,7 +245,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				limit = maxReasoningRepeats
 			}
 			if repeats++; repeats >= limit {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
@@ -248,7 +258,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 		if allCallsListDir(calls) { // (b)
 			if navRun++; navRun >= spiralWindow {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage)...)
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d list_dir-only turns in a row — switch to run/read_file, or answer", navRun)
 				return upgradeIfVerified(cfg, res, runTimeout), nil
@@ -260,12 +270,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// ACT: run every requested call in order, appending one result per id (a
 		// missing result for any call would make the next request malformed).
 		usageForTurn := resp.Usage // attribute the turn's usage to its first step only.
+		modelMsForTurn := modelMs  // likewise the model-call latency: a per-turn cost.
 		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
 		for _, c := range calls {
-			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn}
-			usageForTurn = llm.Usage{}
+			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced}
+			usageForTurn, modelMsForTurn = llm.Usage{}, 0
 
+			toolStart := time.Now()
 			obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
+			step.ToolMs = time.Since(toolStart).Milliseconds()
 			if !isErr {
 				grounded = true // (P4) the model has now seen real external state.
 			}
@@ -516,14 +529,17 @@ func allCallsListDir(calls []llm.ToolCallPart) bool {
 // turnSteps builds the trace steps for a turn killed by a detector BEFORE
 // dispatch (so they carry no observation): one Step per call, the turn's usage
 // attributed to the first, all flagged with the run's current grounded state.
-func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage) []Step {
+func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage, modelMs int64, reasoningAdvanced bool) []Step {
 	steps := make([]Step, len(calls))
 	for i, c := range calls {
-		u := llm.Usage{}
+		// The turn's single model call produced ALL its calls — attribute its usage
+		// and latency to the first step only (a per-turn cost, not per-call), like the
+		// live tool loop does. ReasoningAdvanced is a turn property, so every step carries it.
+		u, mm := llm.Usage{}, int64(0)
 		if i == 0 {
-			u = usage
+			u, mm = usage, modelMs
 		}
-		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u}
+		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u, ModelMs: mm, ReasoningAdvanced: reasoningAdvanced}
 	}
 	return steps
 }

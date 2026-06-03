@@ -881,3 +881,92 @@ func TestRunNativeFrozenReasoningStillKilled(t *testing.T) {
 		t.Errorf("Outcome = %q, want KilledRepeat — frozen reasoning is a real stall", res.Outcome)
 	}
 }
+
+// slowNative is a tool-calling provider that sleeps before replying, so a test can
+// assert the native loop actually MEASURES model latency (regression for the bug
+// where RunNative left ModelMs/ToolMs unset, zeroing the eval latency column on the
+// default path).
+type slowNative struct {
+	turns [][]llm.ContentPart
+	delay time.Duration
+	n     int
+}
+
+func (s *slowNative) Name() string                   { return "slow-native" }
+func (s *slowNative) Capabilities() llm.Capabilities { return llm.Capabilities{Tools: true} }
+func (s *slowNative) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("slow-native")
+}
+func (s *slowNative) Generate(_ context.Context, _ llm.Request) (*llm.Response, error) {
+	time.Sleep(s.delay)
+	i := s.n
+	if i >= len(s.turns) {
+		i = len(s.turns) - 1
+	}
+	s.n++
+	parts := s.turns[i]
+	fr := llm.FinishStop
+	for _, p := range parts {
+		if _, ok := p.(llm.ToolCallPart); ok {
+			fr = llm.FinishToolUse
+		}
+	}
+	return &llm.Response{Content: parts, FinishReason: fr, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}, nil
+}
+
+func TestRunNativeRecordsStepTiming(t *testing.T) {
+	// O1 regression: native runs (the default eval path) must record per-turn model
+	// latency and per-tool latency, not leave them zero.
+	sp := &slowNative{delay: 8 * time.Millisecond, turns: [][]llm.ContentPart{
+		{structuredCall("c1", "read_file", map[string]any{"path": "go.mod"})},
+		{llm.Text("done")},
+	}}
+	res, err := RunNative(context.Background(), Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}), Task: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) < 2 {
+		t.Fatalf("want >=2 steps, got %d", len(res.Steps))
+	}
+	if res.Steps[0].ModelMs <= 0 {
+		t.Errorf("tool-turn step ModelMs = %d, want >0 (native model latency not measured)", res.Steps[0].ModelMs)
+	}
+	// The answer turn dispatches no tool, so its ToolMs is 0.
+	last := res.Steps[len(res.Steps)-1]
+	if last.Verb == "answer" && last.ToolMs != 0 {
+		t.Errorf("answer-turn ToolMs = %d, want 0", last.ToolMs)
+	}
+	// Trial-style total latency is non-zero (what the eval column sums).
+	var total int64
+	for _, s := range res.Steps {
+		total += s.ModelMs + s.ToolMs
+	}
+	if total <= 0 {
+		t.Errorf("summed step latency = %d, want >0", total)
+	}
+}
+
+func TestRunNativeRecordsReasoningAdvanced(t *testing.T) {
+	// O2 regression: native steps must carry ReasoningAdvanced so a transcript shows
+	// when the lenient repeat threshold was in play. Two turns with DIFFERENT reasoning
+	// traces -> the second turn's step is flagged advanced.
+	turns := [][]llm.ContentPart{
+		{llm.ReasoningPart{Raw: []byte(`"t1"`)}, structuredCall("c1", "list_dir", map[string]any{"path": "."})},
+		{llm.ReasoningPart{Raw: []byte(`"t2"`)}, structuredCall("c2", "read_file", map[string]any{"path": "go.mod"})},
+		{llm.Text("done")},
+	}
+	res, _, _ := runNative(t, map[string]string{"go.mod": "module x\n"}, turns)
+	if len(res.Steps) < 2 {
+		t.Fatalf("want >=2 steps, got %d", len(res.Steps))
+	}
+	// Turn 2's step (read_file) had a reasoning trace differing from turn 1 -> advanced.
+	var readStep *Step
+	for i := range res.Steps {
+		if res.Steps[i].Verb == "read_file" {
+			readStep = &res.Steps[i]
+		}
+	}
+	if readStep == nil || !readStep.ReasoningAdvanced {
+		t.Errorf("read_file step ReasoningAdvanced not set: %+v", readStep)
+	}
+}
