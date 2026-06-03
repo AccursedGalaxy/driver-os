@@ -58,6 +58,21 @@ type ToolResultPart struct {
 
 func (ToolResultPart) isContentPart() {}
 
+// ReasoningPart carries a provider's OPAQUE reasoning trace for an assistant turn
+// (OpenRouter's `reasoning_details`), so the loop can replay it verbatim when it
+// re-sends that turn. It exists for ENCRYPTED reasoning that is STATEFUL: Gemini
+// returns its chain of thought as an encrypted "thought signature"
+// (reasoning.encrypted / google-gemini-v1) and its API requires that signature be
+// sent back on the following turn — without it the model is amnesiac across tool
+// calls and spirals (re-issuing the same action until a no-progress detector kills
+// it). Plaintext reasoning (e.g. deepseek's reasoning.text) is carried too, but is
+// re-derivable so dropping it is harmless; the encrypted kind is not. The harness
+// never INTERPRETS Raw — it only round-trips it, so the field stays a provider
+// black box.
+type ReasoningPart struct{ Raw json.RawMessage }
+
+func (ReasoningPart) isContentPart() {}
+
 // Text is a convenience constructor for a TextPart.
 func Text(s string) TextPart { return TextPart{Text: s} }
 

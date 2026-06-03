@@ -49,6 +49,18 @@ const (
 
 	maxRepeats = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
 
+	// maxReasoningRepeats is the LENIENT tight-loop threshold for a turn whose
+	// reasoning trace ADVANCED (a thinking model, e.g. Gemini). Such a model re-issues
+	// the same visible action across turns while its (encrypted) chain of thought
+	// moves forward — it uses a re-read as a "keep thinking" turn (read -> think ->
+	// think -> act), so the strict maxRepeats=2 false-kills it mid-thought (the Gemini
+	// regression: trace 0/5, repofix spiralling). Observed: it needs ~3-5 such turns to
+	// converge, so allow more before cutting — but STILL cut, because a genuinely stuck
+	// thinking model otherwise re-reads one file 20x and burns the whole budget to
+	// hit_cap (a 60K-token repofix spiral). Frozen reasoning (trace unchanged) is a real
+	// stall and falls back to the strict maxRepeats.
+	maxReasoningRepeats = 6
+
 	// maxStagnant is the (P5) stagnant-OBSERVATION detector: the SAME failing `run`
 	// result this many times KILLS the run, even when the actions producing it
 	// differ. The repeat/spiral detectors above key on the model's ACTION (same

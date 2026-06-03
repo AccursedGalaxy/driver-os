@@ -301,35 +301,54 @@ func toMessages(req llm.Request) []openai.ChatCompletionMessageParamUnion {
 	return out
 }
 
-// assistantMessage builds an assistant message, attaching any tool-call parts.
-// With no tool calls it is a plain text assistant message (the common case).
+// assistantMessage builds an assistant message, attaching any tool-call parts and
+// re-attaching the turn's reasoning trace. With no tool calls and no reasoning it
+// is a plain text assistant message (the common case).
 func assistantMessage(m llm.Message) openai.ChatCompletionMessageParamUnion {
 	var calls []openai.ChatCompletionMessageToolCallParam
+	var reasoning json.RawMessage
 	for _, p := range m.Parts {
-		if tc, ok := p.(llm.ToolCallPart); ok {
+		switch tp := p.(type) {
+		case llm.ToolCallPart:
 			// The wire field is a JSON STRING and must be valid JSON. A tool call
 			// with no arguments has empty Args; serialize that as "{}" (an empty
 			// object), never "" — an empty string is not valid JSON and a strict
 			// server rejects the replayed assistant turn.
-			args := string(tc.Args)
+			args := string(tp.Args)
 			if strings.TrimSpace(args) == "" {
 				args = "{}"
 			}
 			calls = append(calls, openai.ChatCompletionMessageToolCallParam{
-				ID: tc.ID,
+				ID: tp.ID,
 				Function: openai.ChatCompletionMessageToolCallFunctionParam{
-					Name:      tc.Name,
+					Name:      tp.Name,
 					Arguments: args,
 				},
 			})
+		case llm.ReasoningPart:
+			reasoning = tp.Raw
 		}
 	}
-	if len(calls) == 0 {
+	if len(calls) == 0 && len(reasoning) == 0 {
 		return openai.AssistantMessage(m.Text())
 	}
-	am := openai.ChatCompletionAssistantMessageParam{ToolCalls: calls}
+	am := openai.ChatCompletionAssistantMessageParam{}
+	if len(calls) > 0 {
+		am.ToolCalls = calls
+	}
 	if txt := m.Text(); txt != "" { // preserve any narration emitted alongside the calls.
 		am.Content.OfString = openai.String(txt)
+	}
+	// Replay the model's reasoning trace as the `reasoning_details` extra field
+	// (it's an OpenRouter extension absent from the OpenAI types). Decoded to a
+	// generic value so the SDK's encoder re-emits valid JSON regardless of how the
+	// provider ordered the object. This is what keeps Gemini's encrypted thought
+	// signature alive across tool calls — without it the model spirals (P5 kill).
+	if len(reasoning) > 0 {
+		var v any
+		if json.Unmarshal(reasoning, &v) == nil {
+			am.SetExtraFields(map[string]any{"reasoning_details": v})
+		}
 	}
 	return openai.ChatCompletionMessageParamUnion{OfAssistant: &am}
 }
@@ -427,6 +446,16 @@ func toResponse(cc *openai.ChatCompletion) *llm.Response {
 		choice := cc.Choices[0]
 		if choice.Message.Content != "" {
 			r.Content = append(r.Content, llm.Text(choice.Message.Content))
+		}
+		// Preserve any provider reasoning trace (OpenRouter `reasoning_details`, an
+		// untyped extra field) so the loop can replay it on this assistant turn.
+		// Gemini's is an ENCRYPTED thought signature it MUST see again to continue
+		// across tool calls — dropping it makes the model spiral (see llm.ReasoningPart).
+		// Captured raw and never interpreted.
+		// NOTE: gate on Raw(), not Valid() — the SDK stores extra (unmodeled) fields
+		// with a status that reports Valid()==false even when the raw JSON is present.
+		if raw := choice.Message.JSON.ExtraFields["reasoning_details"].Raw(); raw != "" && raw != "null" {
+			r.Content = append(r.Content, llm.ReasoningPart{Raw: json.RawMessage(raw)})
 		}
 		for _, tc := range choice.Message.ToolCalls {
 			r.Content = append(r.Content, llm.ToolCallPart{
