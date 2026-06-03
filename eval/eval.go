@@ -31,9 +31,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // Case is one task the harness can run against any model: the prompt, the
@@ -48,6 +50,14 @@ type Case struct {
 	Oracle   Oracle       // grades the finished run against ground truth (not self-report).
 	Protocol string       // "tools" (default) or "text".
 	Config   agent.Config // knob template (MaxIterations, MaxTokens, RunTimeout, Verify*, …).
+
+	// Tools, when non-nil, builds the agent's toolset from the per-trial sandbox.
+	// It is the seam for replaying a case under the PRODUCTION toolset of the binary
+	// it mirrors: commit-msg and issue-bot run ReadOnlyTools (no write/edit), not the
+	// full DefaultTools the loop falls back to — so without this a "review" case
+	// would be handed mutation tools it never has in production, and could behave
+	// (and be graded) unfaithfully. nil => the loop's DefaultTools.
+	Tools func(sb sandbox.Sandbox, runTimeout time.Duration) map[string]agent.Tool
 }
 
 // Model pairs a provider with the human-facing id used in the report. The

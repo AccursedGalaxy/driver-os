@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
@@ -81,6 +82,17 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	cfg.Task = c.Task
 	cfg.Root = dir
 	cfg.Obs = nil // silent: a trial yields data, not stdout (that's the Observer seam).
+
+	// Production-faithful toolset, when the case declares one — otherwise the loop
+	// falls back to DefaultTools. This binds the case's tool factory to THIS trial's
+	// sandbox (tools are sandbox-scoped, so the Case can only carry a factory).
+	if c.Tools != nil {
+		rt := cfg.RunTimeout
+		if rt <= 0 {
+			rt = 60 * time.Second
+		}
+		cfg.Tools = c.Tools(sb, rt)
+	}
 
 	// Pick the loop the same way cmd/agent does: native tool-calling when the
 	// provider supports it and the case didn't force text, else the text loop.
