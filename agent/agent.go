@@ -384,6 +384,21 @@ type Config struct {
 	// an effectful/coding run leaves it inert and uses FinishNudgeWindow instead, so a
 	// nudged premature "done" can never mask unverified broken work. 0 = off.
 	AnswerNudgeWindow int
+
+	// FinishTool names a first-class TERMINAL tool (native loop only): when the
+	// model calls a tool with this name, the turn ends cleanly as Answered with that
+	// call's "message" field as RunResult.Answer. It is the structured counterpart to
+	// the prose-termination done-signal (stop calling tools, reply in text) — for a
+	// caller whose whole turn IS "send a message" (duet's `say`), giving the model a
+	// real finish ACTION beats steering it toward "reply with no tool", which cheap
+	// models fight (they call a nonexistent `answer` tool or run `answer` as a shell
+	// command and burn the turn, then idle to the cap: DUET-DOGFOOD F1/N1/N2). Any
+	// non-finish calls in the same turn run first (a final cp/build is a legit last
+	// action). An explicit finish is a STRONGER done-signal than silence, so it skips
+	// the silence-reverification heuristic. Empty = no terminal tool (the default;
+	// every existing caller terminates on the prose path, unchanged). The named tool
+	// must still be present in Tools so it's advertised to the model.
+	FinishTool string
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the

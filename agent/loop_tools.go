@@ -35,7 +35,19 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// refusal so a refused run is addressable too (its transcript write won't fail
 	// on an empty ID).
 	runID, startedAt := newRunID(), time.Now()
-	defer func() { stampRun(out, runID, startedAt) }()
+	// (N1) Last prose the model produced this run, captured even on iterations that
+	// ALSO called tools (native termination only records prose on a no-tool turn).
+	// The defer salvages it as the answer when the run ends WITHOUT a clean answer —
+	// a hit_cap/killed turn often still narrated something useful, and a caller that
+	// relays the answer as a message (duet) should get that text, not silence
+	// (DUET-DOGFOOD N1). Outcome is untouched: this only fills an empty Answer.
+	var lastAssistantText string
+	defer func() {
+		if out != nil && out.Answer == "" && out.Outcome != Answered && lastAssistantText != "" {
+			out.Answer = lastAssistantText
+		}
+		stampRun(out, runID, startedAt)
+	}()
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
@@ -177,9 +189,27 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 		calls := toolCalls(resp.Content)
 
+		// (N1) Remember the latest non-empty prose, even when this turn also calls
+		// tools — the salvage source if the run never reaches a clean answer.
+		if txt := strings.TrimSpace(resp.Text()); txt != "" {
+			lastAssistantText = txt
+		}
+
 		// (P5) Termination: the model stopped calling tools and answered in prose.
 		if len(calls) == 0 {
 			answer := strings.TrimSpace(resp.Text())
+			// (FinishTool) An EMPTY no-tool-call turn is the model going silent. For a
+			// caller whose finish IS a message (duet's say), accepting it as a clean
+			// "answer" reintroduces the silent-turn failure through the prose path. While
+			// budget remains, reject it and nudge the model to finish via the finish tool
+			// instead. No FinishTool configured => the historical behavior (an empty
+			// answer is accepted), so no other caller is affected.
+			if answer == "" && cfg.FinishTool != "" && i < maxIter {
+				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+				messages = append(messages, llm.User(fmt.Sprintf("You ended your turn without saying anything. Use the %q tool to send a short message — that is how you finish your turn.", cfg.FinishTool)))
+				cfg.Obs.Note("empty finish — nudging to use the " + cfg.FinishTool + " tool")
+				continue
+			}
 			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced})
 			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
 			// when the model narrated intent, acknowledged failure, or hallucinated
@@ -215,6 +245,46 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P1) The assistant turn — carrying its tool-call parts — becomes state we
 		// re-send; the API requires the tool_calls to precede their results.
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+
+		// (FinishTool) First-class terminal finish: the model called the designated
+		// finish tool to deliberately end its turn (see Config.FinishTool). Any other
+		// calls in the same turn run first so a last cp/build still lands, then we
+		// terminate cleanly as Answered with the finish tool's message. An explicit
+		// finish is a stronger done-signal than silence, so unlike the prose path it
+		// skips verifyTermination (which exists to catch a model that merely went
+		// quiet). Usage/latency follow the per-turn convention: attributed to the
+		// first recorded step only.
+		if cfg.FinishTool != "" {
+			if fin := findCall(calls, cfg.FinishTool); fin != nil {
+				usageForFinish, modelMsForFinish := resp.Usage, modelMs
+				for _, c := range calls {
+					if c.ID == fin.ID {
+						continue
+					}
+					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced}
+					usageForFinish, modelMsForFinish = llm.Usage{}, 0
+					obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
+					if !isErr {
+						grounded = true
+					}
+					step.Grounded = grounded
+					step.Observation = obs
+					res.Steps = append(res.Steps, step)
+					cfg.Obs.Observation(obs)
+					messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
+				}
+				msg := finishToolMessage(*fin)
+				res.Steps = append(res.Steps, Step{Iter: i, Reply: msg, Verb: fin.Name, Arg: msg, Grounded: grounded, Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced})
+				res.Outcome, res.Answer = Answered, msg
+				cfg.Obs.Done(msg)
+				if grounded {
+					remember(ctx, cfg.Memory, scope, cfg.Task, msg)
+				} else if cfg.Memory != nil {
+					cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
+				}
+				return res, nil
+			}
+		}
 
 		// (P5) Two no-progress detectors, the same intent as the text loop but
 		// evaluated PER TURN (a native turn may legitimately fan out several calls):
@@ -458,6 +528,32 @@ func callArg(c llm.ToolCallPart, tools map[string]Tool) string {
 		return compactJSON(c.Args)
 	}
 	return bridgeArg(c)
+}
+
+// findCall returns the first call whose tool name matches, or nil. Used to spot a
+// FinishTool call in a turn that may also carry other (side-effecting) calls.
+func findCall(calls []llm.ToolCallPart, name string) *llm.ToolCallPart {
+	for i := range calls {
+		if calls[i].Name == name {
+			return &calls[i]
+		}
+	}
+	return nil
+}
+
+// finishToolMessage extracts the human-facing message a FinishTool call carries.
+// The canonical schema is {"message": "..."}; it falls back to the bridge "arg"
+// field so a tool registered without the structured schema still yields its text.
+func finishToolMessage(c llm.ToolCallPart) string {
+	var a struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(c.Args, &a) == nil {
+		if m := strings.TrimSpace(a.Message); m != "" {
+			return m
+		}
+	}
+	return strings.TrimSpace(bridgeArg(c))
 }
 
 // bridgeArg pulls the bridge schema's single "arg" string from a call's JSON

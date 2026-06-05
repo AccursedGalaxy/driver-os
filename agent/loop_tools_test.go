@@ -151,6 +151,106 @@ func TestRunNativeTextOnlyIsImmediateAnswer(t *testing.T) {
 	}
 }
 
+// sayTool is a minimal first-class finish tool, mirroring duet.SayTool (the agent
+// package can't import duet). It is wired as Config.FinishTool in the tests below.
+func sayTool() Tool {
+	return Tool{
+		Name:    "say",
+		Schema:  json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`),
+		RunJSON: func(_ context.Context, _ json.RawMessage) (string, error) { return "sent", nil },
+	}
+}
+
+func TestRunNativeFinishToolTerminatesAsAnswered(t *testing.T) {
+	// F1 fix: calling the designated finish tool ends the turn cleanly as Answered,
+	// with its message as the answer — no need to reply tool-call-free in prose.
+	sb := sbWith(t, nil)
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{structuredCall("c1", "say", map[string]any{"message": "hey partner, built the thing"})},
+	}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered", res.Outcome, res.Reason)
+	}
+	if res.Answer != "hey partner, built the thing" {
+		t.Errorf("Answer = %q", res.Answer)
+	}
+	if res.Iterations != 1 {
+		t.Errorf("Iterations = %d, want 1 (finished on the first turn)", res.Iterations)
+	}
+}
+
+func TestRunNativeFinishToolRunsSideEffectsFirst(t *testing.T) {
+	// A turn may carry a final write/build alongside `say`; the side effect must
+	// land before the turn terminates (N2: act-then-finish in one move).
+	sb := sbWith(t, nil)
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{{
+		structuredCall("c1", "write_file", map[string]any{"path": "out.txt", "content": "data"}),
+		structuredCall("c2", "say", map[string]any{"message": "dropped out.txt"}),
+	}}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered || res.Answer != "dropped out.txt" {
+		t.Fatalf("Outcome=%q Answer=%q", res.Outcome, res.Answer)
+	}
+	if got := readback(t, sb, "out.txt"); got != "data" {
+		t.Errorf("side-effect write did not land before finish: %q", got)
+	}
+}
+
+func TestRunNativeSalvagesProseOnHitCap(t *testing.T) {
+	// N1: a run that never finishes (hit_cap) but narrated prose alongside its tool
+	// calls should surface that prose as the answer, not empty silence — so a caller
+	// relaying it (duet) isn't handed nothing.
+	// Distinct turns each iteration so the tight-loop detector doesn't kill it first
+	// — we want it to genuinely run out the cap with prose left on the table.
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("reading the spec"), structuredCall("c1", "read_file", map[string]any{"path": "a.txt"})},
+		{llm.Text("checking the impl"), structuredCall("c2", "read_file", map[string]any{"path": "b.txt"})},
+		{llm.Text("still wiring it up, one sec"), structuredCall("c3", "read_file", map[string]any{"path": "c.txt"})},
+	}}
+	sb := sbWith(t, map[string]string{"a.txt": "1\n", "b.txt": "2\n", "c.txt": "3\n"})
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", MaxIterations: 3})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != HitCap {
+		t.Fatalf("Outcome = %q, want HitCap", res.Outcome)
+	}
+	if res.Answer != "still wiring it up, one sec" {
+		t.Errorf("salvaged Answer = %q, want the last prose", res.Answer)
+	}
+}
+
+func TestRunNativeEmptySilentFinishNudgedToFinishTool(t *testing.T) {
+	// With a FinishTool configured, an empty no-tool-call turn (the model going
+	// silent) must NOT be accepted as a clean answer: the loop nudges and the model
+	// finishes properly via the finish tool on the next turn.
+	sb := sbWith(t, nil)
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("")}, // empty silent finish — should be rejected
+		{structuredCall("c1", "say", map[string]any{"message": "ok here's my actual message"})},
+	}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered || res.Answer != "ok here's my actual message" {
+		t.Fatalf("Outcome=%q Answer=%q — empty finish should have been nudged to say", res.Outcome, res.Answer)
+	}
+}
+
 func TestRunNativeToolErrorIsObservation(t *testing.T) {
 	// A failing tool must not crash the loop: it becomes an ERROR observation and
 	// the run continues (P6). Since no tool succeeded, the run is NOT grounded.
