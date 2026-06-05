@@ -251,6 +251,54 @@ func TestRunNativeEmptySilentFinishNudgedToFinishTool(t *testing.T) {
 	}
 }
 
+func TestRunNativeReasoningOnlyEmptyTurnNotNudgedToFinish(t *testing.T) {
+	// A reasoning model (deepseek-v4-flash) routinely emits a THINK-ONLY turn —
+	// reasoning advanced, no text, no tool call — then acts on the next turn. That
+	// is mid-thought, NOT a finish attempt: the loop must NOT inject the say-nudge
+	// ("...use the say tool to finish your turn"), which mis-instructs a model that
+	// isn't done. It should carry the reasoning forward and continue silently.
+	sb := sbWith(t, nil)
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.ReasoningPart{Raw: json.RawMessage(`"planning my next move"`)}}, // think-only — must NOT be nudged
+		{structuredCall("c1", "say", map[string]any{"message": "done thinking, here it is"})},
+	}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered || res.Answer != "done thinking, here it is" {
+		t.Fatalf("Outcome=%q Answer=%q — think-only turn should continue silently to the say", res.Outcome, res.Answer)
+	}
+	// No request may carry the say-nudge: a reasoning-advanced empty turn is not
+	// silence, so the model must never have been told to wrap up.
+	for _, req := range ns.calls {
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "without saying anything") {
+				t.Fatalf("think-only turn was nudged to finish — found say-nudge in a request")
+			}
+		}
+	}
+	// The think-only turn's reasoning must be replayed (the thought trace is carried
+	// forward so the model can build on it), so the final request includes it.
+	last := ns.calls[len(ns.calls)-1]
+	var sawReasoning bool
+	for _, m := range last.Messages {
+		if m.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, p := range m.Parts {
+			if _, ok := p.(llm.ReasoningPart); ok {
+				sawReasoning = true
+			}
+		}
+	}
+	if !sawReasoning {
+		t.Errorf("reasoning from the think-only turn was not carried forward to the next request")
+	}
+}
+
 func TestRunNativeToolErrorIsObservation(t *testing.T) {
 	// A failing tool must not crash the loop: it becomes an ERROR observation and
 	// the run continues (P6). Since no tool succeeded, the run is NOT grounded.

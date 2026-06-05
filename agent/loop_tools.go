@@ -206,6 +206,20 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// answer is accepted), so no other caller is affected.
 			if answer == "" && cfg.FinishTool != "" && i < maxIter {
 				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+				// A reasoning model (deepseek-v4-flash via openaicompat) routinely emits a
+				// THINK-ONLY turn — reasoning advanced, but no text and no tool call yet —
+				// then acts on the next turn. That is mid-thought, NOT a finish attempt, so
+				// the say-nudge below mis-instructs a model that isn't done (and burns a
+				// round-trip telling it to wrap up). Carry the reasoning forward (it's
+				// already appended above, preserving the thought trace) and continue
+				// silently. The iteration cap still bounds it; advancing lastReasoningSig
+				// here means a turn whose trace then FROZEN reads as not-advanced next time
+				// and falls through to the genuine-silence nudge.
+				if reasoningAdvanced {
+					lastReasoningSig = reasoningSig
+					cfg.Obs.Note("empty turn — reasoning advanced, continuing")
+					continue
+				}
 				messages = append(messages, llm.User(fmt.Sprintf("You ended your turn without saying anything. Use the %q tool to send a short message — that is how you finish your turn.", cfg.FinishTool)))
 				cfg.Obs.Note("empty finish — nudging to use the " + cfg.FinishTool + " tool")
 				continue
