@@ -40,14 +40,20 @@ var agentScope = mneme.Scope{AgentID: "driver-os-agent"}
 // no extra configuration is needed. Memory is best-effort: with no key (or if
 // the store won't open) it returns nil and the agent simply runs without
 // cross-session recall — a missing memory is never a crash (Principle 6).
-func SetupMemory() (mneme.Memory, error) {
+func SetupMemory() (mneme.Memory, error) { return SetupMemoryAt(MemoryDBPath) }
+
+// SetupMemoryAt is SetupMemory with a caller-chosen store path, so multiple
+// agents can share ONE database (distinguished by MemoryScope) located wherever
+// the caller wants — e.g. a duet workspace, instead of the cwd default. Same
+// fail-soft contract: no key returns (nil, nil) and the agent runs statelessly.
+func SetupMemoryAt(dbPath string) (mneme.Memory, error) {
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if key == "" {
 		return nil, nil // no key -> run statelessly, not an error.
 	}
 	const base = "https://openrouter.ai/api/v1"
 
-	st, err := sqlite.Open(MemoryDBPath)
+	st, err := sqlite.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -106,13 +112,13 @@ func SetupMemory() (mneme.Memory, error) {
 // REAL state, don't trust prior text). Consolidate-on-write (see SetupMemory)
 // corrects facts that a LATER grounded run re-observes, but a fact no run has
 // revisited can still be stale — so the verify-with-tools framing stays.
-func recall(ctx context.Context, mem mneme.Memory, task string) string {
+func recall(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task string) string {
 	if mem == nil {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(ctx, memoryTimeout)
 	defer cancel()
-	hits, err := mem.Search(ctx, task, agentScope, 5)
+	hits, err := mem.Search(ctx, task, scope, 5)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory: recall failed (non-fatal):", err)
 		return ""
@@ -140,7 +146,7 @@ func recall(ctx context.Context, mem mneme.Memory, task string) string {
 // truly fire-and-forget without waiting anyway. The caller gates this on a
 // tool-verified answer (see Run), so we only pay the cost when there's
 // something worth keeping.
-func remember(ctx context.Context, mem mneme.Memory, task, answer string) {
+func remember(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task, answer string) {
 	if mem == nil {
 		return
 	}
@@ -149,7 +155,7 @@ func remember(ctx context.Context, mem mneme.Memory, task, answer string) {
 	written, err := mem.Add(ctx, []mneme.Message{
 		{Role: "user", Content: task},
 		{Role: "assistant", Content: answer},
-	}, agentScope)
+	}, scope)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "memory: store failed (non-fatal):", err)
 		return
@@ -157,6 +163,28 @@ func remember(ctx context.Context, mem mneme.Memory, task, answer string) {
 	if len(written) > 0 {
 		fmt.Printf("memory: stored %d new fact(s) for future runs\n", len(written))
 	}
+}
+
+// scopeOrDefault resolves the memory namespace for a run: an explicit
+// Config.MemoryScope when set, else the package default. This is what lets two
+// agents share one store without their facts bleeding together (each passes its
+// own scope, e.g. {AgentID: "adam"} vs {AgentID: "alex"}); a lone CLI run that
+// sets nothing keeps the historical single-scope behavior.
+func scopeOrDefault(s mneme.Scope) mneme.Scope {
+	if s == (mneme.Scope{}) {
+		return agentScope
+	}
+	return s
+}
+
+// withPersona prefixes an optional identity block onto the base system prompt,
+// so a caller can give the agent a stable character (Config.Persona) that leads
+// the tool-using instructions. Empty persona returns base unchanged.
+func withPersona(persona, base string) string {
+	if persona == "" {
+		return base
+	}
+	return persona + "\n\n" + base
 }
 
 // envOr returns the value of an environment variable, or a fallback when unset.

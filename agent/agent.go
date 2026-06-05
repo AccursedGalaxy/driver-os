@@ -221,6 +221,21 @@ type Config struct {
 	Sandbox sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
 	Memory  mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
 
+	// Persona is an optional identity block prepended to the system prompt — a
+	// stable character the agent keeps across runs (e.g. "You are Adam, an
+	// energetic builder…"). Empty = the bare tool-using harness prompt. It leads
+	// the prompt so identity frames the tool instructions; the task and recalled
+	// memory still follow. Used by multi-agent callers (see ../duet) to give two
+	// agents distinct voices on top of the same loop.
+	Persona string
+
+	// MemoryScope namespaces this run's long-term memory (mneme isolates facts per
+	// scope on both write and recall). The zero value falls back to the package
+	// default scope, preserving single-agent behavior. Set it to a per-agent scope
+	// (e.g. {AgentID: "adam"}) so several agents can share ONE store without their
+	// memories bleeding into each other.
+	MemoryScope mneme.Scope
+
 	// VerifySandbox is the sandbox the CLOSING gates (VerifyCmd/DiagnoseCmd) run on,
 	// when it must differ from Sandbox. nil ⇒ Sandbox (the historical behavior; every
 	// session-off caller, incl. all eval sweeps, leaves it nil). It exists for the
@@ -449,7 +464,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 3: context IS the state. Long-term memory from PAST runs
 	// (mneme) is surfaced into the system prompt before we think. The model gets
 	// what it learned before, but labelled as possibly-stale so it still verifies. ----
-	system := buildSystemPrompt(cfg.Tools) + recall(ctx, cfg.Memory, cfg.Task)
+	scope := scopeOrDefault(cfg.MemoryScope)
+	system := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools)) + recall(ctx, cfg.Memory, scope, cfg.Task)
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string
@@ -599,7 +615,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// tool-verified this run (P4) — otherwise we risk amplifying a guess or
 			// a stale recalled fact into a permanent one. ----
 			if grounded {
-				remember(ctx, cfg.Memory, cfg.Task, arg)
+				remember(ctx, cfg.Memory, scope, cfg.Task, arg)
 			} else if cfg.Memory != nil {
 				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 			}

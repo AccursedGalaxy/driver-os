@@ -77,7 +77,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (P1) State lives HERE; we re-send the whole conversation each turn.
 	messages := []llm.Message{llm.User("TASK: " + cfg.Task)}
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
-	system := nativeSystemPrompt() + recall(ctx, cfg.Memory, cfg.Task)
+	scope := scopeOrDefault(cfg.MemoryScope)
+	system := withPersona(cfg.Persona, nativeSystemPrompt()) + recall(ctx, cfg.Memory, scope, cfg.Task)
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
 	temp := 0.0
 
@@ -203,7 +204,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Outcome, res.Answer = Answered, answer
 			cfg.Obs.Done(answer)
 			if grounded {
-				remember(ctx, cfg.Memory, cfg.Task, answer)
+				remember(ctx, cfg.Memory, scope, cfg.Task, answer)
 			} else if cfg.Memory != nil {
 				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 			}
