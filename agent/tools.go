@@ -51,9 +51,9 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		},
 		"read_file": {
 			Name: "read_file",
-			Desc: "read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
+			Desc: "read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. It ALSO reads Go dependency / stdlib source read-only via the ABSOLUTE path go_doc prints on its `source:` line (e.g. \"/…/go/pkg/mod/…@v1.2.3/client.go:1-60\"). RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
 			// NativeDesc: behavior + selection only; the path/from/to schema fields own the range format.
-			NativeDesc: "Read a UTF-8 text file with line numbers, optionally just a line range (from/to). Use after list_dir confirms the path; prefer it over `run cat` for bounded, citable output. Returns the lines prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
+			NativeDesc: "Read a UTF-8 text file with line numbers, optionally just a line range (from/to). Use after list_dir confirms the path; prefer it over `run cat` for bounded, citable output. Also reads Go dependency/stdlib source read-only via the absolute path go_doc prints on its `source:` line. Returns the lines prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
 			Run:        func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
@@ -122,7 +122,7 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"pattern":{"type":"string","description":"a Rust-regex pattern to search for, e.g. retry|backoff. Case-insensitive unless it contains an uppercase letter."},` +
-				`"path":{"type":"string","description":"OPTIONAL directory or file (relative to the sandbox root) to narrow the search to; OMIT to search the whole project — the default, which keeps the docs in scope. Must stay within the root."}},` +
+				`"path":{"type":"string","description":"OPTIONAL directory or file to narrow the search to; OMIT to search the whole project — the default, which keeps the docs in scope. Relative paths must stay within the root; an ABSOLUTE path under the Go module cache / GOROOT (as shown by go_doc's source: line) searches that dependency's source read-only."}},` +
 				`"required":["pattern"]}`),
 			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
@@ -133,6 +133,46 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 					return "", fmt.Errorf("invalid search arguments: %v", err)
 				}
 				return searchOp(ctx, sb, a.Pattern, a.Path, runTimeout)
+			},
+		},
+		"go_doc": {
+			Name: "go_doc",
+			Desc: "look up Go documentation OR source for the standard library or ANY pinned dependency, straight from the installed toolchain + module cache — OFFLINE and at the EXACT version this project compiles against, so it never drifts the way web docs do. Use this instead of guessing an API or recalling it from memory: it is authoritative for stdlib (e.g. `strings.Builder`, `net/http`) AND deps (e.g. `github.com/openai/openai-go ChatCompletionNewParams`). ARG: optional flags, then a package import path, then an optional symbol — `-all` dumps the WHOLE package API, `-src` shows a symbol's actual SOURCE; e.g. `io.Copy`, `-src io.Copy`, `-all net/http`, `github.com/openai/openai-go/shared ChatModel`. RETURNS: the rendered docs (or source), then a `source: <dir>` line giving the on-disk path you can read_file/search for the full source (read-only).",
+			// NativeDesc: behavior + selection only; the package/symbol/all/src schema fields own the format.
+			NativeDesc: "Look up Go documentation or source for the standard library or any pinned dependency, from the installed toolchain + module cache — offline, at the exact version this project compiles against (no web drift). Use it instead of guessing an API or recalling it. Set `all` to dump the whole package API, `src` to show a symbol's actual source. Returns the rendered docs/source, then a `source: <dir>` line with the on-disk path you can read_file/search for the full source (read-only).",
+			Run:        func(ctx context.Context, arg string) (string, error) { return goDocArg(ctx, hostWorkspace(sb), arg) },
+
+			Schema: json.RawMessage(`{"type":"object","properties":{` +
+				`"package":{"type":"string","description":"the Go import path — stdlib like \"strings\" or \"net/http\", or a dependency like \"github.com/openai/openai-go\". Required."},` +
+				`"symbol":{"type":"string","description":"OPTIONAL symbol within the package, e.g. \"Builder\", \"Client.Do\", \"ChatCompletionNewParams\". Omit for the package overview."},` +
+				`"all":{"type":"boolean","description":"show the WHOLE package API (every exported symbol), like go doc -all. Omit for just the overview."},` +
+				`"src":{"type":"boolean","description":"show the symbol's actual SOURCE code, like go doc -src."}},` +
+				`"required":["package"]}`),
+			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Package string `json:"package"`
+					Symbol  string `json:"symbol"`
+					All     bool   `json:"all"`
+					Src     bool   `json:"src"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", fmt.Errorf("invalid go_doc arguments: %v", err)
+				}
+				if strings.TrimSpace(a.Package) == "" {
+					return "", fmt.Errorf("go_doc needs a package import path, e.g. \"strings\" or \"github.com/openai/openai-go\"")
+				}
+				var flags, target []string
+				if a.All {
+					flags = append(flags, "-all")
+				}
+				if a.Src {
+					flags = append(flags, "-src")
+				}
+				target = append(target, a.Package)
+				if s := strings.TrimSpace(a.Symbol); s != "" {
+					target = append(target, s)
+				}
+				return goDocRun(ctx, hostWorkspace(sb), flags, target)
 			},
 		},
 		"write_file": {
@@ -227,7 +267,13 @@ func toolListDir(ctx context.Context, sb sandbox.Sandbox, arg string) (string, e
 // the structured native handler (read straight from the `path` field): no arg
 // parsing here, just the directory listing and its bounds (P1).
 func listDirOp(ctx context.Context, sb sandbox.Sandbox, path string) (string, error) {
-	entries, err := sb.ListDir(ctx, path)
+	// An absolute path into the read-only Go source trees is listed host-side, the
+	// same routing read_file uses; relative paths stay in the workspace fence.
+	listFn := func() ([]sandbox.DirEntry, error) { return sb.ListDir(ctx, path) }
+	if abs, ok := goSourcePath(path); ok {
+		listFn = func() ([]sandbox.DirEntry, error) { return hostListDir(abs) }
+	}
+	entries, err := listFn()
 	if err != nil {
 		return "", explainPathErr(path, "directory", err) // (P3) errors are recovery instructions.
 	}
@@ -335,6 +381,12 @@ func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int
 // for the real fence. The local backend implements LimitedReader, so today's path
 // is the safe one.
 func readBounded(ctx context.Context, sb sandbox.Sandbox, path string) (data []byte, overCap bool, err error) {
+	// An absolute path into the read-only Go source trees (as surfaced by go_doc)
+	// is served host-side, so dependency/stdlib source is readable on every backend
+	// without punching a hole in the workspace fence. Relative paths never match.
+	if abs, ok := goSourcePath(path); ok {
+		return readHostFileBounded(abs)
+	}
 	if lr, ok := sb.(sandbox.LimitedReader); ok {
 		return lr.ReadFileLimit(ctx, path, maxFileBytes)
 	}
@@ -785,6 +837,12 @@ func searchOp(ctx context.Context, sb sandbox.Sandbox, pattern, path string, tim
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" { // (P3) name the shape rather than run an empty search.
 		return "", fmt.Errorf("search needs a pattern, e.g. `search retry|backoff` — it is matched as a regex from the project root")
+	}
+	// A `path` into the read-only Go source trees (e.g. a dependency's source dir
+	// from go_doc) searches host-side, so the agent can grep a dependency the same
+	// way it greps the project. Otherwise the path must stay inside the fence.
+	if abs, ok := goSourcePath(path); ok {
+		return hostSearch(ctx, pattern, abs, timeout)
 	}
 	cleanPath, err := validateSearchPath(path)
 	if err != nil {

@@ -479,7 +479,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 // execute code. isObserveOnly checks membership against it rather than denylisting
 // known effect tools, so it FAILS CLOSED: a custom or future effectful tool the
 // harness doesn't know about is NOT observe-only (dogfood slice 4, round 3, O3).
-var observeOnlyTools = map[string]bool{"list_dir": true, "read_file": true, "search": true}
+var observeOnlyTools = map[string]bool{"list_dir": true, "read_file": true, "search": true, "go_doc": true}
 
 // isObserveOnly reports whether EVERY tool in the set is a known read-only built-in.
 // An agent so equipped can't leave work half-done, so the near-cap answer-forcer is
