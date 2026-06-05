@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,6 +125,71 @@ func TestGoDocDependencyEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(body, "1| ") {
 		t.Errorf("dependency source read is not line-numbered:\n%s", body)
+	}
+}
+
+func TestSemverPick(t *testing.T) {
+	dirs := []string{
+		"/c/golang.org/x/sync@v0.9.0",
+		"/c/golang.org/x/sync@v0.20.0",
+		"/c/golang.org/x/sync@v0.18.0",
+	}
+	if got := highestVersionDir(dirs); got != "/c/golang.org/x/sync@v0.20.0" {
+		t.Errorf("highestVersionDir = %q, want the v0.20.0 dir (v0.20 > v0.9 numerically, not lexically)", got)
+	}
+}
+
+func TestDocPackageAndSymbol(t *testing.T) {
+	cases := []struct {
+		in       []string
+		pkg, sym string
+	}{
+		{[]string{"strings"}, "strings", ""},
+		{[]string{"strings.Builder"}, "strings", "Builder"},
+		{[]string{"net/http", "Client"}, "net/http", "Client"},
+		{[]string{"golang.org/x/sync/errgroup"}, "golang.org/x/sync/errgroup", ""},
+		{[]string{"golang.org/x/sync/errgroup", "Group"}, "golang.org/x/sync/errgroup", "Group"},
+	}
+	for _, c := range cases {
+		pkg, sym := docPackageAndSymbol(c.in)
+		if pkg != c.pkg || sym != c.sym {
+			t.Errorf("docPackageAndSymbol(%v) = (%q,%q), want (%q,%q)", c.in, pkg, sym, c.pkg, c.sym)
+		}
+	}
+}
+
+// TestGoDocCacheFallback is the fix: a package NOT in the current module's graph
+// but present in the module cache must still resolve, via the cache fallback. Run
+// from a bare temp module (no x/sync dependency) so the primary lookup fails and
+// the fallback is exercised. Skip-guarded on errgroup being cached.
+func TestGoDocCacheFallback(t *testing.T) {
+	if cacheDirFor("golang.org/x/sync/errgroup") == "" {
+		t.Skip("golang.org/x/sync/errgroup not in the module cache")
+	}
+	bare := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bare, "go.mod"), []byte("module bare\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := goDocArg(context.Background(), bare, "golang.org/x/sync/errgroup")
+	if err != nil {
+		t.Fatalf("go_doc errgroup (not a dep, from cache): %v", err)
+	}
+	if !strings.Contains(out, "package errgroup") {
+		t.Errorf("fallback did not return errgroup docs:\n%s", out)
+	}
+	if !strings.Contains(out, "module cache") {
+		t.Errorf("fallback output should note it came from the module cache:\n%s", out)
+	}
+	if !strings.Contains(out, "source:") {
+		t.Errorf("fallback should surface the on-disk source dir:\n%s", out)
+	}
+	// And a symbol lookup through the fallback:
+	sym, err := goDocArg(context.Background(), bare, "golang.org/x/sync/errgroup Group")
+	if err != nil {
+		t.Fatalf("go_doc errgroup.Group from cache: %v", err)
+	}
+	if !strings.Contains(sym, "type Group") {
+		t.Errorf("fallback symbol lookup did not return `type Group`:\n%s", sym)
 	}
 }
 

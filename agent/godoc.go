@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,29 @@ func goDocRun(ctx context.Context, workdir string, flags, target []string) (stri
 	args := append([]string{"doc"}, flags...)
 	args = append(args, target...)
 	out, err := runGoTool(ctx, workdir, args)
+
+	// Fallback: the package isn't in THIS module's graph (so go doc can't resolve
+	// it under GOPROXY=off), but it may still be sitting in the module cache —
+	// pulled in by some other project. Doc it straight off disk so the agent can
+	// study prior art / a not-yet-added dependency. We point go doc at the cache
+	// DIRECTORY, which bypasses module-graph resolution entirely.
+	if err != nil && packageNotInModule(out) {
+		pkg, symbol := docPackageAndSymbol(target)
+		if dir := cacheDirFor(pkg); dir != "" {
+			cargs := append([]string{"doc"}, flags...)
+			cargs = append(cargs, dir)
+			if symbol != "" {
+				cargs = append(cargs, symbol)
+			}
+			if cout, cerr := runGoTool(ctx, workdir, cargs); cerr == nil || strings.TrimSpace(cout) != "" {
+				hdr := fmt.Sprintf("// %s is not a dependency of this module; resolved from the module cache.\n\n", pkg)
+				body := hdr + strings.TrimRight(cout, "\n")
+				body += fmt.Sprintf("\n\nsource: %s\n(read whole files there with read_file / search — that path is read-only)", dir)
+				return truncate(body), nil
+			}
+		}
+	}
+
 	if err != nil && strings.TrimSpace(out) == "" {
 		return "", fmt.Errorf("go doc %s failed: %v", strings.Join(append(flags, target...), " "), strings.TrimSpace(err.Error()))
 	}
@@ -103,6 +127,120 @@ func goDocRun(ctx context.Context, workdir string, flags, target []string) (stri
 		res += fmt.Sprintf("\n\nsource: %s\n(read whole files there with read_file / search — that path is read-only)", dir)
 	}
 	return truncate(res), nil
+}
+
+// packageNotInModule reports whether a `go doc` failure is the "this import path
+// isn't in the current module's build list" case (as opposed to a bad symbol or a
+// genuine error) — the only failure the module-cache fallback can help with.
+func packageNotInModule(out string) bool {
+	// go doc emits different wording depending on the arg form: "cannot find
+	// package" / "no such package" for an import path, "no required module
+	// provides package" in module mode. Match all of them.
+	return strings.Contains(out, "cannot find package") ||
+		strings.Contains(out, "no such package") ||
+		strings.Contains(out, "no required module provides package") ||
+		strings.Contains(out, "is not in std")
+}
+
+// docPackageAndSymbol splits a go-doc target into its package import path and the
+// optional symbol, mirroring go doc's grammar (see docPackage). The symbol is the
+// second token, or the fused tail after the package in the single-token form.
+func docPackageAndSymbol(target []string) (pkg, symbol string) {
+	pkg = docPackage(target)
+	if len(target) == 2 {
+		return pkg, target[1]
+	}
+	if len(target[0]) > len(pkg) { // a fused "pkg.Symbol" single token
+		symbol = strings.TrimPrefix(target[0][len(pkg):], ".")
+	}
+	return pkg, symbol
+}
+
+// goModCache returns the module cache directory ($GOMODCACHE), cached.
+func goModCache() string {
+	if r := goSourceRoots(); len(r) > 0 {
+		return r[0] // goSourceRoots queries "go env GOMODCACHE GOROOT" in that order.
+	}
+	return ""
+}
+
+// cacheDirFor resolves an import path to its on-disk directory in the module cache,
+// independent of any module's build list. It walks the path from longest prefix to
+// shortest, looking for `<modcache>/<prefix>@<version>` and checking the remainder
+// is a real subdir; among versions it picks the highest. Returns "" if the package
+// isn't cached. Caveat: import paths with UPPERCASE letters are stored escaped
+// (BurntSushi -> !burnt!sushi); this lookup uses the literal path, so it only finds
+// all-lowercase module paths — which covers the overwhelming majority.
+func cacheDirFor(pkg string) string {
+	cache := goModCache()
+	if cache == "" || pkg == "" {
+		return ""
+	}
+	parts := strings.Split(pkg, "/")
+	for i := len(parts); i >= 1; i-- {
+		prefix := filepath.Join(parts[:i]...)
+		matches, _ := filepath.Glob(filepath.Join(cache, prefix+"@*"))
+		if len(matches) == 0 {
+			continue
+		}
+		dir := highestVersionDir(matches)
+		if i < len(parts) {
+			dir = filepath.Join(dir, filepath.Join(parts[i:]...))
+		}
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
+// highestVersionDir picks the cache dir with the highest version among `mod@vX`
+// matches (best-effort semver; lexical tiebreak).
+func highestVersionDir(dirs []string) string {
+	best := dirs[0]
+	for _, d := range dirs[1:] {
+		if semverLess(versionOf(best), versionOf(d)) {
+			best = d
+		}
+	}
+	return best
+}
+
+// versionOf extracts the `@`-suffixed version from a cache dir's base name.
+func versionOf(dir string) string {
+	base := filepath.Base(dir)
+	if at := strings.LastIndex(base, "@"); at >= 0 {
+		return base[at+1:]
+	}
+	return base
+}
+
+// semverLess compares two vMAJOR.MINOR.PATCH strings numerically (pre-release and
+// build metadata are ignored — enough to pick a usable cached version).
+func semverLess(a, b string) bool {
+	an, bn := verNums(a), verNums(b)
+	for i := 0; i < 3; i++ {
+		if an[i] != bn[i] {
+			return an[i] < bn[i]
+		}
+	}
+	return a < b
+}
+
+func verNums(v string) [3]int {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	var out [3]int
+	for i, p := range strings.Split(v, ".") {
+		if i >= 3 {
+			break
+		}
+		n, _ := strconv.Atoi(p)
+		out[i] = n
+	}
+	return out
 }
 
 // goDocArg is the text-protocol entry: parse the arg, then run.
