@@ -1,4 +1,26 @@
-.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress
+.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev
+
+# Build the Duet Lab frontend (React/Vite) into lab/web/dist, which the Go server
+# embeds. Run once, and after any frontend change. Needs node+npm (mise provides
+# them). The first run also writes package-lock.json.
+lab-build:
+	cd lab/web && npm install && npm run build && touch dist/.gitkeep
+
+# Build the duet-lab server binary with the UI embedded.
+lab: lab-build
+	go build -o bin/duet-lab ./cmd/duet-lab
+	@echo ">> built bin/duet-lab — run it with: OPENROUTER_API_KEY=... ./bin/duet-lab"
+
+# Live frontend development: runs BOTH the Go API (:8099) and the Vite dev server
+# (which proxies /api + the events WebSocket to it) together, so the API is never
+# a stale build. Ctrl-C stops both. Open the URL Vite prints (usually :5173).
+# Needs OPENROUTER_API_KEY in the environment or .env for launches to work.
+lab-dev:
+	cd lab/web && npm install
+	@echo ">> Go API on :8099  +  Vite dev server (proxying to it).  Ctrl-C stops both."
+	@trap 'kill 0' EXIT INT TERM; \
+		go run ./cmd/duet-lab -addr :8099 & \
+		cd lab/web && npm run dev
 
 # Install the council CLI onto PATH (~/.local/bin) so any Claude Code session's
 # /council skill can call `council` directly. Re-run after changing cmd/council
