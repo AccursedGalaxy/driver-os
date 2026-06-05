@@ -86,9 +86,9 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 		},
 		"run": {
 			Name: "run",
-			Desc: fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
+			Desc: fmt.Sprintf("run a shell command with `sh -c` inside the sandbox and observe its result. Commands START in the PROJECT ROOT — the SAME root your file-tool paths are relative to — so do NOT `cd` to find the project; just run the command (e.g. `go test ./...`) with paths relative to the root. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines. Prefer list_dir/read_file for plain listing/reading. ARG: one shell command line (pipes, &&, quotes allowed). RETURNS: \"exit <code> (<duration>)\" then stdout/stderr sections; each stream is clipped head+tail if large; the command is killed after %s.", runTimeout),
 			// NativeDesc: behavior + selection only; the `command` schema field owns the format.
-			NativeDesc: fmt.Sprintf("Run a shell command with `sh -c` inside the sandbox. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines; prefer list_dir/read_file for plain listing/reading. Returns the exit code and duration, then stdout/stderr (clipped head+tail if large); the command is killed after %s.", runTimeout),
+			NativeDesc: fmt.Sprintf("Run a shell command with `sh -c` inside the sandbox. Commands start in the project root (the same root file-tool paths are relative to), so don't `cd` to locate the project — run the command directly with root-relative paths. Use for what the file tools can't do — build, test, grep, git, multi-step pipelines; prefer list_dir/read_file for plain listing/reading. Returns the exit code and duration, then stdout/stderr (clipped head+tail if large); the command is killed after %s.", runTimeout),
 			Run:        func(ctx context.Context, arg string) (string, error) { return toolRun(ctx, sb, arg, runTimeout) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +

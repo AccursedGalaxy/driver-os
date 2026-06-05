@@ -29,6 +29,31 @@ func TestRunTimeoutIsConfigurable(t *testing.T) {
 	}
 }
 
+// TestRunDescStatesWorkingDir guards the cwd invariant the run tool MUST teach:
+// `run` commands start in the project root (the same root file tools are relative
+// to), so the model must not `cd` to "find" the project. Backends disagree on the
+// ABSOLUTE cwd (local = host path, docker = /workspace), so the Desc states the
+// portable invariant, not a path. Regression guard for the dogfood finding where a
+// model assumed a chroot at `/`, ran `cd / && go test`, and burned turns.
+func TestRunDescStatesWorkingDir(t *testing.T) {
+	tools := DefaultTools(sbWith(t, nil), time.Second)
+	for _, field := range []struct {
+		name string
+		desc string
+	}{
+		{"Desc", tools["run"].Desc},
+		{"NativeDesc", tools["run"].NativeDesc},
+	} {
+		d := strings.ToLower(field.desc)
+		if !strings.Contains(d, "project root") {
+			t.Errorf("run %s does not state commands start in the project root:\n%s", field.name, field.desc)
+		}
+		if !strings.Contains(d, "cd") {
+			t.Errorf("run %s does not warn against cd-ing to find the project:\n%s", field.name, field.desc)
+		}
+	}
+}
+
 // sbWith builds a local sandbox over a temp dir seeded with the given files.
 func sbWith(t *testing.T, files map[string]string) sandbox.Sandbox {
 	t.Helper()
