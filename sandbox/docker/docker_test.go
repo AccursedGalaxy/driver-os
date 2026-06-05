@@ -96,8 +96,8 @@ func TestRunArgvHasSecurityFlags(t *testing.T) {
 	if !has(run, "--read-only") {
 		t.Error("missing --read-only root fs")
 	}
-	if !hasFlagPair(run, "--tmpfs", "/tmp") {
-		t.Error("missing --tmpfs /tmp")
+	if !hasFlagPair(run, "--tmpfs", "/tmp:exec,nosuid,nodev") {
+		t.Error("missing --tmpfs /tmp:exec,nosuid,nodev (exec needed for `go run`/build-then-run from /tmp; N5)")
 	}
 	if !has(run, "--user") {
 		t.Error("missing --user (non-root + host-owned writes)")

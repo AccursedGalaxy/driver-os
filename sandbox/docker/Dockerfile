@@ -42,3 +42,15 @@ ENV GOMODCACHE=/tmp/gomodcache \
 # passes --user <host-uid:gid> at run time (so bind-mount writes are host-owned).
 # The workspace is the working directory; the backend sets -w to it per Exec too.
 WORKDIR /workspace
+
+# A writable HOME (DUET-DOGFOOD F5). The rootfs is --read-only, so the only
+# writable place is the /workspace bind-mount — there is no writable home, and
+# agents (esp. deepseek) reflexively `cd /home/user` / `cd ~` before working,
+# which fails ("can't cd to /home/user") and burns turns. Point HOME at the
+# workspace and symlink the homes models habitually reach for to it, so those cds
+# SUCCEED and land in the one writable dir (relative paths like `mailbox/x.go`
+# still resolve — the symlink target IS the workdir). The symlinks live on the
+# read-only image layer (fine — they only need to resolve); their target
+# /workspace is the rw mount the backend attaches at run time.
+ENV HOME=/workspace
+RUN mkdir -p /home && ln -s /workspace /home/user && ln -s /workspace /home/agent

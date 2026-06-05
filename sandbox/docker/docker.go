@@ -270,8 +270,16 @@ func runArgs(opts Options, hostDir string) []string {
 		"--user", opts.User, // non-root in-container AND host-owned bind-mount writes (§6/§13 uid gotcha).
 		"--cap-drop", "ALL", // drop every Linux capability.
 		"--security-opt", "no-new-privileges", // block setuid escalation.
-		"--read-only",     // root filesystem is immutable...
-		"--tmpfs", "/tmp", // ...except a scratch /tmp...
+		"--read-only", // root filesystem is immutable...
+		// ...except a scratch /tmp. It is mounted EXEC (the docker tmpfs default is
+		// noexec): the Go toolchain compiles to GOCACHE/GOTMPDIR under /tmp and execs
+		// the result, so a noexec /tmp breaks `go run` and any build-then-run from
+		// /tmp with "fork/exec …: permission denied" (DUET-DOGFOOD N5/F3 — agents
+		// burned turns rediscovering it). exec here does NOT widen the practical
+		// attack surface: the workspace bind-mount is already executable (the agent
+		// runs the binaries it builds), so untrusted code can execute regardless;
+		// nosuid+nodev keep the setuid/device hardening.
+		"--tmpfs", "/tmp:exec,nosuid,nodev",
 		// ...and the workspace, the ONLY rw mount. --mount (not -v) so a host path
 		// containing ':' can't misparse into bogus mount options/targets; src/dst are
 		// explicit key=value fields.
