@@ -25,3 +25,10 @@ _deps/
 
 # Eval harness generated reports (HP-11)
 eval/runs/
+
+# Duet Lab frontend: node deps + Vite build output. The build output is embedded
+# at compile time (lab/embed.go), but it's a generated artifact — keep only the
+# committed placeholder so `go build ./...` works before `make lab-build`.
+lab/web/node_modules/
+lab/web/dist/*
+!lab/web/dist/.gitkeep
