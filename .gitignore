@@ -32,3 +32,9 @@ eval/runs/
 lab/web/node_modules/
 lab/web/dist/*
 !lab/web/dist/.gitkeep
+
+# Vault PWA: same deal — embedded at compile time (vault/embed.go), generated
+# artifact, keep only the committed placeholder.
+vault/web/node_modules/
+vault/web/dist/*
+!vault/web/dist/.gitkeep
