@@ -1,4 +1,4 @@
-.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev
+.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy
 
 # Build the Duet Lab frontend (React/Vite) into lab/web/dist, which the Go server
 # embeds. Run once, and after any frontend change. Needs node+npm (mise provides
@@ -21,6 +21,40 @@ lab-dev:
 	@trap 'kill 0' EXIT INT TERM; \
 		go run ./cmd/duet-lab -addr :8099 & \
 		cd lab/web && npm run dev
+
+# Build the Vault PWA frontend (React/Vite + service worker) into vault/web/dist,
+# which the Go server embeds. Run once, and after any frontend change. Needs
+# node+npm (mise provides them). The first run also writes package-lock.json.
+vault-build:
+	cd vault/web && npm install && npm run build && touch dist/.gitkeep
+
+# Build the vault server binary with the PWA embedded.
+vault: vault-build
+	go build -o bin/vault ./cmd/vault
+	@echo ">> built bin/vault — run it with: ./bin/vault  (then open it on your phone over your LAN and Add to Home Screen)"
+
+# Live frontend development: runs BOTH the Go server (:8097) and the Vite dev
+# server (which proxies /api + /healthz to it) together. Ctrl-C stops both. Open
+# the URL Vite prints (usually :5173); use --host to reach it from your phone.
+vault-dev:
+	cd vault/web && npm install
+	@echo ">> Go server on :8097  +  Vite dev server (proxying to it).  Ctrl-C stops both."
+	@trap 'kill 0' EXIT INT TERM; \
+		go run ./cmd/vault -addr :8097 & \
+		cd vault/web && npm run dev
+
+# Tier 1: (re)generate the feed from the vault with the cheap model. Pass extra
+# flags via ARGS, e.g. `make vault-gen ARGS="-n 30"`. Needs OPENROUTER_API_KEY.
+vault-gen:
+	go run ./cmd/vault-gen $(ARGS)
+
+# Rebuild the PWA + binaries, reinstall to ~/.local/bin, restart the running
+# user service. One-shot redeploy after any change.
+vault-deploy: vault-build
+	go build -o $$HOME/.local/bin/vault ./cmd/vault
+	go build -o $$HOME/.local/bin/vault-gen ./cmd/vault-gen
+	systemctl --user restart vault.service
+	@echo ">> redeployed — live at http://pegasus:8097"
 
 # Install the council CLI onto PATH (~/.local/bin) so any Claude Code session's
 # /council skill can call `council` directly. Re-run after changing cmd/council

@@ -284,7 +284,10 @@ func listDirOp(ctx context.Context, sb sandbox.Sandbox, path string) (string, er
 	for _, e := range entries {
 		if e.IsDir {
 			dirs = append(dirs, e.Name)
-		} else {
+		} else if !isTranscriptArtifact(e.Name) {
+			// (transcript pollution) Hide the harness's own run-transcript files when
+			// they leak into the workspace, so the agent can't list, read, and derail on
+			// its own trace. Only ever drops files named exactly like our transcripts.
 			files = append(files, e.Name)
 		}
 	}

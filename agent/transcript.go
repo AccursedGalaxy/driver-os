@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,6 +25,25 @@ func newRunID() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	return time.Now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
+}
+
+// runIndexFile is the longitudinal index filename WriteTranscript appends to.
+const runIndexFile = "runs.jsonl"
+
+// transcriptArtifactRE matches a per-run transcript filename ("<id>.json", id
+// from newRunID: 8 date digits, 6 time digits, 8 hex chars). Kept next to
+// newRunID so the pattern can't drift from the format it mirrors.
+var transcriptArtifactRE = regexp.MustCompile(`^\d{8}-\d{6}-[0-9a-f]{8}\.json$`)
+
+// isTranscriptArtifact reports whether name is one of the harness's OWN
+// run-transcript files — a per-run "<id>.json" or the "runs.jsonl" index. When a
+// caller points TranscriptDir at (or under) the sandbox workspace, these files
+// land in the agent's CWD; list_dir excludes them so the agent can't discover
+// and read its own transcript — which derailed a dogfood run (it read the
+// transcript, concluded it was looping, and bailed). Belt-and-suspenders: keep
+// artifacts out of the sandbox root AND defensively hide ours if they leak in.
+func isTranscriptArtifact(name string) bool {
+	return name == runIndexFile || transcriptArtifactRE.MatchString(name)
 }
 
 // stampRun writes the run identity + wall-clock bounds onto a result from a
@@ -134,7 +154,7 @@ func WriteTranscript(dir string, rec RunRecord) (string, error) {
 	if err := os.WriteFile(path, append(full, '\n'), 0o644); err != nil {
 		return "", err
 	}
-	if err := appendRunIndex(filepath.Join(dir, "runs.jsonl"), rec); err != nil {
+	if err := appendRunIndex(filepath.Join(dir, runIndexFile), rec); err != nil {
 		return path, err // the full record landed; surface the index failure but don't lose the path.
 	}
 	return path, nil

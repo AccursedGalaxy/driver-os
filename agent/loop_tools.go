@@ -245,6 +245,17 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				cfg.Obs.Note("answer not verified — " + reason)
 				return res, nil
 			}
+			// (Empty-answer guard) The model ended its turn with no tool call AND no
+			// prose. Verification may have passed (or none was configured), but a
+			// content-free finish is the model going silent, not a delivered answer —
+			// recording it as Answered/exit-0 lets an empty string read as a clean pass.
+			// Flag it as a non-pass instead; the defer still salvages any earlier prose
+			// into Answer for a relaying caller, but the Outcome stays Unverified.
+			if answer == "" {
+				res.Outcome, res.Reason = Unverified, "empty final answer — the model stopped without producing an answer"
+				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
+				return res, nil
+			}
 			res.Outcome, res.Answer = Answered, answer
 			cfg.Obs.Done(answer)
 			if grounded {

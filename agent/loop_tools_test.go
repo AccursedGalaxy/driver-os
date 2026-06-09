@@ -151,6 +151,20 @@ func TestRunNativeTextOnlyIsImmediateAnswer(t *testing.T) {
 	}
 }
 
+// A no-tool turn with empty prose (and no FinishTool configured) is the model
+// going silent, not a finished task. Without the guard it was recorded as
+// Answered/exit-0, so an empty final answer read as a clean pass — flag it
+// Unverified instead.
+func TestRunNativeEmptyAnswerIsUnverified(t *testing.T) {
+	res, _, _ := runNative(t, nil, [][]llm.ContentPart{{llm.Text("")}})
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified for an empty final answer", res.Outcome, res.Reason)
+	}
+	if res.Reason == "" {
+		t.Errorf("expected a reason explaining the empty-answer rejection")
+	}
+}
+
 // sayTool is a minimal first-class finish tool, mirroring duet.SayTool (the agent
 // package can't import duet). It is wired as Config.FinishTool in the tests below.
 func sayTool() Tool {

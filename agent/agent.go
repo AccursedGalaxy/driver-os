@@ -622,6 +622,16 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				cfg.Obs.Note("answer not verified — " + reason)
 				return res, nil
 			}
+			// (Empty-answer guard) An `answer` with no content is the model emitting the
+			// done-signal without actually answering. Even when verification passed, an
+			// empty final answer is not a clean pass — flag it so an empty string can't be
+			// recorded as Answered/exit-0.
+			if strings.TrimSpace(arg) == "" {
+				res.Outcome = Unverified
+				res.Reason = "empty final answer — the model stopped without producing an answer"
+				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
+				return res, nil
+			}
 			res.Outcome = Answered
 			res.Answer = arg
 			cfg.Obs.Done(arg)

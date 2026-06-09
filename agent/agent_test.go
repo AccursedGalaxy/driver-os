@@ -190,6 +190,38 @@ func TestListDirEmpty(t *testing.T) {
 	}
 }
 
+// When the harness's own run-transcript files leak into the sandbox workspace
+// (a caller pointed TranscriptDir at the CWD), list_dir must hide them so the
+// agent can't list, read, and derail on its own trace. Real project files with
+// names that merely RESEMBLE the pattern stay visible.
+func TestListDirExcludesTranscriptArtifacts(t *testing.T) {
+	sb := sbWith(t, map[string]string{
+		"main.go":                          "package main\n",
+		"runs.jsonl":                       "{}\n",        // the longitudinal index
+		"20260605-143022-a1b2c3d4.json":    "{}\n",        // a per-run transcript
+		"notes.json":                       "{}\n",        // a real file — keep
+		"20260605-143022-a1b2c3d4.json.go": "package x\n", // not a transcript — keep
+	})
+	out, err := toolListDir(context.Background(), sb, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := make(map[string]bool)
+	for _, line := range strings.Split(out, "\n") {
+		listed[strings.TrimSpace(strings.TrimPrefix(line, "file"))] = true
+	}
+	for _, hidden := range []string{"runs.jsonl", "20260605-143022-a1b2c3d4.json"} {
+		if listed[hidden] {
+			t.Errorf("list_dir leaked transcript artifact %q:\n%s", hidden, out)
+		}
+	}
+	for _, kept := range []string{"main.go", "notes.json", "20260605-143022-a1b2c3d4.json.go"} {
+		if !listed[kept] {
+			t.Errorf("list_dir dropped real file %q:\n%s", kept, out)
+		}
+	}
+}
+
 func TestParseWriteArg(t *testing.T) {
 	cases := []struct {
 		in      string

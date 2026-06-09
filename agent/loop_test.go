@@ -81,6 +81,20 @@ func TestRunAnswered(t *testing.T) {
 	}
 }
 
+// An `answer` verb with no content is the model emitting the done-signal without
+// actually answering. It must NOT be recorded as Answered/exit-0 (an empty
+// answer once passed as a clean run); the empty-answer guard flags it Unverified.
+func TestRunEmptyAnswerIsUnverified(t *testing.T) {
+	res, _ := runScript(t, map[string]string{"go.mod": "module x\n"},
+		[]string{"answer"})
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified for an empty answer", res.Outcome, res.Reason)
+	}
+	if res.Reason == "" {
+		t.Errorf("expected a reason explaining the empty-answer rejection")
+	}
+}
+
 func TestRunKilledSpiral(t *testing.T) {
 	// noProgressWindow (4) list_dir calls in a row with DIFFERENT args — exact
 	// repeat never fires, the spiral detector does. This guards the fix-3 gating.
