@@ -28,11 +28,9 @@ require (
 )
 
 require (
-	github.com/AccursedGalaxy/mneme v0.0.0
+	github.com/AccursedGalaxy/mneme v0.0.0-20260604003419-51b410bef1c0
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 )
-
-replace github.com/AccursedGalaxy/mneme => ../mneme

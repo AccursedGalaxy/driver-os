@@ -2,6 +2,13 @@
 .env
 CLAUDE.md
 
+# Local workspace: keeps host builds on ../mneme (live local edits) while the
+# committed go.mod pins the published mneme commit — which is what lets a JARVIS
+# worker export (no go.work, no ../mneme) still `go build ./...` from the module
+# cache. Bump the pin when driver-os starts depending on newer mneme commits.
+/go.work
+/go.work.sum
+
 # Go
 /bin/
 *.out
