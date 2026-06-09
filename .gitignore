@@ -9,6 +9,9 @@ CLAUDE.md
 __debug_bin*
 # stray root-level `go build` output (binary named after its cmd dir)
 /counciltest
+/commit-msg
+/gameserver
+/jarvis-probe
 # council scratch artifacts (real runs persist under $XDG_DATA_HOME/driver-os/council/)
 /_council_*
 
