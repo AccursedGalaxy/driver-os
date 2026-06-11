@@ -9,6 +9,8 @@ import (
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
+	"github.com/AccursedGalaxy/driver-os/sandbox/local"
 )
 
 // scriptProvider plays pre-scripted turns, then defaults to a tool-call-free
@@ -94,6 +96,50 @@ func TestRunTrialGrades_FalsePositiveWhenClaimedButUndone(t *testing.T) {
 	}
 	if !tr.FalsePositive() {
 		t.Errorf("answered-but-unverified must be a false positive")
+	}
+}
+
+// trackedSandbox wraps the trial's sandbox so the factory test can prove the
+// case-supplied sandbox was both USED for the run and CLOSED by the trial.
+type trackedSandbox struct {
+	sandbox.Sandbox
+	closed *bool
+}
+
+func (s trackedSandbox) Close() error {
+	*s.closed = true
+	return s.Sandbox.Close()
+}
+
+func TestRunTrialUsesCaseSandboxFactory(t *testing.T) {
+	// The factory seam (SWE-bench: trials exec inside an instance image, not the
+	// host). Here the factory hands back a tracked host-local sandbox over the
+	// fixture dir — the contract under test is "factory used + factory's sandbox
+	// closed", not which backend it builds.
+	var built, closed bool
+	c := markerCase()
+	c.Sandbox = func(_ context.Context, dir string) (sandbox.Sandbox, error) {
+		built = true
+		lsb, err := local.New(dir)
+		if err != nil {
+			return nil, err
+		}
+		return trackedSandbox{Sandbox: lsb, closed: &closed}, nil
+	}
+
+	fixer := &scriptProvider{name: "fixer", turns: [][]llm.ContentPart{
+		{writeCall("1", "result.txt", "DONE")},
+	}}
+	tr := RunTrial(context.Background(), c, Model{Label: "fixer", Provider: fixer}, 1)
+
+	if !built {
+		t.Fatalf("case Sandbox factory was never called")
+	}
+	if !closed {
+		t.Errorf("trial must Close the factory's sandbox")
+	}
+	if tr.Err != "" || !tr.Pass {
+		t.Errorf("trial should still pass through the factory sandbox: Err=%q Detail=%q", tr.Err, tr.Detail)
 	}
 }
 

@@ -71,6 +71,17 @@ type Options struct {
 	PidsLimit int    // e.g. 256; 0 => DefaultPidsLimit; negative => unlimited.
 	CPUs      string // e.g. "1.0"; "" => DefaultCPUs.
 
+	// WritableRootFS drops the --read-only root filesystem. The default (false,
+	// read-only) is the right posture for OUR sandbox image, where the workspace
+	// mount is the only thing a task should write. Set true ONLY for prebuilt
+	// third-party images whose tooling must write outside the workspace — e.g.
+	// SWE-bench instance images, where the conda env under /opt/miniconda3 needs
+	// .pyc/install writes for the baked-in test tooling to run. This widens the
+	// blast radius from "workspace only" to "container filesystem" — the container
+	// boundary (caps dropped, no-new-privileges, resource caps, --rm teardown) is
+	// then the whole guarantee, and the rootfs is no longer attestable as pristine.
+	WritableRootFS bool
+
 	// ExtraMounts are additional bind mounts as raw `docker run -v` specs, e.g.
 	// "/home/u/go/pkg/mod:/go/pkg/mod:ro" to give in-container `go build` a
 	// read-only host module cache while --network none stays on (the module story,

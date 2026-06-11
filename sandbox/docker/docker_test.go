@@ -125,6 +125,34 @@ func TestRunArgvHasSecurityFlags(t *testing.T) {
 		t.Errorf("workspace bind mount (--mount type=bind,...,dst=%s) not found: %v", DefaultWorkdir, run)
 	}
 	// The keep-alive command makes it a long-lived container (D3).
+	checkKeepAliveTail(t, run)
+}
+
+// TestWritableRootFSDropsReadOnly: the SWE-bench seam — a prebuilt third-party
+// image whose tooling writes outside the workspace opts out of --read-only, and
+// ONLY --read-only changes (every other hardening flag must survive).
+func TestWritableRootFSDropsReadOnly(t *testing.T) {
+	_, fr := newFake(t, Options{WritableRootFS: true})
+	run := fr.calls[0]
+
+	if has(run, "--read-only") {
+		t.Error("WritableRootFS must drop --read-only")
+	}
+	// The rest of the §6 posture is unchanged.
+	if !hasFlagPair(run, "--cap-drop", "ALL") || !hasFlagPair(run, "--security-opt", "no-new-privileges") {
+		t.Errorf("WritableRootFS must not weaken cap-drop/no-new-privileges: %v", run)
+	}
+	if !hasFlagPair(run, "--network", "none") {
+		t.Error("WritableRootFS must not enable the network")
+	}
+	if !hasFlagPair(run, "--tmpfs", "/tmp:exec,nosuid,nodev") {
+		t.Error("scratch /tmp tmpfs must survive WritableRootFS")
+	}
+	checkKeepAliveTail(t, run)
+}
+
+func checkKeepAliveTail(t *testing.T, run []string) {
+	t.Helper()
 	if run[len(run)-3] != DefaultImage || run[len(run)-2] != "sleep" || run[len(run)-1] != "infinity" {
 		t.Errorf("expected `<image> sleep infinity` tail: %v", run[len(run)-3:])
 	}

@@ -26,6 +26,7 @@
 package eval
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,6 +51,13 @@ type Case struct {
 	Oracle   Oracle       // grades the finished run against ground truth (not self-report).
 	Protocol string       // "tools" (default) or "text".
 	Config   agent.Config // knob template (MaxIterations, MaxTokens, RunTimeout, Verify*, …).
+
+	// Sandbox, when non-nil, builds the per-trial sandbox over the freshly
+	// materialized fixture dir — the seam for cases whose execution environment is
+	// not the host (SWE-bench instances exec inside their official per-instance
+	// Docker image, rooted at the extracted /testbed). The trial owns the returned
+	// sandbox's lifetime (Close). nil => the default host-local sandbox.
+	Sandbox func(ctx context.Context, dir string) (sandbox.Sandbox, error)
 
 	// Tools, when non-nil, builds the agent's toolset from the per-trial sandbox.
 	// It is the seam for replaying a case under the PRODUCTION toolset of the binary

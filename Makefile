@@ -1,4 +1,4 @@
-.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy
+.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold
 
 # Build the Duet Lab frontend (React/Vite) into lab/web/dist, which the Go server
 # embeds. Run once, and after any frontend change. Needs node+npm (mise provides
@@ -88,6 +88,25 @@ sandbox-image:
 # sandbox-image` first and a running docker daemon.
 sandbox-integration:
 	go test -tags docker_integration -count=1 ./sandbox/docker
+
+# SWE-bench Lite sweep (the external benchmark). Defaults to a 1-instance
+# slice with one cheap model — every instance pulls its own ~1 GiB official
+# image, so widen COUNT/IDS deliberately. Needs OPENROUTER_API_KEY + docker.
+# Examples:
+#   make swebench COUNT=5 N=1 MODELS=deepseek/deepseek-v4-flash
+#   make swebench IDS=django__django-11099 MODELS=openai/gpt-5.5
+swebench:
+	go run ./cmd/eval -case=swebench -n=$(or $(N),1) \
+		-swebench-count=$(or $(COUNT),1) -swebench-ids=$(or $(IDS),) \
+		-max-iters=$(or $(ITERS),50) -max-wall=$(or $(WALL),30m) -run-timeout=$(or $(RUNTO),10m) \
+		-models=$(or $(MODELS),deepseek/deepseek-v4-flash)
+
+# The gold-patch pipeline check: applies the dataset's GOLD patch and asserts
+# the oracle grades it resolved (official invariant — validates extraction,
+# sandbox, test-spec, parsers, resolution with NO model in the loop). Needs
+# docker + network; pulls ~1 GiB per instance on first run.
+swebench-gold:
+	go test -tags swebench_integration -count=1 -timeout 60m -run TestGoldPatchResolves -v ./eval/suite/swebench/
 
 
 

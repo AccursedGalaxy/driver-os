@@ -270,8 +270,14 @@ func runArgs(opts Options, hostDir string) []string {
 		"--user", opts.User, // non-root in-container AND host-owned bind-mount writes (§6/§13 uid gotcha).
 		"--cap-drop", "ALL", // drop every Linux capability.
 		"--security-opt", "no-new-privileges", // block setuid escalation.
-		"--read-only", // root filesystem is immutable...
-		// ...except a scratch /tmp. It is mounted EXEC (the docker tmpfs default is
+	)
+	if !opts.WritableRootFS {
+		// Root filesystem immutable by default; WritableRootFS opts out for prebuilt
+		// third-party images whose tooling writes outside the workspace (see Options).
+		args = append(args, "--read-only")
+	}
+	args = append(args,
+		// A scratch /tmp regardless of rootfs writability. It is mounted EXEC (the docker tmpfs default is
 		// noexec): the Go toolchain compiles to GOCACHE/GOTMPDIR under /tmp and execs
 		// the result, so a noexec /tmp breaks `go run` and any build-then-run from
 		// /tmp with "fork/exec …: permission denied" (DUET-DOGFOOD N5/F3 — agents

@@ -7,6 +7,7 @@ import (
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/driver-os/sandbox/local"
 )
 
@@ -75,7 +76,15 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		return tr
 	}
 
-	sb, err := local.New(dir)
+	// The case's sandbox factory, when set, replaces the default host-local
+	// sandbox (e.g. SWE-bench trials exec inside the instance's Docker image).
+	newSandbox := func(ctx context.Context, dir string) (sandbox.Sandbox, error) {
+		return local.New(dir)
+	}
+	if c.Sandbox != nil {
+		newSandbox = c.Sandbox
+	}
+	sb, err := newSandbox(ctx, dir)
 	if err != nil {
 		tr.Err = "sandbox: " + err.Error()
 		return tr
