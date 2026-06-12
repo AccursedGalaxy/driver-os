@@ -355,7 +355,21 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		lastReasoningSig = reasoningSig
 
 		if allCallsDiscovery(calls) { // (b)
-			if navRun++; navRun >= spiralWindow {
+			// Two thresholds, mirroring the repeat detector (a). Measured false-kill
+			// (SWE-bench stride-30, 2026-06-12): glm-5 opens every task with a grounded
+			// descend-the-tree orientation burst (list_dir . → pkg → pkg/sub → targeted
+			// search) and was executed at exactly iter 4 on instances other models
+			// solved 2/2 — 12 of its 19 spiral kills. A turn whose reasoning trace
+			// MOVED gets the lenient ceiling (the model is visibly working through the
+			// listings it just received); a frozen or absent trace keeps the strict one,
+			// so the original ungrounded list_dir pathology (a non-reasoning model
+			// ignoring its observations) still dies at the window. Either way the spiral
+			// stays bounded well before the iteration cap.
+			limit := spiralWindow
+			if reasoningAdvanced {
+				limit = 2 * spiralWindow
+			}
+			if navRun++; navRun >= limit {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)

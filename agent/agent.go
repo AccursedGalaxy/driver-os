@@ -360,7 +360,9 @@ type Config struct {
 
 	// NavSpiralWindow overrides the explore-spiral detector's threshold — the number
 	// of consecutive discovery-only turns (list_dir/search, even with different args)
-	// that ends the run as KilledSpiral. 0 = the default noProgressWindow. It exists
+	// that ends the run as KilledSpiral. 0 = the default noProgressWindow. A turn
+	// whose reasoning trace advanced gets 2× this window (the measured glm-5
+	// orientation-burst false-kill — see the detector comment). It exists
 	// for the OBSERVE-only agent whose whole job is to survey a tree: a read-only
 	// critic legitimately does a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep
 	// (or a burst of `search`es) before reading, which is several discovery turns in a
@@ -679,8 +681,16 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// are real progress, and a read after a search is reconnaissance that resets
 		// the count. (Native loop mirrors this with allCallsDiscovery.)
 		if discoveryTools[verb] {
+			// Two thresholds, mirroring the repeat detector and the native loop: a
+			// discovery turn whose reasoning trace moved gets 2× the window (a model
+			// visibly working through fresh listings is orienting, not spinning — the
+			// measured glm-5 false-kill); a frozen or absent trace keeps the strict one.
+			limit := spiralWindow
+			if reasoningAdvanced {
+				limit = 2 * spiralWindow
+			}
 			sameVerb++
-			if sameVerb >= spiralWindow {
+			if sameVerb >= limit {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery turns in a row (list_dir/search) — read or edit a specific target, or answer", sameVerb)

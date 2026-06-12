@@ -1201,3 +1201,54 @@ func TestRunNativeRecordsReasoningAdvanced(t *testing.T) {
 		t.Errorf("read_file step ReasoningAdvanced not set: %+v", readStep)
 	}
 }
+
+func TestRunNativeDiscoveryOrientationBurstWithReasoningSurvives(t *testing.T) {
+	// The measured glm-5 false-kill (SWE-bench stride-30, 2026-06-12): the model
+	// opens with a grounded descend-the-tree orientation burst — list_dir . →
+	// pkg → pkg/sub → a targeted search — reasoning visibly advancing every turn,
+	// and was executed at exactly the strict window on instances other models
+	// solved 2/2. Five discovery turns with a MOVING trace must survive the
+	// strict window (4), reach the read, and answer.
+	files := map[string]string{"pkg/sub/f.txt": "x\n"}
+	turns := [][]llm.ContentPart{
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r1"}]`)}, structuredCall("1", "list_dir", map[string]any{"path": "."})},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r2"}]`)}, structuredCall("2", "list_dir", map[string]any{"path": "pkg"})},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r3"}]`)}, structuredCall("3", "list_dir", map[string]any{"path": "pkg/sub"})},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r4"}]`)}, structuredCall("4", "search", map[string]any{"pattern": "alpha"})},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r5"}]`)}, structuredCall("5", "search", map[string]any{"pattern": "beta"})},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r6"}]`)}, structuredCall("6", "read_file", map[string]any{"path": "pkg/sub/f.txt"})},
+		{llm.Text("found it")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %q (%s), want Answered — an orientation burst with advancing reasoning is not a spiral", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeDiscoverySpiralWithReasoningStillBounded(t *testing.T) {
+	// The leniency is a doubled window, not immunity: a reasoning model that does
+	// NOTHING but discovery — trace moving, pointers gathered, none ever followed —
+	// must still die at 2× the window (8), well before the iteration cap.
+	turns := make([][]llm.ContentPart, 0, 9)
+	for i := 0; i < 9; i++ {
+		turns = append(turns, []llm.ContentPart{
+			llm.ReasoningPart{Raw: json.RawMessage(fmt.Sprintf(`[{"data":"r%d"}]`, i))},
+			structuredCall(fmt.Sprintf("c%d", i), "search", map[string]any{"pattern": fmt.Sprintf("p%d", i)}),
+		})
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledSpiral {
+		t.Errorf("Outcome = %q (%s), want KilledSpiral at the doubled window — reasoning leniency must stay bounded", res.Outcome, res.Reason)
+	}
+	if n := len(res.Steps); n != 8 {
+		t.Errorf("killed after %d steps, want 8 (2× the strict window)", n)
+	}
+}
