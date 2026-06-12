@@ -243,8 +243,10 @@ type Manifest struct {
 }
 
 // ReportSchemaVersion is the current eval-report schema. v2 added LatencyMs on
-// Trial and the reason/latency columns; bump on any further shape change.
-const ReportSchemaVersion = "2"
+// Trial and the reason/latency columns; v3 added Trial.NoAttempt (Grade.
+// NoAttempt) and the best-of-N selection section. Bump on any further shape
+// change.
+const ReportSchemaVersion = "3"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
 // renders to Markdown (human) and JSON (machine-diffable, for regression diffs).
@@ -294,6 +296,7 @@ func (r *Report) Markdown() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString(bestOfMarkdown(r.Cells))
 	if total, ok := r.SweepCost(); ok {
 		fmt.Fprintf(&b, "_sweep cost: %s (priced models only; unpriced rows show —)_\n", humanUSD(total))
 	}

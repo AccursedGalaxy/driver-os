@@ -20,17 +20,18 @@ import (
 // full Step trace is intentionally out of this slice (a follow-up can archive
 // per-trial traces alongside the report).
 type Trial struct {
-	Case    string
-	Model   string
-	RunID   string        // the agent run's stable ID (RunResult.ID) — the P1 spine, so a Trial can be correlated with its persisted transcript.
-	Index   int           // 1-based trial number within the cell.
-	Outcome agent.Outcome // the agent's self-reported terminal state.
-	Answer  string
-	Iters   int
-	Usage   llm.Usage
-	Pass    bool   // the ORACLE's verdict — the actual grade.
-	Detail  string // the oracle's evidence.
-	Err     string // infra failure (provider/transport), distinct from a non-pass.
+	Case      string
+	Model     string
+	RunID     string        // the agent run's stable ID (RunResult.ID) — the P1 spine, so a Trial can be correlated with its persisted transcript.
+	Index     int           // 1-based trial number within the cell.
+	Outcome   agent.Outcome // the agent's self-reported terminal state.
+	Answer    string
+	Iters     int
+	Usage     llm.Usage
+	Pass      bool   // the ORACLE's verdict — the actual grade.
+	Detail    string // the oracle's evidence.
+	NoAttempt bool   // the oracle found nothing gradable (Grade.NoAttempt) — demoted by best-of selection.
+	Err       string // infra failure (provider/transport), distinct from a non-pass.
 
 	Cost   float64 // USD cost of this trial's Usage at the pinned Pricing (meaningless unless Priced).
 	Priced bool    // whether the model had a Pricing entry — false => render "—", not $0.
@@ -139,6 +140,7 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	// Outcome is not Answered).
 	g := c.Oracle.Grade(ctx, GradeInput{Root: dir, Sandbox: sb, Result: res})
 	tr.Pass = g.Pass
+	tr.NoAttempt = g.NoAttempt
 	if tr.Detail == "" {
 		tr.Detail = g.Detail
 	}

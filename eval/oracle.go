@@ -37,6 +37,12 @@ type GradeInput struct {
 type Grade struct {
 	Pass   bool
 	Detail string
+
+	// NoAttempt marks a run that left NOTHING gradable — e.g. an unchanged
+	// working tree (SWE-bench's empty model patch). Distinct from a wrong
+	// attempt: best-of-N selection (SelectBest) demotes these below every trial
+	// that did work, because an `answered` over a no-op is a confident no-op.
+	NoAttempt bool
 }
 
 // defaultOracleTimeout bounds an oracle's verification command when none is set,
