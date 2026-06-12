@@ -92,6 +92,9 @@ sandbox-integration:
 # SWE-bench Lite sweep (the external benchmark). Defaults to a 1-instance
 # slice with one cheap model — every instance pulls its own ~1 GiB official
 # image, so widen COUNT/IDS deliberately. Needs OPENROUTER_API_KEY + docker.
+# NUDGE = HP-4 near-cap finisher window; default 5 keeps the validated 3-of-30
+# proportion at the 50-iter cap (the first roster showed hit_cap-but-PASS runs
+# it exists to clean). NUDGE=0 disables.
 # Examples:
 #   make swebench COUNT=5 N=1 MODELS=deepseek/deepseek-v4-flash
 #   make swebench IDS=django__django-11099 MODELS=openai/gpt-5.5
@@ -99,6 +102,7 @@ swebench:
 	go run ./cmd/eval -case=swebench -n=$(or $(N),1) \
 		-swebench-count=$(or $(COUNT),1) -swebench-ids=$(or $(IDS),) \
 		-max-iters=$(or $(ITERS),50) -max-wall=$(or $(WALL),30m) -run-timeout=$(or $(RUNTO),10m) \
+		-finish-nudge=$(or $(NUDGE),5) \
 		-models=$(or $(MODELS),deepseek/deepseek-v4-flash)
 
 # The gold-patch pipeline check: applies the dataset's GOLD patch and asserts
