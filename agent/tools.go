@@ -181,22 +181,30 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 			// NativeDesc: behavior + selection only. Critically it does NOT mention \n
 			// escapes — in native mode `content` is written VERBATIM, so an escape
 			// instruction here would make the model write a literal backslash-n.
-			NativeDesc: "Create or OVERWRITE a text file inside the sandbox. Prefer this over `run` with shell redirection (`>`/`tee`): it is fence-confined and reports exactly what it wrote. The parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents. Returns a confirmation with the path, byte count, and line count.",
+			NativeDesc: "Create or OVERWRITE a text file inside the sandbox. Prefer this over `run` with shell redirection (`>`/`tee`): it is fence-confined and reports exactly what it wrote. The parent directory must already exist (make it with `run mkdir -p <dir>` first); writing an existing path REPLACES its contents unless `append` is true. For a LARGE file, build it in pieces — write the first part, then call again with \"append\":true for each next part — rather than one huge call (oversized calls get truncated in transit and fail). Returns a confirmation with the path, byte count, and line count.",
 			Run:        func(ctx context.Context, arg string) (string, error) { return toolWriteFile(ctx, sb, arg) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
-				`"path":{"type":"string","description":"file path relative to the sandbox root; the parent directory must already exist (make it with run mkdir -p first). Writing an existing path REPLACES its contents."},` +
-				`"content":{"type":"string","description":"the full file content, written verbatim — real newlines, no escaping, no surrounding quotes"}},` +
+				`"path":{"type":"string","description":"file path relative to the sandbox root; the parent directory must already exist (make it with run mkdir -p first). Writing an existing path REPLACES its contents unless append is true."},` +
+				`"content":{"type":"string","description":"the file content, written verbatim — real newlines, no escaping, no surrounding quotes"},` +
+				`"append":{"type":"boolean","description":"append content to the END of the file instead of replacing it (creates the file if missing). Use this to build a large file in several smaller calls — one huge call gets truncated in transit."}},` +
 				`"required":["path","content"]}`),
 			RunJSON: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
 					Path    string `json:"path"`
 					Content string `json:"content"`
+					Append  bool   `json:"append"`
 				}
 				if err := json.Unmarshal(raw, &a); err != nil {
+					// (DUET-DOGFOOD F7) A truncated call must teach the chunked-write
+					// recovery, not just report a parse error — the model's instinct is
+					// to retry the same oversized call, which truncates again, to the cap.
+					if hint := truncatedArgsHint("write_file", err, raw); hint != "" {
+						return "", errors.New(hint + ` Write the file in PIECES instead: write_file the first ~40 lines (keep every piece under 1500 bytes — calls start truncating around 2.5 KB), then write_file with "append":true for each next piece.`)
+					}
 					return "", fmt.Errorf("invalid write_file arguments: %v", err)
 				}
-				return writeFileOp(ctx, sb, a.Path, a.Content)
+				return writeFileOp(ctx, sb, a.Path, a.Content, a.Append)
 			},
 		},
 		"edit_file": {
@@ -223,6 +231,11 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 					New  string `json:"new"`
 				}
 				if err := json.Unmarshal(raw, &a); err != nil {
+					// (DUET-DOGFOOD F7) Same truncation pathology as write_file: teach
+					// the recovery, don't invite a doomed retry.
+					if hint := truncatedArgsHint("edit_file", err, raw); hint != "" {
+						return "", errors.New(hint + ` Split the change into several smaller edit_file calls, or rebuild the file with chunked write_file calls ("append":true).`)
+					}
 					return "", fmt.Errorf("invalid edit_file arguments: %v", err)
 				}
 				return editFileOp(ctx, sb, a.Path, a.Old, a.New)
@@ -508,7 +521,7 @@ func toolWriteFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string,
 	if badEscape != "" { // (P3) teach the escape set rather than write a stray backslash.
 		return "", fmt.Errorf("invalid escape %q in content — only \\n, \\t and \\\\ are supported; write a literal backslash as \\\\", badEscape)
 	}
-	return writeFileOp(ctx, sb, path, content)
+	return writeFileOp(ctx, sb, path, content, false)
 }
 
 // writeFileOp is the parse-free core shared by the text handler (after
@@ -516,20 +529,52 @@ func toolWriteFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string,
 // passes the JSON `content` string verbatim). It holds the bounds and recovery
 // messages; the only difference between the two callers is how `content` was
 // obtained (escape-decoded vs. a raw JSON string).
-func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string) (string, error) {
+//
+// appendTo (native-only; DUET-DOGFOOD F7) concatenates content onto the existing
+// file (shell `>>` semantics: a missing file is created), so a model whose
+// provider truncates oversized tool-call args can build a large file in pieces.
+// Implemented as read+concat+write at this layer, so every sandbox backend gets
+// it without an interface change. The per-call byte cap applies to the PIECE; the
+// assembled file may legitimately grow past it — incremental construction is
+// exactly what append is for.
+func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string, appendTo bool) (string, error) {
 	if path == "" { // (P3) name the shape, don't just reject.
 		return "", fmt.Errorf("write_file needs a path: write the path first, then a space, then the content, e.g. `write_file notes.txt hello\\nworld`")
 	}
-	if env := looksLikeEditEnvelope(content); env != "" { // (P3/P6) a foreign patch/diff wrapper, not file content.
+	if env := looksLikeEditEnvelope(content); env != "" && !appendTo { // (P3/P6) a foreign patch/diff wrapper, not file content. An append PIECE may legitimately start mid-construct (e.g. a ``` inside markdown), so only the head of a fresh file is checked.
 		return "", fmt.Errorf("content begins with %q, which looks like a patch/diff/fence wrapper rather than the file body — send the RAW file contents only (no apply_patch envelope, no ``` fence, no diff markers)", env)
 	}
 	if n := len(content); n > writeByteCap { // (P4) backstop; see writeByteCap.
 		return "", fmt.Errorf("content is %d bytes, over the %d-byte write_file limit — split it across smaller writes, or generate it with `run`", n, writeByteCap)
 	}
+	if appendTo {
+		if old, err := sb.ReadFile(ctx, path); err == nil {
+			full := string(old) + content
+			if err := sb.WriteFile(ctx, path, []byte(full), 0o644); err != nil {
+				return "", explainWriteErr(path, err)
+			}
+			return fmt.Sprintf("appended %d byte(s) to %s (now %d bytes, %d lines)", len(content), path, len(full), lineCount(full)), nil
+		}
+		// Missing (or unreadable) file: fall through and create it — `>>` semantics.
+	}
 	if err := sb.WriteFile(ctx, path, []byte(content), 0o644); err != nil {
 		return "", explainWriteErr(path, err) // (P3) recovery instruction, not a raw errno.
 	}
 	return fmt.Sprintf("wrote %d byte(s), %d line(s) to %s", len(content), lineCount(content), path), nil
+}
+
+// truncatedArgsHint recognizes the signature of a tool call whose JSON arguments
+// arrived CUT OFF mid-string — a provider-side limit on oversized calls (measured
+// on deepseek-v4-flash: large write_file content arrives as un-terminated JSON,
+// DUET-DOGFOOD F7) — and names the cause. "" means the error is something else.
+// The caller appends its tool-specific recovery instruction; the point is that
+// the model's natural move (retry the same big call) is exactly wrong, and the
+// observation must say so.
+func truncatedArgsHint(tool string, err error, raw json.RawMessage) string {
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return ""
+	}
+	return fmt.Sprintf("your %s call arrived TRUNCATED: its arguments (%d bytes) were cut off mid-content — the call was too large for one tool call. Do NOT retry the same call; it will be truncated again.", tool, len(raw))
 }
 
 // parseWriteArg splits "<path> <content...>" into the path (first whitespace-

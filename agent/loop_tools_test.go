@@ -16,11 +16,16 @@ import (
 // nativeScript is a deterministic tool-calling provider: the i-th Generate returns
 // the i-th turn's content parts (clamping to the last), recording every Request so
 // a test can assert what the loop fed back. Capabilities advertises Tools so it
-// stands in for a native provider.
+// stands in for a native provider. A turn that carries a ReasoningPart also
+// reports ReasoningTokens in its usage — like every real reasoner measured
+// (glm-5, deepseek) — unless nonceTrace emulates the gemini-via-OpenRouter
+// pathology: an encrypted thought-signature that differs every call while usage
+// reports zero reasoning tokens (DUET-DOGFOOD N3).
 type nativeScript struct {
-	turns [][]llm.ContentPart
-	calls []llm.Request
-	n     int
+	turns      [][]llm.ContentPart
+	calls      []llm.Request
+	n          int
+	nonceTrace bool
 }
 
 func (s *nativeScript) Name() string                   { return "native" }
@@ -38,12 +43,16 @@ func (s *nativeScript) Generate(_ context.Context, req llm.Request) (*llm.Respon
 	s.n++
 	parts := s.turns[i]
 	fr := llm.FinishStop
+	usage := llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
 	for _, p := range parts {
 		if _, ok := p.(llm.ToolCallPart); ok {
 			fr = llm.FinishToolUse
 		}
+		if _, ok := p.(llm.ReasoningPart); ok && !s.nonceTrace {
+			usage.ReasoningTokens = 3
+		}
 	}
-	return &llm.Response{Content: parts, FinishReason: fr, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}, nil
+	return &llm.Response{Content: parts, FinishReason: fr, Usage: usage}, nil
 }
 
 // structuredCall builds a tool call with TYPED, multi-field JSON args — the way
@@ -172,6 +181,41 @@ func sayTool() Tool {
 		Name:    "say",
 		Schema:  json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}`),
 		RunJSON: func(_ context.Context, _ json.RawMessage) (string, error) { return "sent", nil },
+	}
+}
+
+func TestRunNativeFinishToolNearCapNudgesSay(t *testing.T) {
+	// DUET-DOGFOOD F2: a finish-tool agent that works right up to the cap loses
+	// its message (validation duet 2026-06-12, turn 7: file written and tested at
+	// i14–16, `say` never made). Within finishToolNudgeWindow of the cap the loop
+	// must inject a once-only reminder to call the finish tool, leaving a turn to
+	// act — and a model that heeds it ends Answered.
+	sb := sbWith(t, map[string]string{"a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n"})
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{structuredCall("c1", "read_file", map[string]any{"path": "a.txt"})},
+		{structuredCall("c2", "read_file", map[string]any{"path": "b.txt"})},
+		{structuredCall("c3", "read_file", map[string]any{"path": "c.txt"})},
+		{structuredCall("c4", "say", map[string]any{"message": "done — wrapping up"})},
+	}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", MaxIterations: 4})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered", res.Outcome, res.Reason)
+	}
+	// The reminder must have been in the conversation BEFORE the final model call
+	// (maxIter=4, window=2 → it fires after turn 2's results land), and only once.
+	nudges := 0
+	for _, m := range ns.calls[len(ns.calls)-1].Messages {
+		if m.Role == llm.RoleUser && strings.Contains(m.Text(), "budget is nearly spent") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("finish-tool nudge appeared %d times in the final request, want exactly 1", nudges)
 	}
 }
 
@@ -350,6 +394,52 @@ func TestRunNativeWriteMultilineStructured(t *testing.T) {
 	}
 	if got := readback(t, sb, "out.txt"); got != content {
 		t.Errorf("file content = %q, want %q", got, content)
+	}
+}
+
+func TestRunNativeWriteAppendBuildsFileInPieces(t *testing.T) {
+	// DUET-DOGFOOD F7 recovery path: a large file built in pieces — a plain write
+	// for the head, then append:true for each next chunk. append on a MISSING
+	// file creates it (`>>` semantics), so the very first call may also append.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "big.go", "content": "package main\n"})},
+		{structuredCall("c2", "write_file", map[string]any{"path": "big.go", "content": "func main() {}\n", "append": true})},
+		{structuredCall("c3", "write_file", map[string]any{"path": "fresh.txt", "content": "made by append\n", "append": true})},
+		{llm.Text("done")},
+	}
+	res, _, sb := runNative(t, nil, turns)
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s)", res.Outcome, res.Reason)
+	}
+	if got, want := readback(t, sb, "big.go"), "package main\nfunc main() {}\n"; got != want {
+		t.Errorf("assembled file = %q, want %q", got, want)
+	}
+	if !strings.Contains(res.Steps[1].Observation, "appended") {
+		t.Errorf("append observation = %q, want an 'appended' confirmation", res.Steps[1].Observation)
+	}
+	if got, want := readback(t, sb, "fresh.txt"), "made by append\n"; got != want {
+		t.Errorf("append-to-missing = %q, want %q (>> semantics: create)", got, want)
+	}
+}
+
+func TestRunNativeTruncatedWriteArgsTeachAppendRecovery(t *testing.T) {
+	// DUET-DOGFOOD F7: deepseek-v4-flash truncates oversized tool-call args
+	// mid-string, and the model's instinct is to retry the same call to the cap
+	// (9 and 13 identical retries in the 2026-06-12 validation run). The error
+	// observation must name the truncation AND point at the chunked-append
+	// recovery — not read as a generic parse failure.
+	truncated := llm.ToolCallPart{ID: "c1", Name: "write_file",
+		Args: json.RawMessage(`{"path": "big.go", "content": "package main\nfunc ma`)} // cut mid-string
+	turns := [][]llm.ContentPart{
+		{truncated},
+		{llm.Text("ok, I'll chunk it")},
+	}
+	res, _, _ := runNative(t, nil, turns)
+	obs := res.Steps[0].Observation
+	for _, want := range []string{"TRUNCATED", "append", "Do NOT retry"} {
+		if !strings.Contains(obs, want) {
+			t.Errorf("truncation observation missing %q: %q", want, obs)
+		}
 	}
 }
 
@@ -1250,5 +1340,38 @@ func TestRunNativeDiscoverySpiralWithReasoningStillBounded(t *testing.T) {
 	}
 	if n := len(res.Steps); n != 8 {
 		t.Errorf("killed after %d steps, want 8 (2× the strict window)", n)
+	}
+}
+
+func TestRunNativeZeroTokenMovingTraceKeepsLenientCeiling(t *testing.T) {
+	// A DECIDED behavior, not an accident (DUET-DOGFOOD N3, tried and REVERTED
+	// 2026-06-12): a reasoning trace that moves every call while usage reports
+	// ZERO reasoning tokens still buys the lenient repeat ceiling. Gemini via
+	// OpenRouter is exactly this shape — an encrypted thought-signature with no
+	// token count — and gating leniency on ReasoningTokens > 0 false-killed its
+	// digest-re-read pattern (trace eval 5/5 → 0/5, eval/runs/n3gate-trace-gemini).
+	// The kill stays BOUNDED at maxReasoningRepeats, well before the cap.
+	turns := make([][]llm.ContentPart, 0, 12)
+	for i := 0; i < 12; i++ {
+		turns = append(turns, []llm.ContentPart{
+			llm.ReasoningPart{Raw: json.RawMessage(fmt.Sprintf(`[{"signature":"nonce-%d"}]`, i))},
+			structuredCall(fmt.Sprintf("c%d", i), "read_file", map[string]any{"path": "a.go"}),
+		})
+	}
+	ns := &nativeScript{turns: turns, nonceTrace: true}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledRepeat {
+		t.Fatalf("Outcome = %q (%s), want KilledRepeat at the LENIENT ceiling (bounded, not immune)", res.Outcome, res.Reason)
+	}
+	if n := res.Iterations; n <= maxRepeats+1 {
+		t.Errorf("killed after %d iterations — the strict ceiling fired; a moving zero-token trace must get the lenient one (the gemini digest-re-read false-kill)", n)
+	}
+	for _, s := range res.Steps[1:] { // turn 1 has no prior trace to compare.
+		if !s.ReasoningAdvanced {
+			t.Errorf("step %d ReasoningAdvanced = false — a moving trace counts as advancing regardless of token count", s.Iter)
+		}
 	}
 }

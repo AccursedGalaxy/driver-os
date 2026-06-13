@@ -126,6 +126,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	lastEditIter := 0
 	finishNudged := false
 	answerNudged := false
+	sayNudged := false
 
 	start := time.Now() // (P5) wall-clock budget anchor; see MaxWallClock.
 	// A deadline-bound context so a slow IN-FLIGHT call (a reasoning-heavy Generate,
@@ -184,6 +185,18 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// tight-loop threshold below AND is recorded on every Step of the turn so a
 		// transcript can show when the lenient ceiling applied. Empty trace (a
 		// non-thinking model) => not advanced, so the detector stays strict.
+		//
+		// Deliberately NOT gated on ReasoningTokens > 0 (DUET-DOGFOOD N3, tried and
+		// REVERTED 2026-06-12): gemini via OpenRouter moves its encrypted
+		// thought-signature every call while reporting reasoning_tokens=0, so the
+		// gate read it as a nonce and dropped it to the strict ceiling — which
+		// false-killed its digest-re-read pattern (read_file item.go ×3 while
+		// walking a call chain in its head) and regressed the trace eval 5/5 → 0/5
+		// (eval/runs/n3gate-trace-gemini, killed_repeat=4). The zero-token signature
+		// movement IS thought for that provider. N3's measured harm (a byte-identical
+		// no-op idle loop riding the lenient ceiling to the cap) was downstream of
+		// N2 — no first-class way to end the turn — and is fixed at the root by the
+		// finish/`say` tool, not here.
 		reasoningSig := reasoningSignature(resp.Content)
 		reasoningAdvanced := reasoningSig != "" && reasoningSig != lastReasoningSig
 
@@ -339,7 +352,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
 			limit := maxRepeats
-			if reasoningSig != lastReasoningSig {
+			if reasoningAdvanced {
 				limit = maxReasoningRepeats
 			}
 			if repeats++; repeats >= limit {
@@ -492,6 +505,21 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			cfg.Obs.Note("near cap — nudging the agent to stop exploring and answer")
 			messages = append(messages, llm.User(answerNudgeNative))
 			answerNudged = true
+		}
+
+		// (DUET-DOGFOOD F2) Near-cap reminder for a finish-tool caller: the work an
+		// agent does survives in its files, but an unsent message is LOST on hit_cap
+		// (the 2026-06-12 validation duet, turn 7: the model finished and tested its
+		// file at i14–16, then the cap fell before it ever called `say`). Unlike the
+		// HP-4 finisher this needs no green-build gate — calling the finish tool
+		// can't mask broken state, it just delivers the message the partner is
+		// waiting for. Fires once, leaving a turn to act.
+		if !sayNudged && cfg.FinishTool != "" && i < maxIter && maxIter-i <= finishToolNudgeWindow {
+			cfg.Obs.Note("near cap — reminding the agent to finish with the " + cfg.FinishTool + " tool")
+			messages = append(messages, llm.User(fmt.Sprintf(
+				"[hint: your action budget is nearly spent (%d turn(s) left). Wrap up NOW: call the %q tool with a short message — your files are saved either way, but a message you never send is lost.]",
+				maxIter-i, cfg.FinishTool)))
+			sayNudged = true
 		}
 	}
 

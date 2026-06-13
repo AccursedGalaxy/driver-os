@@ -52,11 +52,14 @@ func New(ctx context.Context, dir string, opts Options) (*Sandbox, error) {
 
 	// The embedded local backend resolves dir to an absolute, cleaned path and is
 	// the fence for all file ops. We reuse its resolved root for the bind mount so
-	// the host path we hand Docker is exactly the fenced root.
+	// the host path we hand Docker is exactly the fenced root. The mount alias
+	// teaches the host-side fence that the model's in-container view of the
+	// workspace (/workspace/f.go) names the same files (DUET-DOGFOOD F4).
 	lsb, err := local.New(dir)
 	if err != nil {
 		return nil, err
 	}
+	lsb.SetMountAlias(opts.WorkdirMount)
 
 	if opts.User == "" {
 		opts.User = currentUserSpec() // non-root + host-owned bind-mount writes (§6).
@@ -123,6 +126,7 @@ func newWithRunner(dir string, opts Options, runner dockerRunner) (*Sandbox, err
 	if err != nil {
 		return nil, err
 	}
+	lsb.SetMountAlias(opts.WorkdirMount)
 	if opts.User == "" {
 		opts.User = currentUserSpec()
 	}

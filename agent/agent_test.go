@@ -373,7 +373,7 @@ func TestWriteFileRejectsEditEnvelope(t *testing.T) {
 	sb := sbWith(t, nil)
 	ctx := context.Background()
 	// The R10 gpt-5-nano failure: apply_patch envelope leaked into content.
-	_, err := writeFileOp(ctx, sb, "calc.go", "*** Begin Patch\n*** Add File: calc.go\npackage main\n")
+	_, err := writeFileOp(ctx, sb, "calc.go", "*** Begin Patch\n*** Add File: calc.go\npackage main\n", false)
 	if err == nil || !strings.Contains(err.Error(), "patch/diff/fence") {
 		t.Errorf("apply_patch envelope err = %v, want a recovery message about a patch wrapper", err)
 	}
@@ -382,11 +382,11 @@ func TestWriteFileRejectsEditEnvelope(t *testing.T) {
 		t.Error("rejected write still created the file")
 	}
 	// A leading markdown fence (R3-style wrapping) is likewise rejected.
-	if _, err := writeFileOp(ctx, sb, "x.go", "```go\npackage main\n```"); err == nil {
+	if _, err := writeFileOp(ctx, sb, "x.go", "```go\npackage main\n```", false); err == nil {
 		t.Error("leading code fence should be rejected")
 	}
 	// Clean content still writes.
-	if _, err := writeFileOp(ctx, sb, "ok.go", "package main\n"); err != nil {
+	if _, err := writeFileOp(ctx, sb, "ok.go", "package main\n", false); err != nil {
 		t.Errorf("clean content was wrongly rejected: %v", err)
 	}
 }

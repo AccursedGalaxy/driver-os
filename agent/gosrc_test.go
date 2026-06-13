@@ -83,7 +83,7 @@ func TestListDirListsStdlibSource(t *testing.T) {
 func TestWriteStaysFenced(t *testing.T) {
 	sb := sbWith(t, nil)
 	target := filepath.Join(goEnvDir(t, "GOROOT"), "src", "strings", "pwned.go")
-	if _, err := writeFileOp(context.Background(), sb, target, "package strings"); err == nil {
+	if _, err := writeFileOp(context.Background(), sb, target, "package strings", false); err == nil {
 		t.Fatalf("writeFileOp(%q) succeeded — an absolute path outside the workspace must be refused", target)
 	}
 }

@@ -132,6 +132,48 @@ func TestFenceRefusesEscape(t *testing.T) {
 	}
 }
 
+func TestMountAliasTranslatesToRoot(t *testing.T) {
+	// DUET-DOGFOOD F4: a model living in a container at the mount point uses
+	// absolute paths like "/workspace/f.txt"; with the alias set those must name
+	// the same files as root-relative paths — for reads, writes, and listing the
+	// mount point itself.
+	sb, root := newTest(t)
+	sb.SetMountAlias("/workspace")
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := sb.ReadFile(context.Background(), "/workspace/f.txt")
+	if err != nil || string(data) != "hi" {
+		t.Errorf("ReadFile(/workspace/f.txt) = %q, %v; want hi", data, err)
+	}
+	if err := sb.WriteFile(context.Background(), "/workspace/g.txt", []byte("x"), 0o644); err != nil {
+		t.Errorf("WriteFile(/workspace/g.txt): %v", err)
+	}
+	if data, err := sb.ReadFile(context.Background(), "g.txt"); err != nil || string(data) != "x" {
+		t.Errorf("aliased write not visible root-relative: %q, %v", data, err)
+	}
+	if _, err := sb.ListDir(context.Background(), "/workspace"); err != nil {
+		t.Errorf("ListDir(/workspace): %v", err)
+	}
+}
+
+func TestMountAliasStillFences(t *testing.T) {
+	// The alias is a translation, not a widening: an escape THROUGH the alias and
+	// any unaliased absolute path stay refused, and without an alias the
+	// mount-point path is refused as before.
+	sb, _ := newTest(t)
+	sb.SetMountAlias("/workspace")
+	for _, p := range []string{"/workspace/../escape.txt", "/etc/passwd", "/workspaceX/f.txt"} {
+		if _, err := sb.ReadFile(context.Background(), p); err == nil {
+			t.Errorf("ReadFile(%q) = nil error, want refusal", p)
+		}
+	}
+	plain, _ := newTest(t)
+	if _, err := plain.ReadFile(context.Background(), "/workspace/f.txt"); err == nil {
+		t.Errorf("no alias set: ReadFile(/workspace/f.txt) = nil error, want refusal")
+	}
+}
+
 func TestExecEcho(t *testing.T) {
 	sb, _ := newTest(t)
 	res, err := sb.Exec(context.Background(), sandbox.Command{Path: "sh", Args: []string{"-c", "echo hi"}})

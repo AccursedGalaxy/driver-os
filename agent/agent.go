@@ -182,8 +182,11 @@ type Step struct {
 	ToolMs  int64
 	// ReasoningAdvanced is true when this turn's (opaque) provider reasoning trace
 	// DIFFERED from the previous turn's — a thinking model still moving even if its
-	// visible action repeats. It selects the lenient tight-loop threshold; see
-	// maxReasoningRepeats.
+	// visible action repeats. It selects the lenient tight-loop/spiral thresholds;
+	// see maxReasoningRepeats. Deliberately independent of Usage.ReasoningTokens:
+	// gemini moves its encrypted thought-signature while reporting zero tokens, and
+	// that movement is real thought (a token gate was tried and reverted 2026-06-12
+	// after regressing the trace eval 5/5 → 0/5; see loop_tools.go).
 	ReasoningAdvanced bool
 }
 
@@ -593,6 +596,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P5) Did the model's hidden reasoning move this turn? Compare the opaque
 		// trace to the previous turn's BEFORE updating the tracker. Empty trace
 		// (non-thinking model) counts as not-advanced, so it keeps the strict threshold.
+		// Deliberately NOT gated on ReasoningTokens > 0 — tried and REVERTED
+		// 2026-06-12; see the twin comment in loop_tools.go (gemini moves its
+		// encrypted thought-signature with zero reported tokens, and gating on the
+		// token count false-killed real work: trace eval 5/5 → 0/5).
 		// reasoningSignature is shared with the native loop (loop_tools.go) — one helper.
 		reasoning := reasoningSignature(resp.Content)
 		reasoningAdvanced := reasoning != "" && reasoning != lastReasoning
@@ -832,6 +839,13 @@ const finishNudgeNative = "[hint: your last build/test run passed and you haven'
 // for an observe-only agent that has no build signal to gate the finisher on. It
 // tells the model to stop reading and answer from what it has, because an unanswered
 // run wastes the whole budget.
+// finishToolNudgeWindow is how close to the iteration cap the finish-tool
+// reminder fires (DUET-DOGFOOD F2): 2 leaves the model one turn to absorb the
+// hint and one to act on it. A fixed window, not a Config knob — the reminder is
+// safe whenever a FinishTool is configured (it can't mask broken state), so
+// there's nothing for a caller to tune.
+const finishToolNudgeWindow = 2
+
 const answerNudgeNative = "[hint: you are almost out of turns. STOP exploring now and give your FINAL answer as plain text — " +
 	"do NOT call another tool. Answer from what you have already read; an unanswered run produces nothing.]"
 

@@ -120,12 +120,15 @@ func TestRunKilledRepeat(t *testing.T) {
 
 // scriptedRz is a scripted provider that also attaches an opaque reasoning trace
 // to each turn. advancing=true makes the trace differ every call (a thinking model
-// still moving its chain of thought); advancing=false freezes it (a stalled trace).
-// It drives the two-threshold tight-loop detector (maxRepeats vs maxReasoningRepeats).
+// still moving its chain of thought); advancing=false freezes it (a stalled trace);
+// nonceTrace=true keeps the trace differing but reports zero reasoning tokens (the
+// gemini-via-OpenRouter encrypted thought-signature, DUET-DOGFOOD N3). It drives
+// the two-threshold tight-loop detector (maxRepeats vs maxReasoningRepeats).
 type scriptedRz struct {
-	replies   []string
-	advancing bool
-	calls     int
+	replies    []string
+	advancing  bool
+	nonceTrace bool
+	calls      int
 }
 
 func (s *scriptedRz) Name() string                   { return "scripted-rz" }
@@ -141,12 +144,16 @@ func (s *scriptedRz) Generate(_ context.Context, _ llm.Request) (*llm.Response, 
 		i = len(s.replies) - 1
 	}
 	raw := `"frozen-thought"`
-	if s.advancing {
+	if s.advancing || s.nonceTrace {
 		raw = `"thought-` + strings.Repeat("x", s.calls) + `"` // differs every call.
+	}
+	rz := 3
+	if s.nonceTrace {
+		rz = 0 // trace moves, but no reasoning was spent — a per-request nonce.
 	}
 	return &llm.Response{
 		Content: []llm.ContentPart{llm.Text(s.replies[i]), llm.ReasoningPart{Raw: []byte(raw)}},
-		Usage:   llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, ReasoningTokens: 3},
+		Usage:   llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, ReasoningTokens: rz},
 	}, nil
 }
 
@@ -172,6 +179,28 @@ func TestRunReasoningAdvancedUsesLenientThreshold(t *testing.T) {
 		if !s.ReasoningAdvanced {
 			t.Errorf("step %d ReasoningAdvanced = false, want true", s.Iter)
 		}
+	}
+}
+
+func TestRunZeroTokenMovingTraceKeepsLenientThreshold(t *testing.T) {
+	// Text-loop twin of the native zero-token test: a moving trace with ZERO
+	// reported reasoning tokens still counts as advancing (gemini's encrypted
+	// thought-signature shape — a token gate was tried and reverted 2026-06-12
+	// after it false-killed real work; see loop_tools.go). MaxIterations sits
+	// below the lenient ceiling, so surviving to the cap proves the strict
+	// threshold did not fire.
+	sp := &scriptedRz{replies: []string{"read_file x"}, nonceTrace: true}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome == KilledRepeat {
+		t.Fatalf("Outcome = KilledRepeat (%s) — a moving zero-token trace must keep the lenient threshold", res.Reason)
+	}
+	if res.Outcome != HitCap {
+		t.Fatalf("Outcome = %q, want %q (ran to cap under the lenient threshold)", res.Outcome, HitCap)
 	}
 }
 

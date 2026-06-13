@@ -32,6 +32,15 @@ type Sandbox struct {
 	root     string // absolute, cleaned — the lexical fence boundary.
 	realRoot string // root with all symlinks resolved — the symlink-safe boundary.
 
+	// alias is an OPTIONAL absolute prefix that maps to the root — the in-container
+	// mount point (e.g. "/workspace") when this backend is composed under docker.
+	// The model lives in the container, so it naturally writes "/workspace/f.go";
+	// the fence is host-side and root-relative, so without the alias that path is
+	// refused as off-root and the model's mental model fights the tools
+	// (DUET-DOGFOOD F4). resolve() strips the alias before fencing — no widening:
+	// the stripped path goes through the exact same lexical+symlink checks.
+	alias string
+
 	// procMu guards procs: the live StartProcess children. The local backend has no
 	// container to reap on teardown (unlike docker's `rm -f`), so Close must kill any
 	// the caller forgot — else a crashed/abandoned run leaks host processes.
@@ -103,6 +112,16 @@ func (s *Sandbox) RelInRoot(path string) (string, error) {
 	return filepath.Rel(s.root, abs)
 }
 
+// SetMountAlias declares an absolute prefix that aliases the root: the
+// in-container bind-mount point (e.g. "/workspace") when this backend is composed
+// under a container backend. Paths arriving with that prefix are translated to
+// root-relative before fencing, so a model that (correctly) believes it lives at
+// the mount point can use absolute paths without being refused (DUET-DOGFOOD F4).
+// A trailing slash is trimmed; "" disables the alias.
+func (s *Sandbox) SetMountAlias(prefix string) {
+	s.alias = strings.TrimSuffix(prefix, "/")
+}
+
 // resolve maps a sandbox-relative path to an absolute host path, refusing any
 // path that escapes the root. This IS the fence, and it has TWO layers:
 //
@@ -126,6 +145,16 @@ func (s *Sandbox) RelInRoot(path string) (string, error) {
 func (s *Sandbox) resolve(path string) (string, error) {
 	if path == "" {
 		path = "."
+	}
+	// Mount-alias translation (DUET-DOGFOOD F4): "/workspace/f.go" from a model
+	// living in the container means "<root>/f.go" here. Strip the alias and fall
+	// through to the normal fence — the translated path is checked like any other.
+	if s.alias != "" {
+		if path == s.alias {
+			path = "."
+		} else if strings.HasPrefix(path, s.alias+"/") {
+			path = path[len(s.alias)+1:]
+		}
 	}
 	abs := filepath.Join(s.root, path)
 	if abs != s.root && !strings.HasPrefix(abs, s.root+string(filepath.Separator)) {
