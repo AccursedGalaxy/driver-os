@@ -86,8 +86,17 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 
-	// (P1) State lives HERE; we re-send the whole conversation each turn.
-	messages := []llm.Message{llm.User("TASK: " + cfg.Task)}
+	// (P1) State lives HERE; we re-send the whole conversation each turn. A
+	// continuing chat seeds it with the prior turns (Config.History); see Session.
+	messages := seedMessages(cfg)
+	// Expose the final conversation on every loop exit (the continuation seam, see
+	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
+	// registered after `messages` exists so the closure reads its final value.
+	defer func() {
+		if out != nil {
+			out.Messages = messages
+		}
+	}()
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
 	scope := scopeOrDefault(cfg.MemoryScope)
 	system := withPersona(cfg.Persona, nativeSystemPrompt()) + recall(ctx, cfg.Memory, scope, cfg.Task)
@@ -238,6 +247,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				continue
 			}
 			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced})
+			// (P1/continuation seam) The model's final tool-call-free turn is part of the
+			// conversation a Session carries forward — append it before any terminal
+			// return so RunResult.Messages ends with the answer the model gave. Covers all
+			// three exits below (Unverified-on-fail, empty-answer, Answered); the
+			// VerifyContinue branch relied on its own append before this existed.
+			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
@@ -249,7 +264,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// tool-call-free turn must precede the feedback so the conversation stays
 				// well-formed.
 				cfg.Obs.Note("finish rejected (not verified) — continuing")
-				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+				// (the assistant's tool-call-free turn was appended above, before the
+				// res.Steps record — the conversation stays well-formed for the feedback.)
 				messages = append(messages, llm.User("OBSERVATION:\nNot finished — you stopped calling tools, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
 				continue
 			}

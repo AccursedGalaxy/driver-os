@@ -214,6 +214,13 @@ type RunResult struct {
 	Iterations int     // turns taken.
 	Usage      llm.Usage
 	Err        error // set iff Outcome == ProviderErr.
+	// Messages is the FULL conversation as it stood when the run ended — the
+	// system-framed TASK (or the seeded History plus this turn's input), every
+	// assistant turn, and every tool result. It is the continuation seam: a chat
+	// front-end feeds it back as the next run's Config.History so the model sees
+	// the whole prior conversation (see Session). Populated on every path that
+	// reaches the loop; nil for a pre-loop refusal (too-weak sandbox).
+	Messages []llm.Message
 }
 
 // Config is everything Run needs. Model, Sandbox, and Task are required; the
@@ -249,9 +256,16 @@ type Config struct {
 	// cache cost. See ../SESSION.md.
 	VerifySandbox sandbox.Sandbox
 	Tools         map[string]Tool // optional: nil = DefaultTools(Sandbox).
-	Task          string          // required: the goal.
-	Root          string          // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
-	Obs           Observer        // optional: live progress sink; nil = silent.
+	Task          string          // required: the goal (this turn's user input when continuing a conversation).
+	// History is a prior conversation to CONTINUE from (the continuation seam, see
+	// Session). When non-empty, the loop seeds its message slice with these and
+	// appends Task as the next user turn — so the model sees the whole prior
+	// exchange instead of a fresh "TASK:" framing. Empty (the default) is the
+	// historical single-shot behavior: the run starts from "TASK: " + Task. The
+	// loop clones it before appending, so the caller's slice is never mutated.
+	History []llm.Message
+	Root    string   // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
+	Obs     Observer // optional: live progress sink; nil = silent.
 
 	// MinIsolation is the SAFETY PRECONDITION (P2/§5): the weakest sandbox isolation
 	// this run will tolerate. Before the first model call, Run/RunNative refuse with
@@ -419,6 +433,21 @@ type Config struct {
 // nil Sandbox under a non-zero MinIsolation is a refusal, not a panic. The caller
 // must return this result AS-IS and must NOT route it through upgradeIfVerified —
 // a refused run must never execute VerifyCmd on the unsafe sandbox.
+// seedMessages builds the loop's initial conversation. With no History it is the
+// historical single-shot start ("TASK: " + Task). With History (a continuing
+// conversation, see Session) it clones the prior messages — so the caller's slice
+// is never mutated as the loop appends — and adds this turn's input as a plain
+// user message (no "TASK:" reframing, since the model already has the context).
+// Both loops call this so the continuation seam behaves identically across them.
+func seedMessages(cfg Config) []llm.Message {
+	if len(cfg.History) == 0 {
+		return []llm.Message{llm.User("TASK: " + cfg.Task)}
+	}
+	msgs := make([]llm.Message, 0, len(cfg.History)+1)
+	msgs = append(msgs, cfg.History...)
+	return append(msgs, llm.User(cfg.Task))
+}
+
 func checkIsolation(cfg Config) *RunResult {
 	if cfg.MinIsolation <= sandbox.IsolationNone {
 		return nil // default: every backend admitted; today's trusted-caller behavior.
@@ -478,8 +507,17 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
-	// We rebuild and re-send this whole conversation on every single call.
-	messages := []llm.Message{llm.User("TASK: " + cfg.Task)}
+	// We rebuild and re-send this whole conversation on every single call. A
+	// continuing chat seeds it with the prior turns (Config.History); see Session.
+	messages := seedMessages(cfg)
+	// Expose the final conversation on every loop exit (the continuation seam, see
+	// RunResult.Messages). Registered after `messages` exists so the closure reads
+	// its final value; the closure captures the variable, which the loop reassigns.
+	defer func() {
+		if out != nil {
+			out.Messages = messages
+		}
+	}()
 
 	// ---- Principle 3: context IS the state. Long-term memory from PAST runs
 	// (mneme) is surfaced into the system prompt before we think. The model gets
