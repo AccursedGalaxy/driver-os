@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"sort"
 	"strings"
 	"time"
@@ -266,6 +267,18 @@ type Config struct {
 	History []llm.Message
 	Root    string   // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
 	Obs     Observer // optional: live progress sink; nil = silent.
+
+	// Stream opts this run into token streaming: when set AND the provider reports
+	// Capabilities().Streaming, each model call goes through Provider.Stream and the
+	// incremental text deltas are pushed to Obs if it implements DeltaObserver — the
+	// Claude-Code-style live-typing feel a chat front-end wants. Off by default, so
+	// every existing caller (eval, issue-bot, council) keeps the single Generate call
+	// and byte-identical behavior. A non-streaming provider silently uses Generate
+	// even when this is set. NOTE: streamed chunks carry no reasoning trace, so a
+	// streaming run falls back to the STRICT no-progress thresholds (the reasoning-
+	// aware lenient window needs ReasoningPart content only Generate returns) — fine
+	// for interactive use, which rarely approaches those detectors.
+	Stream bool
 
 	// MinIsolation is the SAFETY PRECONDITION (P2/§5): the weakest sandbox isolation
 	// this run will tolerate. Before the first model call, Run/RunNative refuse with
@@ -1078,7 +1091,7 @@ func truncate(s string) string { return clip(s, observationCap) }
 // caller degrades to HitContextLimit instead of mislabelling it a transport fault.
 func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
 	for {
-		resp, err := cfg.Model.Generate(ctx, req)
+		resp, err := generateOnce(ctx, cfg, req)
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
 		}
@@ -1089,6 +1102,55 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 		cfg.Obs.Note(fmt.Sprintf("context overflow — evicted oldest turn (%d→%d msgs), retrying (HP-1 reactive fallback)", len(req.Messages), len(shrunk)))
 		req.Messages = shrunk
 	}
+}
+
+// generateOnce performs a single model call — the seam where streaming plugs in.
+// When Config.Stream is set AND the provider supports streaming, it consumes the
+// stream and pushes incremental text deltas to the observer (DeltaObserver),
+// collapsing the chunks into the same *llm.Response shape Generate returns so the
+// loop body is identical either way. Otherwise it is a plain Generate call. The
+// eviction retry in generateWithEviction wraps this, so a streamed context
+// overflow still triggers compaction and a re-stream.
+func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
+	if cfg.Stream && cfg.Model.Capabilities().Streaming {
+		return collectStream(cfg.Model.Stream(ctx, req), deltaSink(cfg.Obs))
+	}
+	return cfg.Model.Generate(ctx, req)
+}
+
+// collectStream drains a chunk stream into a Response, invoking onDelta (if
+// non-nil) for each text fragment as it arrives — the live-typing tap. It mirrors
+// Generate's output: accumulated text becomes a single leading Text part, then the
+// fully-assembled tool calls in arrival order, with FinishReason and Usage taken
+// from the terminal Done chunk. A streamed error aborts and propagates (the
+// eviction wrapper classifies ErrContextLength). Streamed chunks carry no
+// reasoning trace, so the collected Content has none — see Config.Stream.
+func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.Response, error) {
+	var text strings.Builder
+	var calls []llm.ContentPart
+	resp := &llm.Response{}
+	for chunk, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case chunk.Done:
+			resp.FinishReason = chunk.FinishReason
+			resp.Usage = chunk.Usage
+		case chunk.ToolCall != nil:
+			calls = append(calls, *chunk.ToolCall)
+		case chunk.Text != "":
+			text.WriteString(chunk.Text)
+			if onDelta != nil {
+				onDelta(chunk.Text)
+			}
+		}
+	}
+	if text.Len() > 0 {
+		resp.Content = append(resp.Content, llm.Text(text.String()))
+	}
+	resp.Content = append(resp.Content, calls...)
+	return resp, nil
 }
 
 // evictOldestTurn is HP-1's reactive compaction unit: it drops the OLDEST tool

@@ -19,6 +19,28 @@ type Observer interface {
 	Done(answer string)      // the model emitted a final answer.
 }
 
+// DeltaObserver is an OPTIONAL Observer extension (DESIGN decision 2: optional
+// capabilities discovered via type-assertion). An Observer that ALSO implements it
+// receives incremental text deltas as the model streams — the live-typing channel
+// a chat REPL renders. The loop type-asserts for it and streams only when both
+// Config.Stream is set and the provider supports streaming; an Observer that
+// doesn't implement it is unaffected and still gets the whole reply via Model().
+// Keeping it separate from Observer means none of the existing implementations
+// (ndjson, issue-bot, commit-msg, jarvis, duet) need to change.
+type DeltaObserver interface {
+	ModelDelta(delta string) // one incremental text fragment from the streaming model call.
+}
+
+// deltaSink returns the observer's ModelDelta method when it implements
+// DeltaObserver, else nil. The streaming collector calls it per text chunk; nil
+// means "collect silently" (a non-streaming observer, or a silent run).
+func deltaSink(obs Observer) func(string) {
+	if d, ok := obs.(DeltaObserver); ok {
+		return d.ModelDelta
+	}
+	return nil
+}
+
 // nopObserver discards every event. Run substitutes it when Config.Obs is nil,
 // so the loop can call the observer unconditionally.
 type nopObserver struct{}
