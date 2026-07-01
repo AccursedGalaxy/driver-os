@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"testing"
 
@@ -56,5 +57,82 @@ func TestSessionSetModelSwapsProviderKeepsConversation(t *testing.T) {
 	}
 	if len(s.Messages()) <= before {
 		t.Fatalf("conversation lost across SetModel: %d -> %d messages", before, len(s.Messages()))
+	}
+}
+
+// readTurns scripts n distinct read_file calls (varying line ranges so the
+// exact-repeat detector never trips) — a model that keeps working forever,
+// which is exactly what exercises the iteration cap.
+func readTurns(n int) [][]llm.ContentPart {
+	turns := make([][]llm.ContentPart, 0, n)
+	for i := 0; i < n; i++ {
+		turns = append(turns, []llm.ContentPart{
+			structuredCall(fmt.Sprintf("c%d", i), "read_file",
+				map[string]any{"path": "go.mod", "from": 1, "to": i + 1}),
+		})
+	}
+	return turns
+}
+
+// SetMaxIterations must govern the NEXT Send: the same conversation that just
+// hit the old cap runs to the new one on "continue" — the /set max-iters seam
+// the TUI stands on after a hit_cap turn.
+func TestSessionSetMaxIterations(t *testing.T) {
+	ns := &nativeScript{turns: readTurns(12)}
+	s := NewSession(Config{
+		Model:         ns,
+		Sandbox:       sbWith(t, map[string]string{"go.mod": "module x\n"}),
+		MaxIterations: 2,
+	}, RunNative)
+
+	res, err := s.Send(context.Background(), "survey the tree")
+	if err != nil {
+		t.Fatalf("Send 1: %v", err)
+	}
+	if res.Outcome != HitCap || res.Iterations != 2 {
+		t.Fatalf("turn 1 = %s after %d iterations, want %s after 2", res.Outcome, res.Iterations, HitCap)
+	}
+
+	s.SetMaxIterations(4)
+	if got := s.MaxIterations(); got != 4 {
+		t.Fatalf("MaxIterations() = %d after SetMaxIterations(4)", got)
+	}
+	res, err = s.Send(context.Background(), "continue")
+	if err != nil {
+		t.Fatalf("Send 2: %v", err)
+	}
+	if res.Outcome != HitCap || res.Iterations != 4 {
+		t.Fatalf("turn 2 = %s after %d iterations, want %s after 4 (new cap not applied)", res.Outcome, res.Iterations, HitCap)
+	}
+}
+
+// SetMaxTokens must reach the provider on the NEXT Send's requests.
+func TestSessionSetMaxTokens(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("answer one")},
+		{llm.Text("answer two")},
+	}}
+	s := NewSession(Config{
+		Model:     ns,
+		Sandbox:   sbWith(t, map[string]string{"go.mod": "module x\n"}),
+		MaxTokens: 128,
+	}, RunNative)
+
+	if _, err := s.Send(context.Background(), "first"); err != nil {
+		t.Fatalf("Send 1: %v", err)
+	}
+	if got := ns.calls[len(ns.calls)-1].MaxTokens; got != 128 {
+		t.Fatalf("turn 1 request MaxTokens = %d, want 128", got)
+	}
+
+	s.SetMaxTokens(256)
+	if got := s.MaxTokens(); got != 256 {
+		t.Fatalf("MaxTokens() = %d after SetMaxTokens(256)", got)
+	}
+	if _, err := s.Send(context.Background(), "second"); err != nil {
+		t.Fatalf("Send 2: %v", err)
+	}
+	if got := ns.calls[len(ns.calls)-1].MaxTokens; got != 256 {
+		t.Fatalf("turn 2 request MaxTokens = %d, want 256 (new cap not applied)", got)
 	}
 }

@@ -15,3 +15,20 @@ func (s *Session) SetModel(p llm.Provider) { s.cfg.Model = p }
 
 // Model returns the provider the next Send will use.
 func (s *Session) Model() llm.Provider { return s.cfg.Model }
+
+// SetMaxIterations changes the per-turn iteration cap for every SUBSEQUENT
+// turn (the /set max-iters command) — raising it after a hit_cap turn lets
+// "continue" finish a big task without restarting the session. Same calling
+// contract as SetModel: only from the driving goroutine, never mid-Send.
+// The caller validates; values <= 0 fall back to DefaultMaxIterations.
+func (s *Session) SetMaxIterations(n int) { s.cfg.MaxIterations = n }
+
+// MaxIterations returns the cap the next Send will run under.
+func (s *Session) MaxIterations() int { return s.cfg.MaxIterations }
+
+// SetMaxTokens changes the per-turn model output cap for every SUBSEQUENT
+// turn (the /set max-tokens command). Same calling contract as SetModel.
+func (s *Session) SetMaxTokens(n int) { s.cfg.MaxTokens = n }
+
+// MaxTokens returns the output cap the next Send will run under.
+func (s *Session) MaxTokens() int { return s.cfg.MaxTokens }
