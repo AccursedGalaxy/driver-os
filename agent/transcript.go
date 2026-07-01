@@ -81,7 +81,12 @@ type RunRecord struct {
 	Iterations    int       `json:"iterations"`
 	Usage         llm.Usage `json:"usage"`
 	Err           string    `json:"error,omitempty"`
-	Steps         []Step    `json:"steps,omitempty"`
+	// Review is the review-gate record (rounds, findings + fates, reviewer
+	// usage) — the calibration telemetry the corpus tooling aggregates
+	// (FP rate per reviewer = refuted+expired / total blockers). Absent when
+	// the run had no Reviewer configured.
+	Review *ReviewReport `json:"review,omitempty"`
+	Steps  []Step        `json:"steps,omitempty"`
 }
 
 // RecordFrom builds a RunRecord from a finished run. model is the caller's label
@@ -100,6 +105,7 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Reason:        res.Reason,
 		Iterations:    res.Iterations,
 		Usage:         res.Usage,
+		Review:        res.Review,
 		Steps:         res.Steps,
 	}
 	if !res.StartedAt.IsZero() {

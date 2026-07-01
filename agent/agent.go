@@ -230,6 +230,11 @@ type RunResult struct {
 	Iterations int     // turns taken.
 	Usage      llm.Usage
 	Err        error // set iff Outcome == ProviderErr.
+	// Review is the review-gate record — rounds, every finding with its fate,
+	// and the reviewer's token cost (the calibration telemetry). nil when no
+	// Reviewer was configured; populated on every loop exit when one was, even
+	// if the gate never fired (Skipped says why).
+	Review *ReviewReport
 	// Messages is the FULL conversation as it stood when the run ended — the
 	// system-framed TASK (or the seeded History plus this turn's input), every
 	// assistant turn, and every tool result. It is the continuation seam: a chat
@@ -391,6 +396,32 @@ type Config struct {
 	// the plain terminal gate would just record a non-pass. Bounded by MaxIterations;
 	// requires VerifyCmd.
 	VerifyContinue bool
+
+	// TestFence is the READ-ONLY glob list for the run (REVIEW-GATE slice 0;
+	// recommended `*_test.go,testdata/**`): write_file/edit_file refuse matching
+	// paths outright, every fenced file is hashed at run start, and ANY drift at
+	// a closing gate — including a `run`-mediated shell redirect — makes the run
+	// Unverified with the files named. It closes the hole the probe only papered
+	// over with prompt text ("do not modify tests"): test-file immutability must
+	// be enforced by the HARNESS, not asked of the model. Empty = off (today's
+	// behavior byte-for-byte); opt-in for now — eval/challenge runs and -review
+	// runs set it.
+	TestFence []string
+
+	// Reviewer arms the REVIEW GATE (REVIEW-GATE slice 1): an injected,
+	// independent model reviewer run at every path that can end Answered, ONLY
+	// after the fence and VerifyCmd pass (execution-first). Blocking findings —
+	// grounded by verbatim quote, over the confidence gate or confirmed by an
+	// executed repro — are fed back to the solver VerifyContinue-style while
+	// ReviewRounds remain, then mark the run Unverified. nil = gate off.
+	// Implementations live outside agent (council.CodeReviewer) — council
+	// imports agent, so the reviewer must be injected to avoid the cycle.
+	Reviewer Reviewer
+
+	// ReviewRounds caps the reviewer↔solver repair cycles (0 =
+	// DefaultReviewRounds). Bounded on purpose: refine-loop gains concentrate in
+	// round 1, and unbounded review loops flip correct patches to wrong.
+	ReviewRounds int
 
 	// FinishNudgeWindow arms HP-4's near-cap FINISHER. When > 0, and the run is
 	// within this many turns of the iteration cap, AND the world looks SETTLED — the
@@ -575,8 +606,21 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if cfg.Tools == nil {
 		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
 	}
+	// (REVIEW-GATE slice 0) The test fence wraps the mutation tools BEFORE the
+	// system prompt is built from them, and the closing gates snapshot their
+	// run-start state (fence hashes + the review diff base). Empty fence + nil
+	// Reviewer ⇒ both are inert and behavior is byte-identical.
+	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
+	gs := newGates(ctx, cfg, runTimeout)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	// The review report travels on EVERY exit path (findings + fates are the
+	// calibration telemetry, recorded from day one) — nil when the gate is off.
+	defer func() {
+		if out != nil {
+			out.Review = gs.reviewReport()
+		}
+	}()
 
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
@@ -637,7 +681,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
 			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
-			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
 		// the turn that crossed the cap was still processed (it may have answered);
@@ -645,7 +689,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
 			res.Outcome = HitBudget
 			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
-			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
@@ -668,7 +712,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 			// (HP-1) The window overflowed and eviction couldn't compact it any
 			// further (only TASK + the most recent turn remain). Degrade gracefully
@@ -676,7 +720,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if errors.Is(err, llm.ErrContextLength) {
 				res.Outcome = HitContextLimit
 				res.Reason = "context window exceeded and could not be compacted further"
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 			// A transport/auth failure is a real stop (tool errors are not — see
 			// dispatch). Record it as a typed outcome AND return the error.
@@ -715,8 +759,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			step.Grounded = grounded
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
-			// terminal state before accepting it.
-			reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout)
+			// terminal state before accepting it (fence first, then VerifyCmd).
+			reason := gs.verifyTermination(ctx, tr.lastRunFailed)
 			if reason != "" && cfg.VerifyContinue && i < maxIter {
 				// Continue-on-fail: a premature finish becomes more work, not a stop.
 				// Feed the real failing state back (P4) and keep going.
@@ -740,6 +784,21 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Outcome = Unverified
 				res.Reason = "empty final answer — the model stopped without producing an answer"
 				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
+				return res, nil
+			}
+			// (REVIEW-GATE slice 1) Stage 2, only now that fence + VerifyCmd are
+			// green (execution-first): blocking findings with repair budget left
+			// become an observation and more work (the VerifyContinue pattern);
+			// with the rounds exhausted they are an honest non-pass.
+			if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
+				cfg.Obs.Note("finish rejected (review blockers) — continuing")
+				messages = append(messages, llm.User("OBSERVATION:\n"+fb))
+				continue
+			} else if blockReason != "" {
+				res.Outcome = Unverified
+				res.Answer = arg
+				res.Reason = blockReason
+				cfg.Obs.Note("answer blocked by review — " + blockReason)
 				return res, nil
 			}
 			res.Outcome = Answered
@@ -769,7 +828,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", lastAction, repeats)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
 			repeats = 0
@@ -792,7 +851,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery turns in a row (list_dir/search) — read or edit a specific target, or answer", sameVerb)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
 			sameVerb = 0
@@ -822,7 +881,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				step.Observation = observation // the kill returns before the shared record point below.
 				res.Steps = append(res.Steps, step)
 				cfg.Obs.Observation(observation)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		}
 		if tr.observeAction(i, verb) {
@@ -862,7 +921,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 5: if we fall out of the loop, WE stop it. Never trust the model to. ----
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+	return gs.upgradeIfVerified(ctx, res), nil
 }
 
 // churnNudge is the one-time hint appended to an observation once a session crosses

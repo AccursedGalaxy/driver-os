@@ -73,6 +73,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if cfg.Tools == nil {
 		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
 	}
+	// (REVIEW-GATE slice 0) Fence the mutation tools BEFORE their schemas are
+	// advertised, and snapshot the closing gates' run-start state (fence hashes
+	// + the review diff base). Inert when unconfigured — see Run's twin.
+	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
+	gs := newGates(ctx, cfg, runTimeout)
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
 	// that can't have left work half-done, so a forced "stop and answer" can't mask an
@@ -85,6 +90,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	answerNudgeOK := isObserveOnly(cfg.Tools)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	// The review report travels on EVERY exit path (findings + fates are the
+	// calibration telemetry) — nil when the gate is off.
+	defer func() {
+		if out != nil {
+			out.Review = gs.reviewReport()
+		}
+	}()
 
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
@@ -137,7 +149,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
 			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
-			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
 		// the turn that crossed the cap was still processed (it may have answered);
@@ -145,7 +157,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
 			res.Outcome = HitBudget
 			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
-			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
@@ -168,14 +180,14 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 			// (HP-1) Window overflowed and eviction couldn't compact it further —
 			// degrade gracefully rather than mislabel it a transport fault.
 			if errors.Is(err, llm.ErrContextLength) {
 				res.Outcome = HitContextLimit
 				res.Reason = "context window exceeded and could not be compacted further"
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err
 			return res, err
@@ -254,8 +266,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
-			// Re-verify the claimed state before accepting it.
-			reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout)
+			// Re-verify the claimed state before accepting it (fence first, then VerifyCmd).
+			reason := gs.verifyTermination(ctx, tr.lastRunFailed)
 			if reason != "" && cfg.VerifyContinue && i < maxIter {
 				// Continue-on-fail: re-ground with the real failing state (P4) and keep
 				// working rather than accept a premature finish. The assistant's
@@ -281,6 +293,17 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if answer == "" {
 				res.Outcome, res.Reason = Unverified, "empty final answer — the model stopped without producing an answer"
 				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
+				return res, nil
+			}
+			// (REVIEW-GATE slice 1) Stage 2, only now that fence + VerifyCmd are
+			// green (execution-first) — see Run's twin for the contract.
+			if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
+				cfg.Obs.Note("finish rejected (review blockers) — continuing")
+				messages = append(messages, llm.User("OBSERVATION:\n"+fb))
+				continue
+			} else if blockReason != "" {
+				res.Outcome, res.Answer, res.Reason = Unverified, answer, blockReason
+				cfg.Obs.Note("answer blocked by review — " + blockReason)
 				return res, nil
 			}
 			res.Outcome, res.Answer = Answered, answer
@@ -344,7 +367,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// (duet's `say`) verifyTermination is a no-op, so the conversational
 				// finish path is unchanged.
 				if !cfg.FinishToolTrustsCaller {
-					if reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout); reason != "" {
+					if reason := gs.verifyTermination(ctx, tr.lastRunFailed); reason != "" {
 						if cfg.VerifyContinue && i < maxIter {
 							cfg.Obs.Note("finish rejected (not verified) — continuing")
 							messages = append(messages, llm.User("OBSERVATION:\nNot finished — you called the finish tool, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
@@ -352,6 +375,18 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 						}
 						res.Outcome, res.Answer, res.Reason = Unverified, msg, reason
 						cfg.Obs.Note("finish not verified — " + reason)
+						return res, nil
+					}
+					// (REVIEW-GATE slice 1) Stage 2 gates the explicit finish exactly
+					// like prose termination. A trusted-caller finish (duet's `say`)
+					// skips it with the rest of the gate, above.
+					if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
+						cfg.Obs.Note("finish rejected (review blockers) — continuing")
+						messages = append(messages, llm.User("OBSERVATION:\n"+fb))
+						continue
+					} else if blockReason != "" {
+						res.Outcome, res.Answer, res.Reason = Unverified, msg, blockReason
+						cfg.Obs.Note("finish blocked by review — " + blockReason)
 						return res, nil
 					}
 				}
@@ -397,7 +432,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
 			repeats = 0
@@ -420,7 +455,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
 			navRun = 0
@@ -489,7 +524,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				}
 				res.Outcome = KilledStagnant
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnantCount)
-				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		}
 
@@ -541,7 +576,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+	return gs.upgradeIfVerified(ctx, res), nil
 }
 
 // observeOnlyTools is the allowlist of built-in tools that cannot mutate state or

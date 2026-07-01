@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -78,11 +79,68 @@ func Unstage(ctx context.Context, dir string) error {
 	return err
 }
 
+// IsRepo reports whether dir is inside a git work tree. Unlike IsClean it does
+// not care about dirtiness — the review gate diffs against a recorded start
+// state, so a dirty tree is fine; only "no repo at all" disables it.
+func IsRepo(ctx context.Context, dir string) bool {
+	_, err := run(ctx, dir, "rev-parse", "--is-inside-work-tree")
+	return err == nil
+}
+
+// WriteTree snapshots the ENTIRE working tree — tracked and untracked files,
+// gitignore respected — as a git tree object and returns its hash. It stages
+// into a TEMPORARY index (GIT_INDEX_FILE), so the repository's real index,
+// HEAD, and the user's staged state are untouched; the only side effect is
+// loose blobs in the object store, which gc reclaims. This is the review
+// gate's diff baseline: two WriteTree calls bracket the agent's work and
+// DiffTrees renders exactly what changed between them, new files included.
+func WriteTree(ctx context.Context, dir string) (string, error) {
+	// The index path must NOT pre-exist: git treats an existing zero-length
+	// index as corrupt ("index file smaller than expected"), so hand it a fresh
+	// name inside a temp dir rather than a pre-created empty file.
+	tmpDir, err := os.MkdirTemp("", "driver-os-index-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmpDir)
+	env := []string{"GIT_INDEX_FILE=" + tmpDir + "/index"}
+	if _, err := runEnv(ctx, dir, env, "add", "-A"); err != nil {
+		return "", err
+	}
+	out, err := runEnv(ctx, dir, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// DiffTrees returns the unified diff between two tree objects (as produced by
+// WriteTree). Empty output means the trees are identical.
+func DiffTrees(ctx context.Context, dir, a, b string) (string, error) {
+	return run(ctx, dir, "diff", a, b)
+}
+
+// Apply applies a patch file to the working tree (`git apply`). Used by the
+// gate-only evaluation harness to install a banked candidate diff.
+func Apply(ctx context.Context, dir, patchPath string) error {
+	_, err := run(ctx, dir, "apply", "--", patchPath)
+	return err
+}
+
 // run executes `git -C dir args…` and returns stdout, folding stderr into the
 // error so a failure message is actionable.
 func run(ctx context.Context, dir string, args ...string) (string, error) {
+	return runEnv(ctx, dir, nil, args...)
+}
+
+// runEnv is run with extra environment entries (e.g. a temporary
+// GIT_INDEX_FILE) merged over the inherited environment.
+func runEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	full := append([]string{"-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
