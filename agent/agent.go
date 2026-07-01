@@ -503,14 +503,17 @@ type Config struct {
 // must return this result AS-IS and must NOT route it through upgradeIfVerified —
 // a refused run must never execute VerifyCmd on the unsafe sandbox.
 // seedMessages builds the loop's initial conversation. With no History it is the
-// historical single-shot start ("TASK: " + Task). With History (a continuing
+// historical single-shot start ("TASK: " + Task), plus env — the ENVIRONMENT
+// preamble from observeEnvironment ("" = none) — so the model opens already
+// grounded in its cwd and the root listing. With History (a continuing
 // conversation, see Session) it clones the prior messages — so the caller's slice
 // is never mutated as the loop appends — and adds this turn's input as a plain
-// user message (no "TASK:" reframing, since the model already has the context).
-// Both loops call this so the continuation seam behaves identically across them.
-func seedMessages(cfg Config) []llm.Message {
+// user message (no "TASK:" reframing and NO env preamble, since the model
+// already has the context). Both loops call this so the continuation seam
+// behaves identically across them.
+func seedMessages(cfg Config, env string) []llm.Message {
 	if len(cfg.History) == 0 {
-		return []llm.Message{llm.User("TASK: " + cfg.Task)}
+		return []llm.Message{llm.User("TASK: " + cfg.Task + env)}
 	}
 	msgs := make([]llm.Message, 0, len(cfg.History)+1)
 	msgs = append(msgs, cfg.History...)
@@ -578,7 +581,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(cfg)
+	messages := seedMessages(cfg, observeEnvironment(ctx, cfg.Sandbox))
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Registered after `messages` exists so the closure reads
 	// its final value; the closure captures the variable, which the loop reassigns.

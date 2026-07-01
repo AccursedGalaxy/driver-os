@@ -50,9 +50,10 @@ type Sandbox struct {
 
 // compile-time proof we satisfy the interface(s).
 var (
-	_ sandbox.Sandbox       = (*Sandbox)(nil)
-	_ sandbox.LimitedReader = (*Sandbox)(nil)
-	_ sandbox.Appender      = (*Sandbox)(nil)
+	_ sandbox.Sandbox         = (*Sandbox)(nil)
+	_ sandbox.LimitedReader   = (*Sandbox)(nil)
+	_ sandbox.Appender        = (*Sandbox)(nil)
+	_ sandbox.WorkdirReporter = (*Sandbox)(nil)
 )
 
 // New creates a local sandbox rooted at dir. dir must exist and be a directory;
@@ -111,6 +112,17 @@ func (s *Sandbox) RelInRoot(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Rel(s.root, abs)
+}
+
+// Workdir reports the directory Exec commands start in, as the model should
+// name it (sandbox.WorkdirReporter). Plain host use: the absolute root. When a
+// mount alias is set this backend is composed under a container and the model
+// lives at the mount point, so the alias IS the model-visible cwd.
+func (s *Sandbox) Workdir() string {
+	if s.alias != "" {
+		return s.alias
+	}
+	return s.root
 }
 
 // SetMountAlias declares an absolute prefix that aliases the root: the

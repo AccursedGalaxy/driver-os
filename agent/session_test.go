@@ -123,7 +123,9 @@ func TestSessionReset(t *testing.T) {
 		t.Fatalf("Send after Reset: %v", err)
 	}
 	first := sp.calls[callsBefore]
-	if got := lastUserText(first); got != "TASK: fresh start" {
+	// Prefix, not equality: a fresh run may carry the ENVIRONMENT preamble; the
+	// contract here is the single-shot TASK framing (and no leaked prior turn).
+	if got := lastUserText(first); !strings.HasPrefix(got, "TASK: fresh start") {
 		t.Errorf("after Reset the turn = %q, want the fresh single-shot framing %q", got, "TASK: fresh start")
 	}
 	if containsText(first, "first") {
@@ -137,7 +139,7 @@ func TestSessionReset(t *testing.T) {
 func TestSeedMessagesDoesNotMutateHistory(t *testing.T) {
 	hist := []llm.Message{llm.User("TASK: original"), llm.Assistant("ok")}
 	cfg := Config{History: hist, Task: "next"}
-	got := seedMessages(cfg)
+	got := seedMessages(cfg, "")
 
 	if len(got) != 3 {
 		t.Fatalf("seeded %d messages, want 3 (2 history + 1 input)", len(got))
@@ -180,7 +182,7 @@ func TestSessionCancelledTurnDoesNotAdvanceHistory(t *testing.T) {
 
 // With no History, seedMessages reproduces the historical single-shot framing.
 func TestSeedMessagesSingleShot(t *testing.T) {
-	got := seedMessages(Config{Task: "do a thing"})
+	got := seedMessages(Config{Task: "do a thing"}, "")
 	if len(got) != 1 || got[0].Text() != "TASK: do a thing" {
 		t.Fatalf("single-shot seed = %v, want one %q message", got, "TASK: do a thing")
 	}

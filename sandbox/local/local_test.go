@@ -250,3 +250,23 @@ func TestExecWorkingDir(t *testing.T) {
 		t.Errorf("pwd = %q, want %q", got, want)
 	}
 }
+
+// Workdir (sandbox.WorkdirReporter) is what the agent seeds into the opening
+// prompt as "where run commands start". Plain host use reports the real root;
+// composed under a container (mount alias set) it reports the alias — the path
+// the MODEL lives at — never the host dir.
+func TestWorkdirReportsRootThenAlias(t *testing.T) {
+	sb, root := newTest(t)
+	want, _ := filepath.EvalSymlinks(root)
+	got, _ := filepath.EvalSymlinks(sb.Workdir())
+	if got != want {
+		t.Errorf("Workdir() = %q, want the sandbox root %q", got, want)
+	}
+	if !filepath.IsAbs(sb.Workdir()) {
+		t.Errorf("Workdir() = %q, want an absolute path", sb.Workdir())
+	}
+	sb.SetMountAlias("/workspace/")
+	if got := sb.Workdir(); got != "/workspace" {
+		t.Errorf("aliased Workdir() = %q, want %q", got, "/workspace")
+	}
+}

@@ -766,7 +766,10 @@ func editFileOp(ctx context.Context, sb sandbox.Sandbox, path, oldStr, newStr st
 	if k := len(outLines); k > 0 && outLines[k-1] == "" {
 		outLines = outLines[:k-1] // drop the phantom line a trailing newline yields.
 	}
-	header := fmt.Sprintf("edited %s: replaced %d line(s) with %d at line %d; file now %d line(s)",
+	// "saved … no re-read needed" is load-bearing: without it models re-read the
+	// whole file after every edit to convince themselves it landed (2 of 3 runs
+	// in the 2026-07-01 probe) — the echo below already IS the post-edit state.
+	header := fmt.Sprintf("edited %s: replaced %d line(s) with %d at line %d; file now %d line(s). Saved — the excerpt below is the post-edit file; no re-read needed",
 		path, oldLineCount, newLineCount, startLine, len(outLines))
 	return header + "\n" + echoRegion(outLines, startLine, newLineCount), nil
 }
@@ -844,6 +847,13 @@ func formatRun(r *sandbox.Result) string {
 	}
 	if r.ExitCode != 0 && len(r.Stdout) == 0 && len(r.Stderr) == 0 {
 		b.WriteString("(no output)\n") // a stable shape even for the silent-failure case (P6).
+	}
+	// (P3) A failed `cd` is almost always the model GUESSING a workspace path
+	// (observed live: `cd /home/user && go test ./...` cost two reorientation
+	// turns). Like the file tools' explainPathErr, turn the raw shell error into
+	// a recovery instruction instead of leaving the model to diagnose it.
+	if r.ExitCode != 0 && strings.Contains(string(r.Stderr), "cd: ") {
+		b.WriteString("hint: `run` commands already START in the project root (the same directory file-tool paths are relative to) — don't cd to find the project; rerun with root-relative paths.\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

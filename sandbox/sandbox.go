@@ -187,6 +187,24 @@ type Appender interface {
 	AppendFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error
 }
 
+// WorkdirReporter is an OPTIONAL capability: report the absolute directory —
+// as seen from INSIDE the sandbox — that Exec commands start in, which is the
+// same directory tool paths are relative to. The agent seeds it into the
+// opening prompt so the model never has to guess its cwd (the observed failure:
+// a model inventing `cd /home/user && go test ./...` and burning turns
+// reorienting). For the local backend this is the host root (or its mount
+// alias); for a container backend it is the in-container mount point, NOT the
+// host path. Discovered like Appender:
+//
+//	if wr, ok := sb.(sandbox.WorkdirReporter); ok {
+//		wd := wr.Workdir()
+//	}
+type WorkdirReporter interface {
+	// Workdir returns the in-sandbox absolute working directory, or "" when the
+	// backend cannot state one.
+	Workdir() string
+}
+
 // Sessioner is an OPTIONAL capability a backend may add: opening a stateful
 // Session in which successive Exec calls share process state — working
 // directory, environment, and (for a real shell/REPL backend) defined variables

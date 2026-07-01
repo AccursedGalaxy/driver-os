@@ -28,11 +28,15 @@ type Sandbox struct {
 
 // compile-time proof we satisfy the interface. LimitedReader and Appender are
 // inherited from the embedded *local.Sandbox — a bounded read / in-place append
-// of the workspace is host-side, so it needs no containerization.
+// of the workspace is host-side, so it needs no containerization. WorkdirReporter
+// is inherited too, and is correct BECAUSE New sets the mount alias: the local
+// backend reports its alias (opts.WorkdirMount, the in-container path Exec
+// commands start in), not the host dir.
 var (
-	_ sandbox.Sandbox       = (*Sandbox)(nil)
-	_ sandbox.LimitedReader = (*Sandbox)(nil)
-	_ sandbox.Appender      = (*Sandbox)(nil)
+	_ sandbox.Sandbox         = (*Sandbox)(nil)
+	_ sandbox.LimitedReader   = (*Sandbox)(nil)
+	_ sandbox.Appender        = (*Sandbox)(nil)
+	_ sandbox.WorkdirReporter = (*Sandbox)(nil)
 )
 
 // New starts a long-lived container rooted at the workspace dir and returns a
