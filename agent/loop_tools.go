@@ -532,7 +532,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// after the tool results are in the transcript (so the conversation stays
 		// well-formed, like the finisher below), and only when the model edited
 		// this turn. Surfaced as a standalone user message (the native loop's wire
-		// format), INFORMATION not a gate (see CODE-INTELLIGENCE.md).
+		// format), INFORMATION not a gate (see docs/specs/CODE-INTELLIGENCE.md).
 		if editedThisTurn {
 			if msg := tr.diagnostics(loopCtx, runTimeout); msg != "" {
 				messages = append(messages, llm.User(msg))
@@ -742,7 +742,7 @@ func turnSignature(calls []llm.ToolCallPart, tools map[string]Tool) string {
 // read_file is deliberately EXCLUDED: paging/reads consume content (progress), a
 // re-read of the same arg is the reasoning-aware repeat detector's job, and folding
 // reads into churn would reintroduce the thinking-model false-kill (HARD-PROBLEMS.md
-// HP-2; see HP2-TEMPLATE-COLLAPSE.md for why the heavier working-set design collapses
+// HP-2; see docs/findings/HP2-TEMPLATE-COLLAPSE.md for why the heavier working-set design collapses
 // to exactly this).
 var discoveryTools = map[string]bool{"list_dir": true, "search": true}
 

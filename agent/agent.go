@@ -444,7 +444,7 @@ type Config struct {
 	// earlier (e.g. 8–10), trading against interrupting a model still doing real work.
 	FinishNudgeWindow int
 
-	// DiagnoseCmd arms slice 1 of the code-intelligence work (see CODE-INTELLIGENCE.md):
+	// DiagnoseCmd arms slice 1 of the code-intelligence work (see docs/specs/CODE-INTELLIGENCE.md):
 	// a fast compile/type-check command (e.g. "go build ./...") run as a diagnostics
 	// SOURCE when the model looks stuck with a broken build, whose errors are surfaced
 	// into the loop as INFORMATION — never a gate (the gate stays at termination,
@@ -473,7 +473,7 @@ type Config struct {
 	// critic legitimately does a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep
 	// (or a burst of `search`es) before reading, which is several discovery turns in a
 	// row and would trip the default detector before it critiques anything (council
-	// code mode, COUNCIL.md slice 4 / objection O7). Raising it for that caller is an
+	// code mode, docs/specs/COUNCIL.md slice 4 / objection O7). Raising it for that caller is an
 	// OPT-IN relaxation — every other caller (issue-bot, eval, plan mode) leaves it 0
 	// and keeps the strict default, so the harness is not weakened.
 	NavSpiralWindow int
@@ -965,7 +965,7 @@ const answerNudgeNative = "[hint: you are almost out of turns. STOP exploring no
 
 // diagnoseSource runs cfg.DiagnoseCmd as slice 1's diagnostics SOURCE (a fast
 // compile/type check — go build/go vet via the sandbox) and reports its output and
-// a three-way diagState. The source/surfacing split (see CODE-INTELLIGENCE.md)
+// a three-way diagState. The source/surfacing split (see docs/specs/CODE-INTELLIGENCE.md)
 // keeps this single call as the seam a future persistent-gopls client slots
 // behind, leaving the loops' surfacing logic untouched. An infra failure to even
 // start the check (or a "" command) is diagUnknown, NOT clean: we never fabricate

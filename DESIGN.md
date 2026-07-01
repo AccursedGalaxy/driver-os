@@ -87,7 +87,7 @@ All six original slices shipped and are end-to-end tested:
 
 Work since then has built an agent-harness research platform on this core —
 the agent loop with cross-run memory, the sandbox isolation tiers
-(`SANDBOX.md`, `SESSION.md`), the eval + dogfood harness (`DOGFOOD.md`), and
-the council adversarial-review feature (`COUNCIL.md`). The open research
+(`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`), the eval + dogfood harness (`docs/findings/DOGFOOD.md`), and
+the council adversarial-review feature (`docs/specs/COUNCIL.md`). The open research
 backlog is tracked in `HARD-PROBLEMS.md`.
 ```

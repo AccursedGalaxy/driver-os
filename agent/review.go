@@ -1,6 +1,6 @@
 package agent
 
-// The REVIEW GATE (REVIEW-GATE.md stage 2, slices 1+2): a second closing-gate
+// The REVIEW GATE (docs/specs/REVIEW-GATE.md stage 2, slices 1+2): a second closing-gate
 // stage after VerifyCmd — a grounded, INDEPENDENT model reviewer whose blocking
 // claims are validated deterministically (verbatim-quote re-grounding, a
 // confidence hard gate) and, when the reviewer proposes a repro command,
@@ -38,7 +38,7 @@ const DefaultReviewRounds = 2
 const reviewReproCap = 2
 
 // ReviewFinding is one reviewer claim, exactly the structured-verdict schema
-// (REVIEW-GATE.md): a verbatim post-patch quote that re-grounds it, a two-value
+// (docs/specs/REVIEW-GATE.md): a verbatim post-patch quote that re-grounds it, a two-value
 // severity, a 0-10 confidence, a concrete failure scenario, and an optional
 // runnable repro the harness escalates to execution.
 type ReviewFinding struct {
@@ -78,7 +78,7 @@ type Reviewer interface {
 	Review(ctx context.Context, in ReviewInput) (*ReviewVerdict, error)
 }
 
-// Finding fates — the calibration telemetry (REVIEW-GATE.md finding 8),
+// Finding fates — the calibration telemetry (docs/specs/REVIEW-GATE.md finding 8),
 // recorded from day one so reviewer false-positive rates are measurable
 // (FP rate = refuted+expired / total blockers).
 const (

@@ -108,7 +108,7 @@ type DirEntry struct {
 }
 
 // Capabilities is what a Sandbox guarantees about itself. It maps directly onto
-// the isolation spectrum in SANDBOX.md, encoding the threat-model decision into
+// the isolation spectrum in docs/specs/SANDBOX.md, encoding the threat-model decision into
 // the type system rather than leaving it implicit.
 type Capabilities struct {
 	Isolation Isolation // the strength of the boundary

@@ -6,7 +6,7 @@
 // per-backend parts are HOW to wait for and HOW to kill the process, which the
 // backend supplies as closures.
 //
-// See ../../SESSION.md (slice 2) for the design and the os/exec stream-plumbing
+// See ../../docs/specs/SESSION.md (slice 2) for the design and the os/exec stream-plumbing
 // rationale (explicit os.Pipe, caller-owned ends).
 package proc
 

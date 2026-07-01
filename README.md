@@ -62,7 +62,7 @@ go run ./cmd/agent -memory=false ...                            # disable memory
 ### Driving it from scripts
 
 `cmd/agent` obeys the Unix contract, so it composes in a pipe, a Makefile, or CI
-(full contract in [CLI-SCRIPTABLE.md](CLI-SCRIPTABLE.md)):
+(full contract in [docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
 
 - **`-format text|json|ndjson`** — `text` (default) prints the answer + a `SUMMARY`
   line for humans; `json` emits one result object; `ndjson` streams one event per
@@ -123,7 +123,7 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
 ## Running untrusted code (sandbox backends)
 
 Every effect the agent causes — running a command, reading/writing a file — flows
-through one `sandbox.Sandbox` boundary (see `SANDBOX.md`). The backend, not the
+through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`). The backend, not the
 tool, decides how strongly that boundary isolates:
 
 | `-sandbox` / `-runtime` | isolation | use for |
@@ -179,13 +179,13 @@ platform:
 - **Agent loop** (`cmd/agent`) — think→act→observe over the sandbox tools, with
   cross-run memory ([mneme](https://github.com/AccursedGalaxy/mneme)),
   reasoning-trace round-tripping, per-turn timing, and stuck-detection backed by
-  a build-diagnostics feed (see `CODE-INTELLIGENCE.md`).
-- **Sandbox** (`SANDBOX.md`, `SESSION.md`) — one effect boundary, three isolation
+  a build-diagnostics feed (see `docs/specs/CODE-INTELLIGENCE.md`).
+- **Sandbox** (`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`) — one effect boundary, three isolation
   tiers (local / docker-runc / docker-gVisor), plus a long-lived process host and
   stateful shell sessions.
 - **Eval harness** (`eval/`) — multiple suites including a dogfood corpus
-  regression scored against real human verdicts (see `DOGFOOD.md`).
-- **Council** (`COUNCIL.md`) — adversarial multi-model review (author ↔ critic ↔
+  regression scored against real human verdicts (see `docs/findings/DOGFOOD.md`).
+- **Council** (`docs/specs/COUNCIL.md`) — adversarial multi-model review (author ↔ critic ↔
   referee) plus a structured consult/Q&A mode; every run recorded as dogfood
   corpus.
 - **Dogfood integrations** — `cmd/commit-msg` (commit-message generator) and

@@ -58,7 +58,7 @@ vault-deploy: vault-build
 
 # Install the council CLI onto PATH (~/.local/bin) so any Claude Code session's
 # /council skill can call `council` directly. Re-run after changing cmd/council
-# or the council/ packages. See COUNCIL.md and ~/.claude/skills/council/SKILL.md.
+# or the council/ packages. See docs/specs/COUNCIL.md and ~/.claude/skills/council/SKILL.md.
 install-council:
 	GOBIN=$(HOME)/.local/bin go install ./cmd/council
 	@echo ">> installed council to $(HOME)/.local/bin/council"

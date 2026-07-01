@@ -5,7 +5,7 @@
 // fence) are delegated to an embedded *local.Sandbox operating host-side on the
 // workspace dir, which is bind-mounted into the container at /workspace so the
 // host write and the in-container read see the same bytes (same inode via the
-// mount). See ../../SANDBOX.md for the decided direction and ../sandbox.go for the
+// mount). See ../../docs/specs/SANDBOX.md for the decided direction and ../sandbox.go for the
 // interface this implements.
 //
 // The threat model is narrow and deliberate: the EXECUTED command is hostile.
@@ -37,7 +37,7 @@ type Options struct {
 	// Runtime selects the OCI runtime. "" (or "runc") is the standard
 	// shared-kernel container => IsolationProcess. "runsc" is gVisor — syscalls
 	// hit a userspace app-kernel, not the host kernel => IsolationKernel. This is
-	// the one-flag gVisor graduation (SANDBOX.md): it threads straight into
+	// the one-flag gVisor graduation (docs/specs/SANDBOX.md): it threads straight into
 	// `docker run --runtime=`. The host must have the runtime registered with the
 	// daemon; we don't verify that here — a missing runtime surfaces as a New
 	// error from the daemon.

@@ -8,7 +8,7 @@ import (
 )
 
 // Best-of-N selection: pick ONE trial per cell by structure alone, with no
-// access to the oracle. The design and its evidence live in BEST-OF-N.md —
+// access to the oracle. The design and its evidence live in docs/findings/BEST-OF-N.md —
 // measured on the SWE-bench stride-30 sweep, this selector matched the oracle
 // on every one-pass/one-fail split (12/12 across three models) at N=2, because
 // cheap-model failures are overwhelmingly STRUCTURAL (a detector kill, a cap,
@@ -120,7 +120,7 @@ func bestOfMarkdown(cells []Cell) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("## Best-of-N (structural selection — see BEST-OF-N.md)\n\n")
+	b.WriteString("## Best-of-N (structural selection — see docs/findings/BEST-OF-N.md)\n\n")
 	b.WriteString("| model | single-trial | best-of selected | oracle (any pass) | selection on splits |\n")
 	b.WriteString("|-------|--------------|------------------|-------------------|---------------------|\n")
 	for _, m := range order {

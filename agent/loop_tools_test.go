@@ -822,7 +822,7 @@ func TestRunNativeSearchThenReadResetsSpiral(t *testing.T) {
 	// symbol, then READ the file it points to — is productive and must NOT be killed.
 	// A read_file turn is not discovery-only, so it breaks the spiral run; this
 	// search/read/search/read pattern never reaches the window and answers cleanly.
-	// This is what makes including search safe (HP2-TEMPLATE-COLLAPSE.md).
+	// This is what makes including search safe (docs/findings/HP2-TEMPLATE-COLLAPSE.md).
 	files := map[string]string{"a.go": "package a\n", "b.go": "package b\n"}
 	turns := [][]llm.ContentPart{
 		{structuredCall("1", "search", map[string]any{"pattern": "package"})},
