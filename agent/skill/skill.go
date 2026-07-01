@@ -1,7 +1,7 @@
 // Package skill implements Agent Skills for the harness: folders of
 // instructions (SKILL.md) plus optional bundled resources, loaded by the agent
 // ON DEMAND instead of stuffed into the system prompt — progressive disclosure
-// (see ../../SKILLS.md). The format is the open Agent Skills spec
+// (see ../../docs/specs/SKILLS.md). The format is the open Agent Skills spec
 // (https://agentskills.io/specification) verbatim, so skills written for
 // Claude Code / Codex / Gemini CLI load here unmodified.
 //
@@ -71,7 +71,7 @@ type frontmatter struct {
 	Metadata      map[string]string `yaml:"metadata"`
 	// AllowedTools is parsed so a conformant file round-trips, but v1 ignores
 	// it: every major harness treats it as pre-approval (not restriction), and
-	// we have no per-tool permission layer to pre-approve against. SKILLS.md §D6.
+	// we have no per-tool permission layer to pre-approve against. docs/specs/SKILLS.md §D6.
 	AllowedTools yaml.Node `yaml:"allowed-tools"`
 }
 
@@ -228,7 +228,7 @@ func listResources(dir, name string) (paths []string, warnings []string) {
 // -skills entry beats a project skill beats a user skill on a name collision
 // (the more deliberate choice wins). An empty field skips that layer —
 // callers set ProjectDir to "" on an -untrusted run, because a cloned repo
-// must not inject standing instructions (SKILLS.md §D3).
+// must not inject standing instructions (docs/specs/SKILLS.md §D3).
 type Sources struct {
 	UserDir    string   // e.g. $XDG_CONFIG_HOME/driver-os/skills
 	ProjectDir string   // e.g. <root>/.agents/skills; "" when untrusted
@@ -317,7 +317,7 @@ func UserDir() string {
 // vendor-neutral .agents/skills path (the one Codex and Gemini CLI also
 // scan). Callers on an UNTRUSTED run must pass "" instead: a skill body is
 // standing instructions injected into the agent's context, and a hostile
-// checkout must not get that power (SKILLS.md §D3).
+// checkout must not get that power (docs/specs/SKILLS.md §D3).
 func ProjectDir(root string) string {
 	return filepath.Join(root, ".agents", "skills")
 }

@@ -8,7 +8,7 @@
 // emit a typed RunResult (Outcome + Answer + Step trace + Usage) and take a
 // silent Observer, and RunResult.Root already travels with the result as "the
 // fixture hook". This package supplies the four things the dogfood bake-offs
-// (DOGFOOD.md R9/R10) proved a serious eval needs and manual dogfooding lacked:
+// (docs/findings/DOGFOOD.md R9/R10) proved a serious eval needs and manual dogfooding lacked:
 //
 //  1. An INDEPENDENT oracle — grading is a separate judgment from the agent's
 //     self-reported Outcome. Models reported `answered` with the build red; "did

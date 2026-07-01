@@ -54,7 +54,7 @@ func (nopObserver) Done(string)        {}
 // writerObserver prints the exact lines the old single-file loop printed, so
 // cmd/agent behaves identically after the extraction — but to a CALLER-CHOSEN
 // writer. The live trace is diagnostics, not the run's data payload, so the CLI
-// routes it to stderr (CLI-SCRIPTABLE.md D1: stdout is the data channel) while a
+// routes it to stderr (docs/specs/CLI-SCRIPTABLE.md D1: stdout is the data channel) while a
 // human still sees it on the terminal. oneLine lives in the agent package, so the
 // observer stays a thin formatter over it.
 type writerObserver struct{ w io.Writer }

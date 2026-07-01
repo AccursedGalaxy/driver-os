@@ -51,7 +51,7 @@ driver-os/
                             New(Config) + presets OpenAI/XAI/OpenRouter/Ollama.
     anthropic/              native Claude adapter (anthropic-sdk-go).
   runner/                   tool-exec loop + model-comparison / fan-in harness.
-  cmd/playground/           experiment entrypoint (main.go).
+  experiments/cmd/playground/           experiment entrypoint (main.go).
   examples/
 ```
 
@@ -78,7 +78,7 @@ are implementation details resolved inside the adapters.
 All six original slices shipped and are end-to-end tested:
 
 1. ✅ `llm` core types + `Registry`; `openaicompat` chat (non-streaming);
-   `cmd/playground` proving a real round-trip against OpenRouter and X.AI.
+   `experiments/cmd/playground` proving a real round-trip against OpenRouter and X.AI.
 2. ✅ Streaming (`iter.Seq2`) on `openaicompat`.
 3. ✅ `anthropic` native adapter.
 4. ✅ Tools (self-contained, dual schema) surfaced in responses.
@@ -87,7 +87,7 @@ All six original slices shipped and are end-to-end tested:
 
 Work since then has built an agent-harness research platform on this core —
 the agent loop with cross-run memory, the sandbox isolation tiers
-(`SANDBOX.md`, `SESSION.md`), the eval + dogfood harness (`DOGFOOD.md`), and
-the council adversarial-review feature (`COUNCIL.md`). The open research
+(`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`), the eval + dogfood harness (`docs/findings/DOGFOOD.md`), and
+the council adversarial-review feature (`docs/specs/COUNCIL.md`). The open research
 backlog is tracked in `HARD-PROBLEMS.md`.
 ```

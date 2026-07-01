@@ -12,7 +12,7 @@ import (
 
 // The docker backend is a Sessioner: it can open a stateful Session whose Exec
 // calls share cwd + env (the foundation for the long-lived-process host the gopls
-// tenant will need — see ../../SESSION.md).
+// tenant will need — see ../../docs/specs/SESSION.md).
 var _ sandbox.Sessioner = (*Sandbox)(nil)
 
 var dockerSessionCounter atomic.Uint64

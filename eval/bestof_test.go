@@ -13,7 +13,7 @@ func tr(idx int, o agent.Outcome, pass, noAttempt bool) Trial {
 
 func TestSelectBestStructuralRank(t *testing.T) {
 	// Each case is a measured split shape from the SWE-bench stride-30 sweep
-	// (BEST-OF-N.md): the selector must pick the passing trial on every
+	// (docs/findings/BEST-OF-N.md): the selector must pick the passing trial on every
 	// structural split — that's the 12/12 result the design rests on.
 	cases := []struct {
 		name   string
@@ -52,7 +52,7 @@ func TestSelectBestStructuralRank(t *testing.T) {
 }
 
 func TestSelectBestCannotSeeOracle(t *testing.T) {
-	// The known ceiling (BEST-OF-N.md finding 2): answered-vs-answered splits
+	// The known ceiling (docs/findings/BEST-OF-N.md finding 2): answered-vs-answered splits
 	// carry no structural signal, so the selector falls back to the earliest
 	// index — it must NOT accidentally key on Pass (that would be peeking at
 	// the held-out oracle the agent can never run).

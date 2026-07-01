@@ -1,6 +1,6 @@
 package agent
 
-// The CLOSING GATES, composed (REVIEW-GATE.md): every path that can end a run
+// The CLOSING GATES, composed (docs/specs/REVIEW-GATE.md): every path that can end a run
 // Answered flows through the same three-stage gate, in evidence order —
 //
 //	Stage 0  test fence re-hash        (deterministic, ~free — fence.go)

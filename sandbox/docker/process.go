@@ -16,7 +16,7 @@ import (
 
 // The docker backend is a ProcessHost: it starts a long-lived process INSIDE the
 // running container via `docker exec -i` and holds its streams open (see
-// ../../SESSION.md slice 2). This is the host the persistent gopls tenant will run
+// ../../docs/specs/SESSION.md slice 2). This is the host the persistent gopls tenant will run
 // on, behind the same isolation as Exec.
 var _ sandbox.ProcessHost = (*Sandbox)(nil)
 

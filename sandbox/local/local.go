@@ -7,7 +7,7 @@
 // ReadFile/WriteFile/ListDir paths, not what a spawned process can touch. So this
 // backend is for TRUSTED code only (code we wrote). Running untrusted,
 // model-authored code requires a stronger backend (container/gVisor/microVM)
-// behind the same sandbox.Sandbox interface — see ../../SANDBOX.md.
+// behind the same sandbox.Sandbox interface — see ../../docs/specs/SANDBOX.md.
 package local
 
 import (

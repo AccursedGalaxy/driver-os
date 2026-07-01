@@ -13,7 +13,7 @@ import (
 
 // The local backend is a Sessioner too — nearly free, since "session state" is
 // just a state file in the host temp dir that successive Exec subprocesses read
-// and rewrite (see ../../SESSION.md). This keeps the two backends behaviorally
+// and rewrite (see ../../docs/specs/SESSION.md). This keeps the two backends behaviorally
 // identical under the shared session conformance suite.
 var _ sandbox.Sessioner = (*Sandbox)(nil)
 

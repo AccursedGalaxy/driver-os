@@ -1,6 +1,6 @@
 package agent
 
-// The TEST FENCE (REVIEW-GATE.md stage 0, slice 0): a configured glob list of
+// The TEST FENCE (docs/specs/REVIEW-GATE.md stage 0, slice 0): a configured glob list of
 // paths that are READ-ONLY to the solver — canonically `*_test.go,testdata/**`.
 // The probe task text only ASKED models not to modify tests; research says that
 // hole must be closed by the HARNESS, not the prompt (typia incident: an agent
@@ -306,7 +306,7 @@ func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox) m
 }
 
 // substanceSignals scans a unified diff for the cheap hack signatures the
-// research names (REVIEW-GATE.md stage 0): a newly added t.Skip( or
+// research names (docs/specs/REVIEW-GATE.md stage 0): a newly added t.Skip( or
 // //go:build ignore (excluding tests from the suite), and assertion lines
 // DELETED from test files. Signals, not verdicts — they are surfaced to the
 // reviewer (ReviewInput.Signals) and recorded in the trace, and never block on

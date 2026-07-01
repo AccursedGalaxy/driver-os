@@ -4,7 +4,7 @@
 // these (differing only in the state-dir path), so the stateful-shell logic lives
 // in exactly one place.
 //
-// The mechanism (see ../../SESSION.md for the decided design): the underlying
+// The mechanism (see ../../docs/specs/SESSION.md for the decided design): the underlying
 // Exec is stateless — a fresh process at the default cwd with the base env every
 // call. To carry cwd + env across calls WITHOUT a long-lived shell process (that
 // is the ProcessHost slice, deliberately deferred), each shell command is wrapped:

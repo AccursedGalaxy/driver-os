@@ -13,7 +13,7 @@ import (
 )
 
 // The local backend is a ProcessHost: it can start a long-lived host child and
-// hold its streams open (see ../../SESSION.md slice 2). IsolationNone still applies
+// hold its streams open (see ../../docs/specs/SESSION.md slice 2). IsolationNone still applies
 // — this is for TRUSTED long-lived tools (a language server we ship), not
 // model-authored code.
 var _ sandbox.ProcessHost = (*Sandbox)(nil)
