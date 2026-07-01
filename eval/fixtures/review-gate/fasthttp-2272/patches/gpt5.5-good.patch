@@ -1,0 +1,82 @@
+diff --git i/client.go w/client.go
+index 9269f51..1e0332a 100644
+--- i/client.go
++++ w/client.go
+@@ -2526,7 +2526,8 @@ type pipelineConnClient struct {
+ 	ReadTimeout         time.Duration
+ 	WriteTimeout        time.Duration
+ 
+-	chLock sync.Mutex
++	chLock        sync.Mutex
++	workerRunning bool
+ 
+ 	tlsConfigLock                 sync.Mutex
+ 	NoDefaultUserAgentHeader      bool
+@@ -2832,37 +2833,40 @@ func (c *pipelineConnClient) init() {
+ 			maxPendingRequests = DefaultMaxPendingRequests
+ 		}
+ 		c.chR = make(chan *pipelineWork, maxPendingRequests)
+-		if c.chW == nil {
+-			c.chW = make(chan *pipelineWork, maxPendingRequests)
+-		}
+-		go func() {
+-			// Keep restarting the worker if it fails (connection errors for example).
+-			for {
+-				if err := c.worker(); err != nil {
+-					c.logger().Printf("error in PipelineClient(%q): %v", c.Addr, err)
+-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+-						// Throttle client reconnections on timeout errors
+-						time.Sleep(time.Second)
+-					}
+-				} else {
+-					c.chLock.Lock()
+-					stop := len(c.chR) == 0 && len(c.chW) == 0
+-					if !stop {
+-						c.chR = nil
+-						c.chW = nil
+-					}
+-					c.chLock.Unlock()
+-
+-					if stop {
+-						break
+-					}
+-				}
+-			}
+-		}()
++		c.chW = make(chan *pipelineWork, maxPendingRequests)
++	}
++	if !c.workerRunning {
++		c.workerRunning = true
++		go c.workerLoop()
+ 	}
+ 	c.chLock.Unlock()
+ }
+ 
++func (c *pipelineConnClient) workerLoop() {
++	// Keep restarting the worker if it fails (connection errors for example).
++	for {
++		if err := c.worker(); err != nil {
++			c.logger().Printf("error in PipelineClient(%q): %v", c.Addr, err)
++			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
++				// Throttle client reconnections on timeout errors
++				time.Sleep(time.Second)
++			}
++			continue
++		}
++
++		c.chLock.Lock()
++		stop := len(c.chR) == 0 && len(c.chW) == 0
++		if stop {
++			c.workerRunning = false
++		}
++		c.chLock.Unlock()
++
++		if stop {
++			break
++		}
++	}
++}
++
+ func (c *pipelineConnClient) worker() error {
+ 	tlsConfig := c.cachedTLSConfig()
+ 	conn, err := dialAddr(c.Addr, c.Dial, nil, c.DialDualStack, c.IsTLS, tlsConfig, 0, c.WriteTimeout)

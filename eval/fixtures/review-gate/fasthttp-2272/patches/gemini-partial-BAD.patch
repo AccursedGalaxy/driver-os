@@ -1,0 +1,69 @@
+diff --git i/client.go w/client.go
+index 9269f51..643403f 100644
+--- i/client.go
++++ w/client.go
+@@ -2617,14 +2617,18 @@ func (c *pipelineConnClient) DoDeadline(req *Request, resp *Response, deadline t
+ 	req.copyToSkipBody(&w.reqCopy)
+ 	swapRequestBody(req, &w.reqCopy)
+ 
++	c.chLock.Lock()
++	chW := c.chW
++	c.chLock.Unlock()
++
+ 	// Put the request to outgoing queue
+ 	select {
+-	case c.chW <- w:
++	case chW <- w:
+ 		// Fast path: len(c.ch) < cap(c.ch)
+ 	default:
+ 		// Slow path
+ 		select {
+-		case c.chW <- w:
++		case chW <- w:
+ 		case <-w.t.C:
+ 			c.releasePipelineWork(w)
+ 			return ErrTimeout
+@@ -2847,7 +2851,7 @@ func (c *pipelineConnClient) init() {
+ 				} else {
+ 					c.chLock.Lock()
+ 					stop := len(c.chR) == 0 && len(c.chW) == 0
+-					if !stop {
++					if stop {
+ 						c.chR = nil
+ 						c.chW = nil
+ 					}
+@@ -2895,11 +2899,13 @@ func (c *pipelineConnClient) worker() error {
+ 	}
+ 
+ 	// Notify pending readers
++	c.chLock.Lock()
+ 	for len(c.chR) > 0 {
+ 		w := <-c.chR
+ 		w.err = errPipelineConnStopped
+ 		w.done <- struct{}{}
+ 	}
++	c.chLock.Unlock()
+ 
+ 	return err
+ }
+@@ -2927,8 +2933,10 @@ func (c *pipelineConnClient) writer(conn net.Conn, stopCh <-chan struct{}) error
+ 	}
+ 	bw := bufio.NewWriterSize(conn, writeBufferSize)
+ 	defer bw.Flush()
++	c.chLock.Lock()
+ 	chR := c.chR
+ 	chW := c.chW
++	c.chLock.Unlock()
+ 	writeTimeout := c.WriteTimeout
+ 
+ 	maxIdleConnDuration := c.MaxIdleConnDuration
+@@ -3033,7 +3041,9 @@ func (c *pipelineConnClient) reader(conn net.Conn, stopCh <-chan struct{}) error
+ 		readBufferSize = defaultReadBufferSize
+ 	}
+ 	br := bufio.NewReaderSize(conn, readBufferSize)
++	c.chLock.Lock()
+ 	chR := c.chR
++	c.chLock.Unlock()
+ 	readTimeout := c.ReadTimeout
+ 
+ 	var (

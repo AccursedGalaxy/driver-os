@@ -1,0 +1,23 @@
+diff --git i/client.go w/client.go
+index 9269f51..8f6a88e 100644
+--- i/client.go
++++ w/client.go
+@@ -2844,18 +2844,6 @@ func (c *pipelineConnClient) init() {
+ 						// Throttle client reconnections on timeout errors
+ 						time.Sleep(time.Second)
+ 					}
+-				} else {
+-					c.chLock.Lock()
+-					stop := len(c.chR) == 0 && len(c.chW) == 0
+-					if !stop {
+-						c.chR = nil
+-						c.chW = nil
+-					}
+-					c.chLock.Unlock()
+-
+-					if stop {
+-						break
+-					}
+ 				}
+ 			}
+ 		}()
