@@ -1,6 +1,7 @@
 # secrets
 .env
 CLAUDE.md
+driver
 
 # Local workspace: keeps host builds on ../mneme (live local edits) while the
 # committed go.mod pins the published mneme commit — which is what lets a JARVIS
