@@ -77,7 +77,15 @@ var _ llm.Provider = (*Provider)(nil)
 // custom endpoints (a remote vLLM box, a non-standard local server); the
 // preset constructors below cover the common providers.
 func New(cfg Config) *Provider {
-	opts := []option.RequestOption{option.WithBaseURL(cfg.BaseURL)}
+	opts := []option.RequestOption{
+		option.WithBaseURL(cfg.BaseURL),
+		// Strip SSE keep-alive comments before the SDK's decoder sees them: the
+		// decoder turns "comment + blank line" into an EMPTY event and the JSON
+		// parse of "" kills the stream — which is how every slow-to-first-token
+		// (cheap/queued) model's stream died while fast ones never did. See
+		// ssefilter.go.
+		option.WithMiddleware(sseKeepaliveMiddleware),
+	}
 	if cfg.APIKey != "" {
 		opts = append(opts, option.WithAPIKey(cfg.APIKey))
 	}
