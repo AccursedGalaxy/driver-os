@@ -39,8 +39,8 @@ fmt.Println(resp.Text(), resp.Usage.TotalTokens)
 Run the demo (sends one prompt to every provider whose key is in `.env`):
 
 ```sh
-go run ./cmd/playground
-go run ./cmd/playground -prompt "your prompt here"
+go run ./experiments/cmd/playground
+go run ./experiments/cmd/playground -prompt "your prompt here"
 ```
 
 Override model ids without recompiling: `OPENROUTER_MODEL`, `XAI_MODEL`.
@@ -197,5 +197,5 @@ The open research backlog lives in `HARD-PROBLEMS.md`.
 
 ```sh
 go test ./...        # deterministic unit tests (no network)
-go run ./cmd/playground   # live round-trip (needs keys in .env)
+go run ./experiments/cmd/playground   # live round-trip (needs keys in .env)
 ```

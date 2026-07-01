@@ -3,7 +3,7 @@
 Status: BUILT + LIVE-VALIDATED 2026-06-11 (same day as the plan; slices 1–3
 shipped, slice 4 remains conditional on need). Implementation: `agent/skill`
 (Load/Discover/Tool), wired in cmd/agent (`-skills`, auto-discovery,
-untrusted gate) and cmd/jarvis workers; eval suite `eval/suite/skills`
+untrusted gate) and experiments/cmd/jarvis workers; eval suite `eval/suite/skills`
 (`-case skills`); default skills in `.agents/skills/` (humanizer,
 driver-os-deps). Validation results in §10. Companion docs: DESIGN.md
 (architecture), docs/specs/SANDBOX.md (threat model), HARD-PROBLEMS.md (HP-1 context

@@ -44,14 +44,14 @@ _deps/
 eval/runs/
 
 # Duet Lab frontend: node deps + Vite build output. The build output is embedded
-# at compile time (lab/embed.go), but it's a generated artifact — keep only the
+# at compile time (experiments/lab/embed.go), but it's a generated artifact — keep only the
 # committed placeholder so `go build ./...` works before `make lab-build`.
-lab/web/node_modules/
-lab/web/dist/*
-!lab/web/dist/.gitkeep
+experiments/lab/web/node_modules/
+experiments/lab/web/dist/*
+!experiments/lab/web/dist/.gitkeep
 
-# Vault PWA: same deal — embedded at compile time (vault/embed.go), generated
+# Vault PWA: same deal — embedded at compile time (experiments/vault/embed.go), generated
 # artifact, keep only the committed placeholder.
-vault/web/node_modules/
-vault/web/dist/*
-!vault/web/dist/.gitkeep
+experiments/vault/web/node_modules/
+experiments/vault/web/dist/*
+!experiments/vault/web/dist/.gitkeep

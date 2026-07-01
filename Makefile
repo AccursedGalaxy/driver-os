@@ -17,15 +17,15 @@ vet:
 
 check: vet race
 
-# Build the Duet Lab frontend (React/Vite) into lab/web/dist, which the Go server
+# Build the Duet Lab frontend (React/Vite) into experiments/lab/web/dist, which the Go server
 # embeds. Run once, and after any frontend change. Needs node+npm (mise provides
 # them). The first run also writes package-lock.json.
 lab-build:
-	cd lab/web && npm install && npm run build && touch dist/.gitkeep
+	cd experiments/lab/web && npm install && npm run build && touch dist/.gitkeep
 
 # Build the duet-lab server binary with the UI embedded.
 lab: lab-build
-	go build -o bin/duet-lab ./cmd/duet-lab
+	go build -o bin/duet-lab ./experiments/cmd/duet-lab
 	@echo ">> built bin/duet-lab — run it with: OPENROUTER_API_KEY=... ./bin/duet-lab"
 
 # Live frontend development: runs BOTH the Go API (:8099) and the Vite dev server
@@ -33,43 +33,43 @@ lab: lab-build
 # a stale build. Ctrl-C stops both. Open the URL Vite prints (usually :5173).
 # Needs OPENROUTER_API_KEY in the environment or .env for launches to work.
 lab-dev:
-	cd lab/web && npm install
+	cd experiments/lab/web && npm install
 	@echo ">> Go API on :8099  +  Vite dev server (proxying to it).  Ctrl-C stops both."
 	@trap 'kill 0' EXIT INT TERM; \
-		go run ./cmd/duet-lab -addr :8099 & \
-		cd lab/web && npm run dev
+		go run ./experiments/cmd/duet-lab -addr :8099 & \
+		cd experiments/lab/web && npm run dev
 
-# Build the Vault PWA frontend (React/Vite + service worker) into vault/web/dist,
+# Build the Vault PWA frontend (React/Vite + service worker) into experiments/vault/web/dist,
 # which the Go server embeds. Run once, and after any frontend change. Needs
 # node+npm (mise provides them). The first run also writes package-lock.json.
 vault-build:
-	cd vault/web && npm install && npm run build && touch dist/.gitkeep
+	cd experiments/vault/web && npm install && npm run build && touch dist/.gitkeep
 
 # Build the vault server binary with the PWA embedded.
 vault: vault-build
-	go build -o bin/vault ./cmd/vault
+	go build -o bin/vault ./experiments/cmd/vault
 	@echo ">> built bin/vault — run it with: ./bin/vault  (then open it on your phone over your LAN and Add to Home Screen)"
 
 # Live frontend development: runs BOTH the Go server (:8097) and the Vite dev
 # server (which proxies /api + /healthz to it) together. Ctrl-C stops both. Open
 # the URL Vite prints (usually :5173); use --host to reach it from your phone.
 vault-dev:
-	cd vault/web && npm install
+	cd experiments/vault/web && npm install
 	@echo ">> Go server on :8097  +  Vite dev server (proxying to it).  Ctrl-C stops both."
 	@trap 'kill 0' EXIT INT TERM; \
-		go run ./cmd/vault -addr :8097 & \
-		cd vault/web && npm run dev
+		go run ./experiments/cmd/vault -addr :8097 & \
+		cd experiments/vault/web && npm run dev
 
 # Tier 1: (re)generate the feed from the vault with the cheap model. Pass extra
 # flags via ARGS, e.g. `make vault-gen ARGS="-n 30"`. Needs OPENROUTER_API_KEY.
 vault-gen:
-	go run ./cmd/vault-gen $(ARGS)
+	go run ./experiments/cmd/vault-gen $(ARGS)
 
 # Rebuild the PWA + binaries, reinstall to ~/.local/bin, restart the running
 # user service. One-shot redeploy after any change.
 vault-deploy: vault-build
-	go build -o $$HOME/.local/bin/vault ./cmd/vault
-	go build -o $$HOME/.local/bin/vault-gen ./cmd/vault-gen
+	go build -o $$HOME/.local/bin/vault ./experiments/cmd/vault
+	go build -o $$HOME/.local/bin/vault-gen ./experiments/cmd/vault-gen
 	systemctl --user restart vault.service
 	@echo ">> redeployed — live at http://pegasus:8097"
 
