@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // diagHint is a substring of diagnosticsMessage — its presence in a recorded request
@@ -126,6 +128,78 @@ func TestRunDiagnosticsResetsOnGreenRun(t *testing.T) {
 	}
 	if nudgeInjected(sp.calls, diagHint) {
 		t.Fatal("diagnostics fired after a green run reset the stuck counter")
+	}
+}
+
+// flakyExecSandbox errors the FIRST Exec and delegates afterwards — the shape of
+// a transient infra fault hitting the diagnostics check exactly once.
+type flakyExecSandbox struct {
+	sandbox.Sandbox
+	execs int
+}
+
+func (f *flakyExecSandbox) Exec(ctx context.Context, cmd sandbox.Command) (*sandbox.Result, error) {
+	f.execs++
+	if f.execs == 1 {
+		return nil, errors.New("transient infra fault")
+	}
+	return f.Sandbox.Exec(ctx, cmd)
+}
+
+func TestRunDiagnosticsInfraFaultIsNotGreen(t *testing.T) {
+	// A transient exec fault while RUNNING the check must not be mistaken for a
+	// clean build: the stuck counter survives, so the very next edit re-triggers
+	// the check, which now runs for real (red) and surfaces. Under the old
+	// two-state contract the fault reset the counter and this trajectory stayed
+	// silent — the feed silently disarmed on a genuinely-red build.
+	// The fake is wired as VerifySandbox so only the diagnostics check (not the
+	// model's file writes) sees the fault.
+	sp := &scripted{replies: []string{
+		"write_file a.go x", // counter 1
+		"write_file b.go y", // counter 2 → diagnose → infra fault → unknown, keep 2
+		"write_file c.go z", // counter 3 → diagnose → exit 1 → surfaced
+		"answer done",
+	}}
+	_, err := Run(context.Background(), Config{
+		Model:              sp,
+		Sandbox:            sbWith(t, nil),
+		VerifySandbox:      &flakyExecSandbox{Sandbox: sbWith(t, nil)},
+		Task:               "t",
+		MaxIterations:      8,
+		DiagnoseCmd:        "exit 1",
+		DiagnoseAfterEdits: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nudgeInjected(sp.calls, diagHint) {
+		t.Fatal("an infra fault reset the stuck counter (treated as green) — diagnostics never surfaced on a red build")
+	}
+}
+
+func TestRunNativeDiagnosticsInfraFaultIsNotGreen(t *testing.T) {
+	// Same contract on the native loop (the two loops have drifted before).
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "a.go", "content": "x"})},
+		{structuredCall("c2", "write_file", map[string]any{"path": "b.go", "content": "y"})}, // → diagnose: fault
+		{structuredCall("c3", "write_file", map[string]any{"path": "c.go", "content": "z"})}, // → diagnose: red
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	_, err := RunNative(context.Background(), Config{
+		Model:              ns,
+		Sandbox:            sbWith(t, nil),
+		VerifySandbox:      &flakyExecSandbox{Sandbox: sbWith(t, nil)},
+		Task:               "t",
+		MaxIterations:      8,
+		DiagnoseCmd:        "exit 1",
+		DiagnoseAfterEdits: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nudgeInjected(ns.calls, diagHint) {
+		t.Fatal("native loop: an infra fault reset the stuck counter — diagnostics never surfaced on a red build")
 	}
 }
 

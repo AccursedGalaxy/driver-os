@@ -52,6 +52,7 @@ type Sandbox struct {
 var (
 	_ sandbox.Sandbox       = (*Sandbox)(nil)
 	_ sandbox.LimitedReader = (*Sandbox)(nil)
+	_ sandbox.Appender      = (*Sandbox)(nil)
 )
 
 // New creates a local sandbox rooted at dir. dir must exist and be a directory;
@@ -297,6 +298,26 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte, mode 
 		return err
 	}
 	return os.WriteFile(abs, data, mode)
+}
+
+// AppendFile implements sandbox.Appender: shell `>>` semantics inside the fence
+// — data lands at the end of the file (created with mode if missing) without the
+// existing contents ever entering memory.
+func (s *Sandbox) AppendFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error {
+	abs, err := s.resolve(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_APPEND, mode)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
 }
 
 // ListDir lists a directory within the fence.

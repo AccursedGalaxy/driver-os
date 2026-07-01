@@ -533,9 +533,14 @@ func toolWriteFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string,
 // appendTo (native-only; DUET-DOGFOOD F7) concatenates content onto the existing
 // file (shell `>>` semantics: a missing file is created), so a model whose
 // provider truncates oversized tool-call args can build a large file in pieces.
-// Implemented as read+concat+write at this layer, so every sandbox backend gets
-// it without an interface change. The per-call byte cap applies to the PIECE; the
-// assembled file may legitimately grow past it — incremental construction is
+// It prefers the sandbox's optional Appender capability (local/docker have it;
+// the gated/session wrappers forward it), which appends in place without the
+// existing file ever entering memory — the read+concat+rewrite fallback defeated
+// the reason append exists once the assembled file grew large (review #8). A
+// backend without the capability falls back to read+concat+write, BOUNDED: past
+// maxFileBytes it rejects with the `run`-redirection recovery rather than slurp
+// (or silently truncate) the file. The per-call byte cap applies to the PIECE;
+// the assembled file may legitimately grow past it — incremental construction is
 // exactly what append is for.
 func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string, appendTo bool) (string, error) {
 	if path == "" { // (P3) name the shape, don't just reject.
@@ -548,7 +553,21 @@ func writeFileOp(ctx context.Context, sb sandbox.Sandbox, path, content string, 
 		return "", fmt.Errorf("content is %d bytes, over the %d-byte write_file limit — split it across smaller writes, or generate it with `run`", n, writeByteCap)
 	}
 	if appendTo {
-		if old, err := sb.ReadFile(ctx, path); err == nil {
+		if ap, ok := sb.(sandbox.Appender); ok {
+			err := ap.AppendFile(ctx, path, []byte(content), 0o644)
+			switch {
+			case err == nil:
+				return fmt.Sprintf("appended %d byte(s) to %s", len(content), path), nil
+			case !errors.Is(err, errors.ErrUnsupported):
+				return "", explainWriteErr(path, err)
+			}
+			// ErrUnsupported: a wrapper whose base lacks the capability — degrade
+			// to the bounded read+concat path below, the single policy point.
+		}
+		if old, trunc, err := readBounded(ctx, sb, path); err == nil {
+			if trunc { // (P4) never slurp-and-rewrite a file we couldn't even read whole.
+				return "", fmt.Errorf("append: %s exceeds %d KiB and this sandbox cannot append in place — rewriting it would load the whole file into memory; append with `run` shell redirection instead (e.g. run sh -c 'cat >> %s <<\\EOF ... EOF')", path, maxFileBytes>>10, path)
+			}
 			full := string(old) + content
 			if err := sb.WriteFile(ctx, path, []byte(full), 0o644); err != nil {
 				return "", explainWriteErr(path, err)

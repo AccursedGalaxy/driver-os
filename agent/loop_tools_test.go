@@ -1375,3 +1375,149 @@ func TestRunNativeZeroTokenMovingTraceKeepsLenientCeiling(t *testing.T) {
 		}
 	}
 }
+
+// assertWellFormedMessages enforces the OpenAI-wire invariant that every assistant
+// tool call is answered by a matching tool-result message before the next
+// assistant turn. RunResult.Messages is the continuation seam (Session feeds it
+// back verbatim), so a transcript that violates this is rejected by the provider
+// on the NEXT Send. See the harness review, finding #1.
+func assertWellFormedMessages(t *testing.T, msgs []llm.Message) {
+	t.Helper()
+	for i, m := range msgs {
+		if m.Role != llm.RoleAssistant {
+			continue
+		}
+		pending := map[string]bool{}
+		for _, p := range m.Parts {
+			if tc, ok := p.(llm.ToolCallPart); ok {
+				pending[tc.ID] = true
+			}
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		for _, n := range msgs[i+1:] {
+			if n.Role == llm.RoleAssistant {
+				break // a new assistant turn closes the window for the prior one.
+			}
+			for _, p := range n.Parts {
+				if tr, ok := p.(llm.ToolResultPart); ok {
+					delete(pending, tr.ToolCallID)
+				}
+			}
+		}
+		if len(pending) != 0 {
+			t.Fatalf("assistant message %d has unpaired tool call(s) %v — malformed continuation transcript (RunResult.Messages)", i, pending)
+		}
+	}
+}
+
+func TestRunNativeKilledRepeatWellFormedMessages(t *testing.T) {
+	// A tight-loop kill must leave RunResult.Messages well-formed: the killed turn's
+	// assistant tool-call is NOT committed to the transcript without matching results,
+	// or the next Session.Send ships an invalid request (finding #1).
+	call := structuredCall("c1", "read_file", map[string]any{"path": "a.txt"})
+	turns := [][]llm.ContentPart{{call}, {call}, {call}} // same action -> KilledRepeat.
+	res, _, _ := runNative(t, map[string]string{"a.txt": "x\n"}, turns)
+	if res.Outcome != KilledRepeat {
+		t.Fatalf("Outcome = %q (%s), want KilledRepeat", res.Outcome, res.Reason)
+	}
+	assertWellFormedMessages(t, res.Messages)
+}
+
+func TestRunNativeKilledSpiralWellFormedMessages(t *testing.T) {
+	// A discovery-spiral kill must likewise leave a well-formed transcript.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c2", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("c3", "list_dir", map[string]any{"path": "c"})},
+		{structuredCall("c4", "list_dir", map[string]any{"path": "d"})},
+	}
+	res, _, _ := runNative(t, nil, turns)
+	if res.Outcome != KilledSpiral {
+		t.Fatalf("Outcome = %q (%s), want KilledSpiral", res.Outcome, res.Reason)
+	}
+	assertWellFormedMessages(t, res.Messages)
+}
+
+func TestRunNativeKilledStagnantWellFormedMessages(t *testing.T) {
+	// The stagnant kill fires MID-turn (on a `run` result), so a later call in the
+	// same turn is never dispatched. Its tool call must still be paired with a
+	// synthetic result, or the assistant turn is left with an unanswered call.
+	turns := [][]llm.ContentPart{
+		{failRun("r1")},
+		{failRun("r2")},
+		// 3rd identical failure trips KilledStagnant; the read_file after it in the
+		// same turn goes un-dispatched and must be padded with a synthetic result.
+		{failRun("r3"), structuredCall("r3b", "read_file", map[string]any{"path": "a.txt"})},
+	}
+	res, _, _ := runNative(t, map[string]string{"a.txt": "x\n"}, turns)
+	if res.Outcome != KilledStagnant {
+		t.Fatalf("Outcome = %q (%s), want KilledStagnant", res.Outcome, res.Reason)
+	}
+	assertWellFormedMessages(t, res.Messages)
+}
+
+func TestRunNativeFinishToolWellFormedMessages(t *testing.T) {
+	// The finish tool's own call never dispatches, so it must be paired with a
+	// synthetic result — else a Session that continues past a finish ships a
+	// dangling tool call.
+	sb := sbWith(t, nil)
+	tools := DefaultTools(sb, 0)
+	tools["say"] = sayTool()
+	ns := &nativeScript{turns: [][]llm.ContentPart{{
+		structuredCall("c1", "write_file", map[string]any{"path": "out.txt", "content": "data"}),
+		structuredCall("c2", "say", map[string]any{"message": "done"}),
+	}}}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered", res.Outcome, res.Reason)
+	}
+	assertWellFormedMessages(t, res.Messages)
+}
+
+func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
+	// The FinishTool bug: an explicit finish must NOT be recorded as Answered when
+	// the caller's authoritative VerifyCmd fails — an explicit finish is not ground
+	// truth that the task is done. It routes through the same gate as prose
+	// termination unless the caller opts out with FinishToolTrustsCaller.
+	mk := func() (*nativeScript, map[string]Tool, sandbox.Sandbox) {
+		sb := sbWith(t, nil)
+		tools := DefaultTools(sb, 0)
+		tools["say"] = sayTool()
+		ns := &nativeScript{turns: [][]llm.ContentPart{
+			{structuredCall("c1", "say", map[string]any{"message": "built the thing"})},
+		}}
+		return ns, tools, sb
+	}
+
+	ns, tools, sb := mk()
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", VerifyCmd: "exit 1",
+	})
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("Outcome = %q (%s), want Unverified — a failing VerifyCmd overrides an explicit finish", res.Outcome, res.Reason)
+	}
+	if res.Answer != "built the thing" {
+		t.Errorf("Answer = %q, want the finish message preserved on the unverified finish", res.Answer)
+	}
+
+	// Opt-out: a caller that vouches for its finish keeps the old skip-verification behavior.
+	ns, tools, sb = mk()
+	res, err = RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", VerifyCmd: "exit 1",
+		FinishToolTrustsCaller: true,
+	})
+	if err != nil {
+		t.Fatalf("RunNative (trusted): %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered — FinishToolTrustsCaller skips the gate", res.Outcome, res.Reason)
+	}
+}

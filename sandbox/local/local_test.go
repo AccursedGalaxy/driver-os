@@ -87,6 +87,29 @@ func TestReadAndList(t *testing.T) {
 	}
 }
 
+func TestAppendFile(t *testing.T) {
+	sb, root := newTest(t)
+	// A missing file is created (`>>` semantics).
+	if err := sb.AppendFile(context.Background(), "log.txt", []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("AppendFile create: %v", err)
+	}
+	// Appending lands at the end, replacing nothing.
+	if err := sb.AppendFile(context.Background(), "log.txt", []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("AppendFile append: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "log.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "one\ntwo\n" {
+		t.Errorf("file = %q, want \"one\\ntwo\\n\"", data)
+	}
+	// The fence still applies.
+	if err := sb.AppendFile(context.Background(), "../escape.txt", []byte("x"), 0o644); err == nil {
+		t.Error("AppendFile escaped the fence")
+	}
+}
+
 func TestReadFileLimit(t *testing.T) {
 	sb, root := newTest(t)
 	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte("0123456789"), 0o644); err != nil {

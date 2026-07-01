@@ -99,7 +99,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}()
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
 	scope := scopeOrDefault(cfg.MemoryScope)
-	system := withPersona(cfg.Persona, nativeSystemPrompt()) + recall(ctx, cfg.Memory, scope, cfg.Task)
+	system := withPersona(cfg.Persona, nativeSystemPrompt()) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
 	temp := 0.0
 
@@ -113,27 +113,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	repeats, navRun := 0, 0
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
-	// (P5) Stagnant-observation state, evaluated on each `run` result regardless of
-	// which turn it lands in: lastRunFP fingerprints the most recent failing `run`
-	// (duration stripped), stagnant counts identical recurrences, lastRunFailed feeds
-	// the verification fallback.
-	var lastRunFP string
-	stagnant := 0
-	lastRunFailed := false
-	failRuns := 0   // count of failing `run` results this session (a churn signal).
-	edits := 0      // count of edit_file calls this session (the other churn signal).
-	nudged := false // the churn nudge fires at most once.
-
-	// (code-intel slice 1) edits since the last green build/run — the diagnostics-feed
-	// stuck signal (reset on any passing `run` or a clean DiagnoseCmd). See DiagnoseCmd.
-	editsSinceGreen := 0
-
-	// (HP-4) Near-cap finisher state, mirroring the text loop: lastRunPassed is the
-	// "build/test green" half of the done-signal, lastEditIter the iteration of the
-	// most recent file mutation (0 = none), finishNudged the once-only latch.
-	lastRunPassed := false
-	lastEditIter := 0
-	finishNudged := false
+	// (review #9) The stagnant/churn/diagnostics/finisher state shared with Run
+	// lives in ONE tracker; the vars above stay loop-local because they are
+	// wire-format-specific (per-turn here, per-call in the text loop). The
+	// stagnant detector is still evaluated on each `run` result regardless of
+	// which turn it lands in.
+	tr := newTurnTracker(cfg, maxIter)
 	answerNudged := false
 	sayNudged := false
 
@@ -152,7 +137,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
 			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
-			return upgradeIfVerified(cfg, res, runTimeout), nil
+			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+		}
+		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
+		// the turn that crossed the cap was still processed (it may have answered);
+		// the NEXT one is not paid for. See Config.MaxTotalTokens.
+		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
+			res.Outcome = HitBudget
+			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
+			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
@@ -175,20 +168,21 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 			// (HP-1) Window overflowed and eviction couldn't compact it further —
 			// degrade gracefully rather than mislabel it a transport fault.
 			if errors.Is(err, llm.ErrContextLength) {
 				res.Outcome = HitContextLimit
 				res.Reason = "context window exceeded and could not be compacted further"
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err
 			return res, err
 		}
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
+		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
 
 		// (P5) Hidden-reasoning progress for THIS turn, computed once: it selects the
 		// tight-loop threshold below AND is recorded on every Step of the turn so a
@@ -210,11 +204,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		reasoningAdvanced := reasoningSig != "" && reasoningSig != lastReasoningSig
 
 		calls := toolCalls(resp.Content)
+		// The model's prose narration for THIS turn. Recorded on the first step of
+		// every turn (review #6) — a tool turn often narrates intent/conclusions,
+		// and a transcript that only shows what the model DID loses what it SAID.
+		turnReply := strings.TrimSpace(resp.Text())
 
 		// (N1) Remember the latest non-empty prose, even when this turn also calls
 		// tools — the salvage source if the run never reaches a clean answer.
-		if txt := strings.TrimSpace(resp.Text()); txt != "" {
-			lastAssistantText = txt
+		if turnReply != "" {
+			lastAssistantText = turnReply
 		}
 
 		// (P5) Termination: the model stopped calling tools and answered in prose.
@@ -257,7 +255,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
 			// Re-verify the claimed state before accepting it.
-			reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout)
+			reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout)
 			if reason != "" && cfg.VerifyContinue && i < maxIter {
 				// Continue-on-fail: re-ground with the real failing state (P4) and keep
 				// working rather than accept a premature finish. The assistant's
@@ -288,7 +286,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Outcome, res.Answer = Answered, answer
 			cfg.Obs.Done(answer)
 			if grounded {
-				remember(ctx, cfg.Memory, scope, cfg.Task, answer)
+				res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, answer)
 			} else if cfg.Memory != nil {
 				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 			}
@@ -296,30 +294,36 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 
 		cfg.Obs.Model(callsSummary(calls, cfg.Tools))
-		// (P1) The assistant turn — carrying its tool-call parts — becomes state we
-		// re-send; the API requires the tool_calls to precede their results.
-		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 
 		// (FinishTool) First-class terminal finish: the model called the designated
 		// finish tool to deliberately end its turn (see Config.FinishTool). Any other
 		// calls in the same turn run first so a last cp/build still lands, then we
-		// terminate cleanly as Answered with the finish tool's message. An explicit
-		// finish is a stronger done-signal than silence, so unlike the prose path it
-		// skips verifyTermination (which exists to catch a model that merely went
-		// quiet). Usage/latency follow the per-turn convention: attributed to the
-		// first recorded step only.
+		// terminate cleanly as Answered with the finish tool's message. Usage/latency
+		// follow the per-turn convention: attributed to the first recorded step only.
+		//
+		// The assistant turn is appended HERE (not unconditionally before the
+		// detectors) so a no-progress kill below returns a well-formed transcript
+		// instead of a dangling assistant tool-call — the continuation seam bug
+		// (harness review finding #1). The finish path needs it appended before its
+		// tool results, and pairs the finish call itself with a synthetic result so no
+		// tool call is left unanswered when a Session continues past the finish.
 		if cfg.FinishTool != "" {
 			if fin := findCall(calls, cfg.FinishTool); fin != nil {
+				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 				usageForFinish, modelMsForFinish := resp.Usage, modelMs
+				replyForFinish := turnReply // the turn's narration rides its first recorded step (review #6).
 				for _, c := range calls {
 					if c.ID == fin.ID {
 						continue
 					}
-					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced}
-					usageForFinish, modelMsForFinish = llm.Usage{}, 0
+					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced}
+					usageForFinish, modelMsForFinish, replyForFinish = llm.Usage{}, 0, ""
 					obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
 					if !isErr {
 						grounded = true
+					}
+					if c.Name == "run" {
+						tr.observeRun(obs) // so a VerifyLastRun gate reads this turn's last run (kill ignored — we're finishing).
 					}
 					step.Grounded = grounded
 					step.Observation = obs
@@ -328,11 +332,33 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
 				}
 				msg := finishToolMessage(*fin)
+				// Pair the finish call with a synthetic result (finding #1): its own
+				// dispatch is a no-op terminal signal, but the transcript must not carry
+				// an unanswered tool call.
+				messages = append(messages, llm.ToolResultMsg(fin.ID, msg, false))
 				res.Steps = append(res.Steps, Step{Iter: i, Reply: msg, Verb: fin.Name, Arg: msg, Grounded: grounded, Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced})
+				// (FinishTool verification, finding #3) An explicit finish is NOT ground
+				// truth that the task is done: unless the caller vouches for it
+				// (FinishToolTrustsCaller), route it through the SAME authoritative gate
+				// as prose termination. For a caller with no VerifyCmd/VerifyLastRun
+				// (duet's `say`) verifyTermination is a no-op, so the conversational
+				// finish path is unchanged.
+				if !cfg.FinishToolTrustsCaller {
+					if reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout); reason != "" {
+						if cfg.VerifyContinue && i < maxIter {
+							cfg.Obs.Note("finish rejected (not verified) — continuing")
+							messages = append(messages, llm.User("OBSERVATION:\nNot finished — you called the finish tool, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
+							continue
+						}
+						res.Outcome, res.Answer, res.Reason = Unverified, msg, reason
+						cfg.Obs.Note("finish not verified — " + reason)
+						return res, nil
+					}
+				}
 				res.Outcome, res.Answer = Answered, msg
 				cfg.Obs.Done(msg)
 				if grounded {
-					remember(ctx, cfg.Memory, scope, cfg.Task, msg)
+					res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, msg)
 				} else if cfg.Memory != nil {
 					cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 				}
@@ -367,15 +393,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// don't false-kill it mid-thought), a frozen or absent trace gets the strict
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
-			limit := maxRepeats
-			if reasoningAdvanced {
-				limit = maxReasoningRepeats
-			}
-			if repeats++; repeats >= limit {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
+			if repeats++; repeats >= repeatThreshold(reasoningAdvanced) {
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		} else {
 			repeats = 0
@@ -394,27 +416,33 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// so the original ungrounded list_dir pathology (a non-reasoning model
 			// ignoring its observations) still dies at the window. Either way the spiral
 			// stays bounded well before the iteration cap.
-			limit := spiralWindow
-			if reasoningAdvanced {
-				limit = 2 * spiralWindow
-			}
-			if navRun++; navRun >= limit {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced)...)
+			if navRun++; navRun >= spiralLimit(spiralWindow, reasoningAdvanced) {
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		} else {
 			navRun = 0
 		}
+
+		// (P1) Committed to dispatch — NOW the assistant turn (carrying its tool-call
+		// parts) becomes state we re-send; the API requires the tool_calls to precede
+		// their results. Deferred to here (past the no-progress detectors above) so a
+		// detector kill returns a well-formed transcript with no dangling tool-call —
+		// the continuation seam bug (harness review finding #1).
+		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 
 		// ACT: run every requested call in order, appending one result per id (a
 		// missing result for any call would make the next request malformed).
 		usageForTurn := resp.Usage // attribute the turn's usage to its first step only.
 		modelMsForTurn := modelMs  // likewise the model-call latency: a per-turn cost.
 		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
-		for _, c := range calls {
+		for idx, c := range calls {
 			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced}
+			if idx == 0 {
+				step.Reply = turnReply // the turn's narration rides its first step (review #6).
+			}
 			usageForTurn, modelMsForTurn = llm.Usage{}, 0
 
 			toolStart := time.Now()
@@ -424,47 +452,23 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				grounded = true // (P4) the model has now seen real external state.
 			}
 
-			// (P5) Stagnant-observation + churn tracking, evaluated on `run` results.
-			// Done BEFORE feeding the observation back so the churn nudge can ride the
-			// very message the model reads. A `run` that keeps failing with the
-			// byte-identical result, across turns whose ACTIONS differ, is a stall the
-			// turn-signature/spiral detectors can't see (DOGFOOD R9/R10's 30-turn
-			// edit→test→edit→same-error burn) — key it on the observation, not the action.
+			// (P5) Stagnant-observation + churn tracking (shared tracker), evaluated
+			// on `run` results. Done BEFORE feeding the observation back so the churn
+			// nudge can ride the very message the model reads. A `run` that keeps
+			// failing with the byte-identical result, across turns whose ACTIONS
+			// differ, is a stall the turn-signature/spiral detectors can't see
+			// (DOGFOOD R9/R10's 30-turn edit→test→edit→same-error burn).
 			kill := false
+			stagnantCount := 0
 			if c.Name == "run" {
-				lastRunFailed = isRunFailure(obs)
-				lastRunPassed = isRunSuccess(obs) // (HP-4) the green/red of the most recent run.
-				if lastRunPassed {
-					editsSinceGreen = 0 // (code-intel slice 1) reaching green clears the diagnostics-stuck count.
-				}
-				if lastRunFailed {
-					failRuns++
-				}
-				switch {
-				case !lastRunFailed: // a passing run is real progress — reset.
-					stagnant, lastRunFP = 0, ""
-				case runFingerprint(obs) == lastRunFP:
-					stagnant++
-				default: // a NEW failure — the world changed, count restarts.
-					stagnant, lastRunFP = 1, runFingerprint(obs)
-				}
-				kill = stagnant >= maxStagnant
+				kill, stagnantCount = tr.observeRun(obs)
 			}
-			if c.Name == "edit_file" {
-				edits++
-			}
-			if c.Name == "write_file" || c.Name == "edit_file" {
-				lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
-				editsSinceGreen++
+			if tr.observeAction(i, c.Name) {
 				editedThisTurn = true
 			}
-			// (P3) Churn nudge: fire once when EITHER wandering signal crosses the
-			// threshold — repeated failing test-runs (gpt-oss) OR many edit_file calls
-			// without converging (grok, which barely runs the tests so a run-only
-			// trigger never fires). Skipped on a kill turn (we're terminating anyway).
-			if !kill && !nudged && cfg.ChurnNudgeRuns > 0 && (failRuns >= cfg.ChurnNudgeRuns || edits >= cfg.ChurnNudgeRuns) {
+			// (P3) Churn nudge. Skipped on a kill turn (we're terminating anyway).
+			if !kill && tr.churnNudge() {
 				obs += churnNudge
-				nudged = true
 			}
 
 			step.Grounded = grounded
@@ -476,41 +480,37 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
 
 			if kill {
+				// (finding #1) The kill fires mid-turn, so any calls after this one are
+				// never dispatched — pair each with a synthetic error result so the
+				// assistant turn we appended above has no unanswered tool call in the
+				// returned transcript (the continuation seam).
+				for _, rc := range calls[idx+1:] {
+					messages = append(messages, llm.ToolResultMsg(rc.ID, "not executed: run stopped by the no-progress detector", true))
+				}
 				res.Outcome = KilledStagnant
-				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnantCount)
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		}
 
-		// (code-intel slice 1) Diagnostics feed, once per turn after the tool results are in
-		// the transcript (so the conversation stays well-formed, like the finisher below): if
-		// the model edited this turn and is stuck — DiagnoseAfterEdits edits without a green
-		// build — run the diagnostics SOURCE and surface its errors as a standalone user
-		// message, INFORMATION not a gate (see CODE-INTELLIGENCE.md). A clean build means it
-		// reached green via the check, so reset and stay silent.
-		if cfg.DiagnoseCmd != "" && cfg.DiagnoseAfterEdits > 0 && editedThisTurn &&
-			editsSinceGreen >= cfg.DiagnoseAfterEdits {
-			if report, clean := diagnoseSource(loopCtx, cfg, runTimeout); clean {
-				editsSinceGreen = 0
-			} else {
-				messages = append(messages, llm.User(diagnosticsMessage(cfg.DiagnoseCmd, report)))
-				cfg.Obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
+		// (code-intel slice 1) Diagnostics feed (shared tracker), once per turn
+		// after the tool results are in the transcript (so the conversation stays
+		// well-formed, like the finisher below), and only when the model edited
+		// this turn. Surfaced as a standalone user message (the native loop's wire
+		// format), INFORMATION not a gate (see CODE-INTELLIGENCE.md).
+		if editedThisTurn {
+			if msg := tr.diagnostics(loopCtx, runTimeout); msg != "" {
+				messages = append(messages, llm.User(msg))
 			}
 		}
 
-		// (HP-4) Near-cap finisher, evaluated once per TURN (after all of this turn's
-		// tool results are in the transcript, so the conversation stays well-formed):
-		// when the budget is nearly spent AND the world looks settled — the last `run`
-		// was green and the files have been stable for the window — append a standalone
-		// hint manufacturing the finish ATTEMPT the spinner never makes. The model reads
-		// it next turn; the i < maxIter guard leaves it a turn to act. See
-		// Config.FinishNudgeWindow.
-		if !finishNudged && cfg.FinishNudgeWindow > 0 && i < maxIter &&
-			maxIter-i <= cfg.FinishNudgeWindow &&
-			lastRunPassed && i-lastEditIter >= cfg.FinishNudgeWindow {
+		// (HP-4) Near-cap finisher (shared tracker), evaluated once per TURN
+		// (after all of this turn's tool results are in the transcript, so the
+		// conversation stays well-formed): a standalone hint the model reads next
+		// turn. See Config.FinishNudgeWindow.
+		if tr.finishNudge(i) {
 			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 			messages = append(messages, llm.User(finishNudgeNative))
-			finishNudged = true
 		}
 
 		// Unconditional near-cap answer-forcer for an observe-only agent (no build
@@ -541,7 +541,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return upgradeIfVerified(cfg, res, runTimeout), nil
+	return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 }
 
 // observeOnlyTools is the allowlist of built-in tools that cannot mutate state or
@@ -671,6 +671,11 @@ func compactJSON(raw json.RawMessage) string {
 // which makes the repeat detector behave identically to the action-only version for
 // non-reasoning providers. The raw bytes are used verbatim — the content is opaque,
 // so any change at all counts as the reasoning having moved.
+//
+// Consequence (review #12): a provider that re-encrypts the trace every call
+// (Gemini via OpenRouter) "advances" every turn by construction, so such models
+// always run under the LENIENT detector thresholds — see the maxReasoningRepeats
+// comment in agent.go for why that stands and what the escalation path is.
 func reasoningSignature(parts []llm.ContentPart) string {
 	var b strings.Builder
 	for _, p := range parts {
@@ -725,17 +730,19 @@ func allCallsDiscovery(calls []llm.ToolCallPart) bool {
 // turnSteps builds the trace steps for a turn killed by a detector BEFORE
 // dispatch (so they carry no observation): one Step per call, the turn's usage
 // attributed to the first, all flagged with the run's current grounded state.
-func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage, modelMs int64, reasoningAdvanced bool) []Step {
+func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage, modelMs int64, reasoningAdvanced bool, reply string) []Step {
 	steps := make([]Step, len(calls))
 	for i, c := range calls {
 		// The turn's single model call produced ALL its calls — attribute its usage
 		// and latency to the first step only (a per-turn cost, not per-call), like the
-		// live tool loop does. ReasoningAdvanced is a turn property, so every step carries it.
-		u, mm := llm.Usage{}, int64(0)
+		// live tool loop does; the model's prose narration (reply) rides the first
+		// step the same way (review #6). ReasoningAdvanced is a turn property, so
+		// every step carries it.
+		u, mm, rep := llm.Usage{}, int64(0), ""
 		if i == 0 {
-			u, mm = usage, modelMs
+			u, mm, rep = usage, modelMs, reply
 		}
-		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u, ModelMs: mm, ReasoningAdvanced: reasoningAdvanced}
+		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u, ModelMs: mm, Reply: rep, ReasoningAdvanced: reasoningAdvanced}
 	}
 	return steps
 }

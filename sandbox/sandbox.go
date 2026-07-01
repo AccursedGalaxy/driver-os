@@ -171,6 +171,22 @@ type LimitedReader interface {
 	ReadFileLimit(ctx context.Context, path string, max int64) (data []byte, truncated bool, err error)
 }
 
+// Appender is an OPTIONAL capability: append data to the END of a file without
+// reading the existing contents into memory (shell `>>` semantics — a missing
+// file is created). The core WriteFile replaces a file wholesale, so appending
+// through it means read+concat+rewrite: exactly the whole-file slurp append
+// exists to avoid when a model builds a large file in pieces (DUET-DOGFOOD F7).
+// Discovered like LimitedReader:
+//
+//	if ap, ok := sb.(sandbox.Appender); ok {
+//		err := ap.AppendFile(ctx, path, data, 0o644)
+//	}
+type Appender interface {
+	// AppendFile appends data to path (creating it with mode if missing),
+	// confined to the sandbox root like WriteFile.
+	AppendFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error
+}
+
 // Sessioner is an OPTIONAL capability a backend may add: opening a stateful
 // Session in which successive Exec calls share process state — working
 // directory, environment, and (for a real shell/REPL backend) defined variables

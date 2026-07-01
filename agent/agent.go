@@ -60,6 +60,20 @@ const (
 	// thinking model otherwise re-reads one file 20x and burns the whole budget to
 	// hit_cap (a 60K-token repofix spiral). Frozen reasoning (trace unchanged) is a real
 	// stall and falls back to the strict maxRepeats.
+	//
+	// KNOWN TRADEOFF (review #12): for a reasoning provider whose opaque trace
+	// moves EVERY turn (Gemini via OpenRouter re-encrypts its thought signature
+	// each call), reasoningAdvanced is ~always true — so for those providers the
+	// strict thresholds (maxRepeats, the strict spiral window) are effectively
+	// INERT and THESE lenient ones (this constant; 2× the spiral window) are the
+	// real operating bounds. Tuning the strict constants will not change thinking-
+	// model behavior; tune the lenient ones. This is deliberate: every cheaper
+	// secondary gate tried so far false-killed real work (the N3 reasoning-token
+	// gate regressed the gemini trace eval 5/5→0/5 and was reverted, pinned by
+	// TestRunNativeReasoningAdvanceEscapesRepeatDetector and kin). If a genuinely-
+	// stuck thinking model burning the 6×/8× budget ever shows up in a trace, the
+	// candidate secondary signal is "did the OBSERVATION change too" — design it
+	// from that failing trace, not from here.
 	maxReasoningRepeats = 6
 
 	// maxStagnant is the (P5) stagnant-OBSERVATION detector: the SAME failing `run`
@@ -159,6 +173,7 @@ const (
 	KilledSpiral    Outcome = "killed_spiral"     // noProgressWindow discovery-only turns (list_dir/search) in a row.
 	KilledStagnant  Outcome = "killed_stagnant"   // the same failing `run` result maxStagnant times despite changing actions.
 	HitDeadline     Outcome = "hit_deadline"      // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
+	HitBudget       Outcome = "hit_budget"        // exceeded the token budget (P5/HP-8, MaxTotalTokens) — cost is a first-class cap, not a side effect of the iteration count.
 	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
 	HitContextLimit Outcome = "hit_context_limit" // (HP-1) the window overflowed AND reactive eviction couldn't compact it further — a graceful stop, not a crash.
 	RefusedUnsafe   Outcome = "refused_unsafe"    // the Sandbox's isolation is weaker than Config.MinIsolation requires — refused BEFORE the first model call (P2/§5). Never ran hostile code on a too-weak boundary.
@@ -222,6 +237,24 @@ type RunResult struct {
 	// the whole prior conversation (see Session). Populated on every path that
 	// reaches the loop; nil for a pre-loop refusal (too-weak sandbox).
 	Messages []llm.Message
+
+	// memDone closes when the post-answer memory store finishes; nil when no
+	// store was started. Unexported (a process handle, not run data) — await it
+	// through AwaitMemory.
+	memDone <-chan struct{}
+}
+
+// AwaitMemory blocks until the background memory store started for this run's
+// answer (if any) has completed. The loops fire the store asynchronously so the
+// result reaches the caller immediately (review #4); a caller that is about to
+// EXIT the process must await it, or the extracted facts die with the process.
+// Long-lived callers (a REPL, duet) can ignore it — the store finishes on its
+// own. Returns immediately when no store was started; nil-safe, so a caller can
+// await its "last result" without guarding the no-turns-yet case.
+func (r *RunResult) AwaitMemory() {
+	if r != nil && r.memDone != nil {
+		<-r.memDone
+	}
 }
 
 // Config is everything Run needs. Model, Sandbox, and Task are required; the
@@ -306,6 +339,18 @@ type Config struct {
 	// relevant with slow third-party providers, where iteration count and wall-clock
 	// diverge. 0 = off (only the iteration cap bounds the run).
 	MaxWallClock time.Duration
+
+	// MaxTotalTokens bounds the run's CUMULATIVE token spend (prompt + completion,
+	// summed across turns — RunResult.Usage.TotalTokens), checked at the turn
+	// boundary like MaxWallClock. It is the cost cap the iteration cap only
+	// approximates: with full-window re-send the prompt grows ~quadratically
+	// (HP-8), so a spiral's later turns are far more expensive than its early
+	// ones and N iterations can cost 10× what N/2 did. The turn that crosses the
+	// budget still gets processed (it may BE the answer); the loop then ends as
+	// HitBudget — which the closing verification can still upgrade, exactly like
+	// a cap/deadline exit. Per-turn cumulative usage flows through Obs.Note so a
+	// caller can measure before choosing a number. 0 = off.
+	MaxTotalTokens int
 
 	// VerifyCmd is the closing VERIFICATION gate (P5/HP-5): a success command the
 	// caller names (e.g. "go test ./...") that is re-run when the model finishes.
@@ -431,6 +476,17 @@ type Config struct {
 	// every existing caller terminates on the prose path, unchanged). The named tool
 	// must still be present in Tools so it's advertised to the model.
 	FinishTool string
+
+	// FinishToolTrustsCaller opts a FinishTool call OUT of the closing verification
+	// gate. By default a finish is NOT ground truth that the task is done: when the
+	// caller configured VerifyCmd/VerifyLastRun, an explicit finish routes through
+	// the SAME verifyTermination gate as prose termination (a finish while the build
+	// is red is Unverified, not a false Answered — the harness review's FinishTool
+	// hole). Set this true when the finish IS the deliverable and there is nothing to
+	// re-verify — a conversational caller whose whole turn is "send a message"
+	// (duet's `say`) that sets no VerifyCmd is unaffected either way, since
+	// verifyTermination is a no-op without a configured check. Default false.
+	FinishToolTrustsCaller bool
 }
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -536,7 +592,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (mneme) is surfaced into the system prompt before we think. The model gets
 	// what it learned before, but labelled as possibly-stale so it still verifies. ----
 	scope := scopeOrDefault(cfg.MemoryScope)
-	system := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools)) + recall(ctx, cfg.Memory, scope, cfg.Task)
+	system := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools)) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string
@@ -548,28 +604,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// a frozen or absent trace falls back to the strict maxRepeats. See the repeat detector.
 	var lastReasoning string
 
-	// (P5) Stagnant-observation state + the last-run-failed flag the verification
-	// fallback reads. lastRunFP is the fingerprint of the most recent failing `run`
-	// result (duration stripped — see runFingerprint); stagnant counts how many
-	// times in a row that identical failure has recurred.
-	var lastRunFP string
-	stagnant := 0
-	lastRunFailed := false
-	failRuns := 0   // count of failing `run` results this session (a churn signal).
-	edits := 0      // count of edit_file calls this session (the other churn signal).
-	nudged := false // the churn nudge fires at most once.
-
-	// (code-intel slice 1) edits since the last green build/run — the diagnostics-feed
-	// stuck signal (reset on any passing `run` or a clean DiagnoseCmd). See DiagnoseCmd.
-	editsSinceGreen := 0
-
-	// (HP-4) Near-cap finisher state. lastRunPassed is the "build/test green" half of
-	// the done-signal (the most recent `run` exited 0); lastEditIter is the iteration
-	// of the most recent file mutation (0 = none yet), so i-lastEditIter measures how
-	// long the files have been stable; finishNudged fires the hint at most once.
-	lastRunPassed := false
-	lastEditIter := 0
-	finishNudged := false
+	// (review #9) The stagnant/churn/diagnostics/finisher state shared with
+	// RunNative lives in ONE tracker; the loop-local vars above stay local
+	// because they are wire-format-specific (per-call here, per-turn there).
+	tr := newTurnTracker(cfg, maxIter)
 
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
@@ -596,7 +634,15 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
 			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
-			return upgradeIfVerified(cfg, res, runTimeout), nil
+			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
+		}
+		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
+		// the turn that crossed the cap was still processed (it may have answered);
+		// the NEXT one is not paid for. See Config.MaxTotalTokens.
+		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
+			res.Outcome = HitBudget
+			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
+			return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
@@ -619,7 +665,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
 				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 			// (HP-1) The window overflowed and eviction couldn't compact it any
 			// further (only TASK + the most recent turn remain). Degrade gracefully
@@ -627,7 +673,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if errors.Is(err, llm.ErrContextLength) {
 				res.Outcome = HitContextLimit
 				res.Reason = "context window exceeded and could not be compacted further"
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 			// A transport/auth failure is a real stop (tool errors are not — see
 			// dispatch). Record it as a typed outcome AND return the error.
@@ -640,6 +686,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		cfg.Obs.Model(reply)
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
+		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
 
 		// The model's turn becomes part of the state we carry forward (P1).
 		messages = append(messages, llm.Assistant(reply))
@@ -666,7 +713,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
 			// terminal state before accepting it.
-			reason := verifyTermination(ctx, cfg, lastRunFailed, runTimeout)
+			reason := verifyTermination(ctx, cfg, tr.lastRunFailed, runTimeout)
 			if reason != "" && cfg.VerifyContinue && i < maxIter {
 				// Continue-on-fail: a premature finish becomes more work, not a stop.
 				// Feed the real failing state back (P4) and keep going.
@@ -700,7 +747,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// tool-verified this run (P4) — otherwise we risk amplifying a guess or
 			// a stale recalled fact into a permanent one. ----
 			if grounded {
-				remember(ctx, cfg.Memory, scope, cfg.Task, arg)
+				res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, arg)
 			} else if cfg.Memory != nil {
 				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 			}
@@ -715,15 +762,11 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// before cutting. Frozen or absent reasoning is a real stall -> strict threshold.
 		if verb+" "+arg == lastAction {
 			repeats++
-			threshold := maxRepeats
-			if reasoningAdvanced {
-				threshold = maxReasoningRepeats
-			}
-			if repeats >= threshold {
+			if repeats >= repeatThreshold(reasoningAdvanced) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", lastAction, repeats)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		} else {
 			repeats = 0
@@ -739,20 +782,14 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// are real progress, and a read after a search is reconnaissance that resets
 		// the count. (Native loop mirrors this with allCallsDiscovery.)
 		if discoveryTools[verb] {
-			// Two thresholds, mirroring the repeat detector and the native loop: a
-			// discovery turn whose reasoning trace moved gets 2× the window (a model
-			// visibly working through fresh listings is orienting, not spinning — the
-			// measured glm-5 false-kill); a frozen or absent trace keeps the strict one.
-			limit := spiralWindow
-			if reasoningAdvanced {
-				limit = 2 * spiralWindow
-			}
+			// Reasoning-aware window, mirroring the repeat detector and the native
+			// loop — see spiralLimit.
 			sameVerb++
-			if sameVerb >= limit {
+			if sameVerb >= spiralLimit(spiralWindow, reasoningAdvanced) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery turns in a row (list_dir/search) — read or edit a specific target, or answer", sameVerb)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		} else {
 			sameVerb = 0
@@ -770,84 +807,48 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			grounded = true
 		}
 		step.Grounded = grounded
-		step.Observation = observation
-		res.Steps = append(res.Steps, step)
+		// step.Observation is recorded just before the observation is fed back
+		// (after the diagnostics/churn/finish nudges below have augmented it), so
+		// the persisted trace matches what the model actually read (review #5).
 
-		// ---- Principle 5: stagnant-observation detector. ----
-		// A `run` that keeps FAILING with the byte-identical result, despite the
-		// model changing actions between, is a stall the action-keyed detectors
-		// above can't see. Track it on the observation, not the action.
+		// ---- Principle 5: stagnant-observation detector (shared tracker). ----
 		if verb == "run" {
-			lastRunFailed = isRunFailure(observation)
-			lastRunPassed = isRunSuccess(observation) // (HP-4) the green/red of the most recent run.
-			if lastRunPassed {
-				editsSinceGreen = 0 // (code-intel slice 1) reaching green clears the diagnostics-stuck count.
-			}
-			if lastRunFailed {
-				failRuns++
-			}
-			switch {
-			case !lastRunFailed: // a passing run is real progress — reset.
-				stagnant, lastRunFP = 0, ""
-			case runFingerprint(observation) == lastRunFP:
-				stagnant++
-			default: // a NEW failure — the world changed, count restarts.
-				stagnant, lastRunFP = 1, runFingerprint(observation)
-			}
-			if stagnant >= maxStagnant {
+			if kill, count := tr.observeRun(observation); kill {
 				res.Outcome = KilledStagnant
-				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnant)
+				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", count)
+				step.Observation = observation // the kill returns before the shared record point below.
+				res.Steps = append(res.Steps, step)
 				cfg.Obs.Observation(observation)
-				return upgradeIfVerified(cfg, res, runTimeout), nil
+				return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 			}
 		}
-		if verb == "edit_file" {
-			edits++
-		}
-		if verb == "write_file" || verb == "edit_file" {
-			lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
-			editsSinceGreen++
-
-			// (code-intel slice 1) Diagnostics feed: once the model has edited
-			// DiagnoseAfterEdits times WITHOUT reaching a green build, run the diagnostics
-			// SOURCE and surface its errors as INFORMATION (not a gate; see
-			// CODE-INTELLIGENCE.md). A clean build means it actually reached green via the
-			// check, so reset and stay silent. Only on edit turns — no point re-checking a
-			// read/run turn. The threshold keeps it out of a legitimately-red multi-file
-			// change until the model is clearly not converging.
-			if cfg.DiagnoseCmd != "" && cfg.DiagnoseAfterEdits > 0 && editsSinceGreen >= cfg.DiagnoseAfterEdits {
-				if report, clean := diagnoseSource(loopCtx, cfg, runTimeout); clean {
-					editsSinceGreen = 0
-				} else {
-					observation += "\n\n" + diagnosticsMessage(cfg.DiagnoseCmd, report)
-					cfg.Obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
-				}
+		if tr.observeAction(i, verb) {
+			// (code-intel slice 1) Diagnostics feed, only on edit turns — no point
+			// re-checking a read/run turn. Appended to the observation the model
+			// reads next (the text loop's wire format).
+			if msg := tr.diagnostics(loopCtx, runTimeout); msg != "" {
+				observation += "\n\n" + msg
 			}
 		}
 
-		// (P3) Churn nudge: fire once when EITHER signal of wandering crosses the
-		// threshold — repeated failing test-runs (the gpt-oss churn) OR many
-		// edit_file calls without converging (the grok read/edit churn, which barely
-		// runs the tests so a run-only trigger never fires). Appended to whatever the
-		// current observation is so the model reads it next turn.
-		if !nudged && cfg.ChurnNudgeRuns > 0 && (failRuns >= cfg.ChurnNudgeRuns || edits >= cfg.ChurnNudgeRuns) {
+		// (P3) Churn nudge, appended to whatever the current observation is so the
+		// model reads it next turn.
+		if tr.churnNudge() {
 			observation += churnNudge
-			nudged = true
 		}
 
-		// (HP-4) Near-cap finisher: when the budget is nearly spent AND the world looks
-		// settled — the last `run` was green and the files have been stable for the
-		// window — manufacture the finish ATTEMPT the spinner never makes. Appended to
-		// THIS observation so the model reads it next turn. One-time; the i < maxIter
-		// guard guarantees the model gets at least one more turn to act on it (a hint on
-		// the very last turn would be wasted). See Config.FinishNudgeWindow.
-		if !finishNudged && cfg.FinishNudgeWindow > 0 && i < maxIter &&
-			maxIter-i <= cfg.FinishNudgeWindow &&
-			lastRunPassed && i-lastEditIter >= cfg.FinishNudgeWindow {
+		// (HP-4) Near-cap finisher (shared tracker), appended to THIS observation
+		// so the model reads it next turn. See Config.FinishNudgeWindow.
+		if tr.finishNudge(i) {
 			observation += finishNudgeText
-			finishNudged = true
 			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 		}
+
+		// Record the step with the FINAL observation — after every augmentation —
+		// so RunResult.Steps and the persisted transcript carry exactly the text
+		// the model read, not a pre-nudge draft (review #5).
+		step.Observation = observation
+		res.Steps = append(res.Steps, step)
 
 		// OBSERVE: the result — including any error — is appended as the next thing
 		// the model sees (P2, P4). It is REAL external state, our anchor.
@@ -858,7 +859,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 5: if we fall out of the loop, WE stop it. Never trust the model to. ----
 	res.Outcome = HitCap
 	res.Reason = fmt.Sprintf("hit iteration cap (%d) without an answer", maxIter)
-	return upgradeIfVerified(cfg, res, runTimeout), nil
+	return upgradeIfVerified(ctx, cfg, res, runTimeout), nil
 }
 
 // churnNudge is the one-time hint appended to an observation once a session crosses
@@ -902,11 +903,14 @@ const answerNudgeNative = "[hint: you are almost out of turns. STOP exploring no
 
 // diagnoseSource runs cfg.DiagnoseCmd as slice 1's diagnostics SOURCE (a fast
 // compile/type check — go build/go vet via the sandbox) and reports its output and
-// whether the build is clean (exit 0). The source/surfacing split (see
-// CODE-INTELLIGENCE.md) keeps this single call as the seam a future persistent-gopls
-// client slots behind, leaving the loops' surfacing logic untouched. A "" command, an
-// infra failure to even start it, or a clean build all yield clean=true and no report
-// — we never fabricate a build error out of an infrastructure fault (P6).
+// a three-way diagState. The source/surfacing split (see CODE-INTELLIGENCE.md)
+// keeps this single call as the seam a future persistent-gopls client slots
+// behind, leaving the loops' surfacing logic untouched. An infra failure to even
+// start the check (or a "" command) is diagUnknown, NOT clean: we never fabricate
+// a build error out of an infrastructure fault (P6) — and just as importantly we
+// never fabricate a GREEN out of one, because the callers reset the stuck counter
+// on clean and a transient exec fault on a genuinely-red build would silently
+// disarm the feed.
 // verifySandbox is the sandbox the closing verification/diagnostics commands run
 // on: VerifySandbox when set, else Sandbox. The split lets -session route the
 // model's `run` tool through a stateful session while these trust-critical gates
@@ -918,15 +922,28 @@ func (c Config) verifySandbox() sandbox.Sandbox {
 	return c.Sandbox
 }
 
-func diagnoseSource(ctx context.Context, cfg Config, timeout time.Duration) (report string, clean bool) {
+// diagState is diagnoseSource's verdict: green, red, or no-signal. The zero
+// value is diagUnknown on purpose — "we couldn't check" is the safe default.
+type diagState int
+
+const (
+	diagUnknown diagState = iota // the check couldn't run — no signal either way.
+	diagClean                    // the check ran and exited 0 — genuinely green.
+	diagDirty                    // the check ran and failed — report carries the errors.
+)
+
+func diagnoseSource(ctx context.Context, cfg Config, timeout time.Duration) (report string, state diagState) {
 	if cfg.DiagnoseCmd == "" {
-		return "", true
+		return "", diagUnknown
 	}
 	out, err := runOp(ctx, cfg.verifySandbox(), cfg.DiagnoseCmd, timeout)
-	if err != nil || !isRunFailure(out) {
-		return "", true
+	if err != nil {
+		return "", diagUnknown
 	}
-	return out, false
+	if isRunFailure(out) {
+		return out, diagDirty
+	}
+	return "", diagClean
 }
 
 // diagnosticsMessage renders the stuck-with-a-broken-build feed: the failing command
@@ -937,6 +954,27 @@ func diagnosticsMessage(cmd, report string) string {
 		"Fix these errors and continue. This is informational, not a stop.", cmd, report)
 }
 
+// verifyRun executes cfg.VerifyCmd under the ONE context policy every closing
+// verification gate shares — answer, FinishTool, kill, cap, and deadline paths
+// alike (review #3; the paths used to diverge, so a cancel at the instant the
+// model answered recorded Unverified while the same run killed a turn later got
+// upgraded to Answered):
+//
+//   - A USER cancel skips the check entirely (skipped=true) — the user asked us
+//     to stop, so we spend nothing more; the caller reports the unverified /
+//     un-upgraded outcome honestly.
+//   - Anything else (including a wall-clock or caller deadline expiry) runs the
+//     check DETACHED from cancellation (context.WithoutCancel) — an expired
+//     budget must not block the final ground-truth check — bounded by the
+//     sandbox's own command timeout so it can't hang.
+func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out string, skipped bool, err error) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "", true, nil
+	}
+	out, err = runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
+	return out, false, err
+}
+
 // upgradeIfVerified flips a non-Answered terminal outcome (a kill or the iteration
 // cap) to Answered when VerifyCmd actually passes (P5/HP-5). The verify command is
 // the source of truth for "is the task done", so a run whose code is already correct
@@ -944,22 +982,20 @@ func diagnosticsMessage(cmd, report string) string {
 // showed gpt-5-nano flail on a malformed `bash -lc go test` side-command (tripping
 // the stagnant detector) while its real calc.go passed. This is the dual of
 // verify-continue: that downgrades a false success, this upgrades a false failure.
-// No-op without VerifyCmd, or when the command still fails (a genuine non-pass).
-func upgradeIfVerified(cfg Config, res *RunResult, runTimeout time.Duration) *RunResult {
+// No-op without VerifyCmd, on a user cancel (verifyRun's skip), or when the
+// command still fails (a genuine non-pass).
+func upgradeIfVerified(ctx context.Context, cfg Config, res *RunResult, runTimeout time.Duration) *RunResult {
 	if cfg.VerifyCmd == "" {
 		return res
 	}
-	// A FRESH context, detached from the loop's: this final check must run even when
-	// the run ended because the wall-clock budget (loop ctx) just expired — otherwise
-	// a HitDeadline on already-correct code could never be upgraded. Bounded by runOp's
-	// own timeout so it can't itself hang.
-	out, err := runOp(context.Background(), cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
-	if err == nil && !isRunFailure(out) {
-		res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, cfg.VerifyCmd)
-		res.Outcome = Answered
-		if res.Answer == "" {
-			res.Answer = fmt.Sprintf("task verified complete (%q passed)", cfg.VerifyCmd)
-		}
+	out, skipped, err := verifyRun(ctx, cfg, runTimeout)
+	if skipped || err != nil || isRunFailure(out) {
+		return res
+	}
+	res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, cfg.VerifyCmd)
+	res.Outcome = Answered
+	if res.Answer == "" {
+		res.Answer = fmt.Sprintf("task verified complete (%q passed)", cfg.VerifyCmd)
 	}
 	return res
 }
@@ -980,7 +1016,10 @@ func upgradeIfVerified(cfg Config, res *RunResult, runTimeout time.Duration) *Ru
 // With neither configured it returns "" (the historical behavior: trust the answer).
 func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) string {
 	if cfg.VerifyCmd != "" {
-		out, err := runOp(ctx, cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
+		out, skipped, err := verifyRun(ctx, cfg, runTimeout)
+		if skipped { // user cancel — no check ran, so the claim stays unconfirmed.
+			return fmt.Sprintf("run canceled before verification command %q could confirm success", cfg.VerifyCmd)
+		}
 		if err != nil { // couldn't even start it — we cannot confirm success.
 			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err)
 		}
@@ -1061,6 +1100,21 @@ func buildSystemPrompt(tools map[string]Tool) string {
 
 // ---- small helpers ----
 
+// noteUsage reports the run's CUMULATIVE token spend after each turn through the
+// Observer (never stdout — the data channel). This is the measurement that makes
+// MaxTotalTokens tunable: watch a few runs, then pick a cap. Skipped when the
+// provider reports no usage (nothing to measure) — shared by both loops.
+func noteUsage(obs Observer, iter int, u llm.Usage, budget int) {
+	if u.TotalTokens == 0 {
+		return
+	}
+	msg := fmt.Sprintf("tokens: %d cumulative after turn %d (prompt %d, completion %d)", u.TotalTokens, iter, u.PromptTokens, u.CompletionTokens)
+	if budget > 0 {
+		msg += fmt.Sprintf(" — budget %d", budget)
+	}
+	obs.Note(msg)
+}
+
 // addUsage sums two Usage values field-by-field so RunResult.Usage accumulates
 // the whole run's token cost.
 func addUsage(a, b llm.Usage) llm.Usage {
@@ -1087,21 +1141,62 @@ func truncate(s string) string { return clip(s, observationCap) }
 // tasks — measured ≤10k tokens of a 200k+ window). It is the cheap safety net
 // that turns a latent hard crash into graceful degradation IF a transcript ever
 // does overflow. A non-overflow error is returned untouched; an overflow that
-// can't be compacted any further is returned AS llm.ErrContextLength so the
+// can't be compacted any further — or is still overflowing after
+// evictionMaxRetries paid attempts — is returned AS llm.ErrContextLength so the
 // caller degrades to HitContextLimit instead of mislabelling it a transport fault.
 func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
-	for {
+	for attempt := 0; ; attempt++ {
 		resp, err := generateOnce(ctx, cfg, req)
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
 		}
-		shrunk, ok := evictOldestTurn(req.Messages)
-		if !ok {
+		if attempt >= evictionMaxRetries {
+			return nil, req.Messages, err // still overflowing after the paid retries — degrade.
+		}
+		shrunk, evicted := evictOldestTurns(req.Messages)
+		if evicted == 0 {
 			return nil, req.Messages, err // can't compact further — let the caller degrade.
 		}
-		cfg.Obs.Note(fmt.Sprintf("context overflow — evicted oldest turn (%d→%d msgs), retrying (HP-1 reactive fallback)", len(req.Messages), len(shrunk)))
+		cfg.Obs.Note(fmt.Sprintf("context overflow — evicted %d oldest turn(s) (%d→%d msgs), retry %d/%d (HP-1 reactive fallback)",
+			evicted, len(req.Messages), len(shrunk), attempt+1, evictionMaxRetries))
 		req.Messages = shrunk
 	}
+}
+
+// evictionMaxRetries caps how many compaction+retry cycles ONE overflow can
+// trigger (review #10). Every retry is a fully BILLED model call on a still-
+// large transcript, and the old one-turn-per-retry loop had no cap — an N-turn
+// overflow could bill up to N sequential calls. Halving the removable turns per
+// retry converges in O(log N); three paid attempts is enough for any transcript
+// that can converge at all, after which the run degrades to HitContextLimit.
+const evictionMaxRetries = 3
+
+// evictOldestTurns drops the oldest HALF of the removable turns (always at
+// least one), preserving the same invariants as evictOldestTurn: the TASK
+// preamble, the MOST RECENT turn, and tool-call/result pairing. Returns the
+// shrunk slice and how many turns were evicted (0 = nothing removable).
+func evictOldestTurns(msgs []llm.Message) ([]llm.Message, int) {
+	turns := 0
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == llm.RoleAssistant {
+			turns++
+		}
+	}
+	removable := turns - 1 // the most recent turn is never evicted (live grounding, P4).
+	if removable <= 0 {
+		return msgs, 0
+	}
+	target := (removable + 1) / 2
+	evicted := 0
+	for evicted < target {
+		shrunk, ok := evictOldestTurn(msgs)
+		if !ok {
+			break
+		}
+		msgs = shrunk
+		evicted++
+	}
+	return msgs, evicted
 }
 
 // generateOnce performs a single model call — the seam where streaming plugs in.

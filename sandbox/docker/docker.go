@@ -26,12 +26,13 @@ type Sandbox struct {
 	id     string // running container id, from `docker run -d`.
 }
 
-// compile-time proof we satisfy the interface. LimitedReader is inherited from
-// the embedded *local.Sandbox — a bounded read of the workspace is host-side, so
-// it needs no containerization.
+// compile-time proof we satisfy the interface. LimitedReader and Appender are
+// inherited from the embedded *local.Sandbox — a bounded read / in-place append
+// of the workspace is host-side, so it needs no containerization.
 var (
 	_ sandbox.Sandbox       = (*Sandbox)(nil)
 	_ sandbox.LimitedReader = (*Sandbox)(nil)
+	_ sandbox.Appender      = (*Sandbox)(nil)
 )
 
 // New starts a long-lived container rooted at the workspace dir and returns a

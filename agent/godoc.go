@@ -40,10 +40,9 @@ var goDocAllowedFlags = map[string]bool{"-all": true, "-src": true, "-u": true, 
 // hostWorkspace returns the workspace directory on the HOST filesystem — where the
 // Go toolchain and module cache live — so host-side Go introspection runs with the
 // right cwd to resolve module versions against the project's go.mod. The local
-// sandbox exposes Root() (the host workspace); other backends fall back to the
-// process cwd, which IS the workspace for the single-agent entrypoints (cmd/agent
-// runs there). A future docker/gated Root() passthrough would make multi-sandbox
-// hosts exact, but is not needed for the local default.
+// sandbox exposes Root() (the host workspace), and the gated/session wrappers
+// forward it; other backends fall back to the process cwd, which IS the
+// workspace for the single-agent entrypoints (cmd/agent runs there).
 func hostWorkspace(sb sandbox.Sandbox) string {
 	if r, ok := sb.(interface{ Root() string }); ok {
 		if root := r.Root(); root != "" {

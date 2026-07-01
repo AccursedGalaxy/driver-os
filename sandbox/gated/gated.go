@@ -20,6 +20,8 @@ package gated
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 
@@ -106,6 +108,14 @@ func (s *Sandbox) Exec(ctx context.Context, cmd sandbox.Command) (*sandbox.Resul
 	}
 }
 
+// Compile-time proof the gate preserves the optional bounded-read capability —
+// a wrapper that silently drops it would degrade agent.readBounded's memory
+// fence to whole-file reads under -review.
+var (
+	_ sandbox.LimitedReader = (*Sandbox)(nil)
+	_ sandbox.Appender      = (*Sandbox)(nil)
+)
+
 // Capabilities, ReadFile, WriteFile, ListDir, Close all pass through unchanged.
 func (s *Sandbox) Capabilities() sandbox.Capabilities { return s.inner.Capabilities() }
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
@@ -118,6 +128,46 @@ func (s *Sandbox) ListDir(ctx context.Context, path string) ([]sandbox.DirEntry,
 	return s.inner.ListDir(ctx, path)
 }
 func (s *Sandbox) Close() error { return s.inner.Close() }
+
+// ReadFileLimit forwards the optional sandbox.LimitedReader capability when the
+// inner sandbox has it (local and docker do). If it doesn't, degrade the same
+// way agent.readBounded's own fallback does: full read, then cap what is KEPT —
+// the read itself is unbounded, but the caller never holds more than max.
+func (s *Sandbox) ReadFileLimit(ctx context.Context, path string, max int64) ([]byte, bool, error) {
+	if lr, ok := s.inner.(sandbox.LimitedReader); ok {
+		return lr.ReadFileLimit(ctx, path, max)
+	}
+	data, err := s.inner.ReadFile(ctx, path)
+	if err != nil {
+		return nil, false, err
+	}
+	if max >= 0 && int64(len(data)) > max {
+		return data[:max], true, nil
+	}
+	return data, false, nil
+}
+
+// AppendFile forwards the optional sandbox.Appender capability. An inner
+// without it gets errors.ErrUnsupported so the CALLER (agent.writeFileOp) keeps
+// one policy point for the degraded read+concat path — the gate never silently
+// slurps a whole file itself.
+func (s *Sandbox) AppendFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error {
+	if ap, ok := s.inner.(sandbox.Appender); ok {
+		return ap.AppendFile(ctx, path, data, mode)
+	}
+	return fmt.Errorf("append %s: %w", path, errors.ErrUnsupported)
+}
+
+// Root forwards the inner sandbox's workspace root when it exposes one (the
+// local backend does), so host-side Go introspection (agent.hostWorkspace →
+// go doc / go list) resolves module versions against the project even under
+// the gate. "" means "no root known" and callers fall back to the process cwd.
+func (s *Sandbox) Root() string {
+	if r, ok := s.inner.(interface{ Root() string }); ok {
+		return r.Root()
+	}
+	return ""
+}
 
 // blocked is the observation a gated-off command yields: exit 126 (the shell's
 // "found but not executable/permitted" code — apt for "refused"), with the

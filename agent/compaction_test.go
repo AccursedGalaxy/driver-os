@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"iter"
 	"testing"
 	"time"
@@ -174,6 +176,59 @@ func TestRunEvictsAndRetriesOnOverflow(t *testing.T) {
 	// The eviction must have kept the transcript within the window on the final call.
 	if n := len(m.lastCall.Messages); n > m.windowMsgs {
 		t.Errorf("final request carried %d messages, over the %d window — eviction did not stick", n, m.windowMsgs)
+	}
+}
+
+// alwaysOverflow returns ErrContextLength on every Generate — the shape of a
+// window no amount of compaction satisfies — while counting the billed calls.
+type alwaysOverflow struct{ calls int }
+
+func (m *alwaysOverflow) Name() string                   { return "overflow" }
+func (m *alwaysOverflow) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (m *alwaysOverflow) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("overflow")
+}
+func (m *alwaysOverflow) Generate(context.Context, llm.Request) (*llm.Response, error) {
+	m.calls++
+	return nil, llm.ErrContextLength
+}
+
+func TestEvictOldestTurnsHalvesRemovable(t *testing.T) {
+	// TASK + 5 turns: 4 are removable (the most recent is pinned), so one batch
+	// evicts ceil(4/2) = 2 — the two OLDEST — and keeps pairing intact.
+	msgs := []llm.Message{llm.User("TASK")}
+	for i := 0; i < 5; i++ {
+		msgs = append(msgs, llm.Assistant(fmt.Sprintf("turn%d", i)), llm.User(fmt.Sprintf("obs%d", i)))
+	}
+	shrunk, evicted := evictOldestTurns(msgs)
+	if evicted != 2 {
+		t.Fatalf("evicted = %d, want 2 (half of the 4 removable turns)", evicted)
+	}
+	if got := shrunk[1].Text(); got != "turn2" {
+		t.Errorf("oldest surviving turn = %q, want turn2 (turn0/turn1 evicted)", got)
+	}
+	// Nothing removable: TASK + one turn stays put.
+	single := []llm.Message{llm.User("TASK"), llm.Assistant("only"), llm.User("obs")}
+	if _, n := evictOldestTurns(single); n != 0 {
+		t.Errorf("evicted %d from a single-turn transcript, want 0", n)
+	}
+}
+
+func TestGenerateWithEvictionCapsRetries(t *testing.T) {
+	// Review #10: an overflow that never resolves must stop after
+	// evictionMaxRetries paid retries (1 initial + 3 = 4 billed calls), not bill
+	// once per turn of a long transcript.
+	m := &alwaysOverflow{}
+	msgs := []llm.Message{llm.User("TASK")}
+	for i := 0; i < 40; i++ {
+		msgs = append(msgs, llm.Assistant("a"), llm.User("o"))
+	}
+	_, _, err := generateWithEviction(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{Messages: msgs})
+	if !errors.Is(err, llm.ErrContextLength) {
+		t.Fatalf("err = %v, want ErrContextLength for the caller to degrade on", err)
+	}
+	if want := 1 + evictionMaxRetries; m.calls != want {
+		t.Errorf("billed %d model calls, want %d (the retry cap) — a 40-turn transcript must not bill per turn", m.calls, want)
 	}
 }
 

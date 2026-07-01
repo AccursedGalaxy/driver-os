@@ -112,7 +112,7 @@ func SetupMemoryAt(dbPath string) (mneme.Memory, error) {
 // REAL state, don't trust prior text). Consolidate-on-write (see SetupMemory)
 // corrects facts that a LATER grounded run re-observes, but a fact no run has
 // revisited can still be stale — so the verify-with-tools framing stays.
-func recall(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task string) string {
+func recall(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.Scope, task string) string {
 	if mem == nil {
 		return ""
 	}
@@ -120,7 +120,7 @@ func recall(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task strin
 	defer cancel()
 	hits, err := mem.Search(ctx, task, scope, 5)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "memory: recall failed (non-fatal):", err)
+		obs.Note(fmt.Sprintf("memory: recall failed (non-fatal): %v", err))
 		return ""
 	}
 	if len(hits) == 0 {
@@ -131,7 +131,10 @@ func recall(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task strin
 	for _, h := range hits {
 		fmt.Fprintf(&b, "  - %s\n", h.Text)
 	}
-	fmt.Printf("memory: recalled %d fact(s) relevant to the task\n", len(hits))
+	// Status flows through the Observer, never fmt to stdout: stdout is the
+	// machine-readable data channel (-format=json/ndjson) and the package contract
+	// is "Run never calls fmt itself" (observer.go). See harness review finding #2.
+	obs.Note(fmt.Sprintf("memory: recalled %d fact(s) relevant to the task", len(hits)))
 	return b.String()
 }
 
@@ -139,30 +142,50 @@ func recall(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task strin
 // hand mneme the task and the final answer; it extracts the durable facts. Best
 // effort — a storage failure is logged, never fatal (Principle 6).
 //
-// LATENCY NOTE: this is synchronous and on the happy path — it makes an
-// extraction LLM call plus an embedding call AFTER the answer is printed, so the
-// user sees the answer immediately but then waits for the store. We accept that
-// for a learning tool (and bound it with memoryTimeout); a CLI that exits can't
-// truly fire-and-forget without waiting anyway. The caller gates this on a
-// tool-verified answer (see Run), so we only pay the cost when there's
-// something worth keeping.
-func remember(ctx context.Context, mem mneme.Memory, scope mneme.Scope, task, answer string) {
+// The store runs DETACHED from the caller's cancellation (review #4): by the
+// time remember is called the answer is already verified and delivered, so a
+// Ctrl-C at that instant must not throw the fact away — the whole point of the
+// grounded gate is that these facts are expensive to re-earn. memoryTimeout is
+// the only bound (a hung endpoint must still not hang us, Principle 5).
+//
+// The loops call this through rememberAsync so the RunResult is returned (and
+// the CLI emits it) without waiting the ≤memoryTimeout extraction+embedding
+// round-trip; a process-exiting caller awaits via RunResult.AwaitMemory.
+func remember(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.Scope, task, answer string) {
 	if mem == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, memoryTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), memoryTimeout)
 	defer cancel()
 	written, err := mem.Add(ctx, []mneme.Message{
 		{Role: "user", Content: task},
 		{Role: "assistant", Content: answer},
 	}, scope)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "memory: store failed (non-fatal):", err)
+		obs.Note(fmt.Sprintf("memory: store failed (non-fatal): %v", err))
 		return
 	}
 	if len(written) > 0 {
-		fmt.Printf("memory: stored %d new fact(s) for future runs\n", len(written))
+		// Through the Observer, not stdout — see recall and finding #2.
+		obs.Note(fmt.Sprintf("memory: stored %d new fact(s) for future runs", len(written)))
 	}
+}
+
+// rememberAsync runs remember in the background and returns a channel that
+// closes when the store completes — the handle RunResult.AwaitMemory blocks on.
+// nil memory returns nil (nothing to await). This is what lets the loop return
+// the result the moment the answer is accepted instead of blocking the caller's
+// emission on an LLM round-trip (review #4).
+func rememberAsync(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.Scope, task, answer string) <-chan struct{} {
+	if mem == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		remember(ctx, obs, mem, scope, task, answer)
+	}()
+	return done
 }
 
 // scopeOrDefault resolves the memory namespace for a run: an explicit
