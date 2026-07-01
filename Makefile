@@ -1,4 +1,21 @@
-.PHONY: deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold
+.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold
+
+# Core module hygiene. These cover the Go module only — the embedded
+# frontends have their own *-build targets below. `check` is the
+# pre-commit bar: vet + full suite under the race detector.
+build:
+	go build ./...
+
+test:
+	go test ./...
+
+race:
+	go test -race ./...
+
+vet:
+	go vet ./...
+
+check: vet race
 
 # Build the Duet Lab frontend (React/Vite) into lab/web/dist, which the Go server
 # embeds. Run once, and after any frontend change. Needs node+npm (mise provides

@@ -1,7 +1,6 @@
 # secrets
 .env
 CLAUDE.md
-driver
 
 # Local workspace: keeps host builds on ../mneme (live local edits) while the
 # committed go.mod pins the published mneme commit — which is what lets a JARVIS
@@ -15,9 +14,12 @@ driver
 *.out
 *.test
 __debug_bin*
-# stray root-level `go build` output (binary named after its cmd dir)
+# stray root-level `go build` output (binary named after its cmd dir).
+# Anchored with a leading slash — a bare pattern like `driver` would also
+# ignore the cmd/driver/ SOURCE directory and hide new files from git status.
 /counciltest
 /commit-msg
+/driver
 /gameserver
 /jarvis-probe
 # council scratch artifacts (real runs persist under $XDG_DATA_HOME/driver-os/council/)
@@ -26,6 +28,10 @@ __debug_bin*
 # agent long-term memory (mneme sqlite store)
 *.db
 *.db-*
+
+# local tool caches / browser-session artifacts
+/.ruff_cache/
+/.playwright-mcp/
 
 # Cloned dependency source for browsing (see _deps/README.md).
 # Leading underscore so the go tool ignores it (keeps `go build ./...` clean).
