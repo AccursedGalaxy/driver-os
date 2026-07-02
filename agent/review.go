@@ -69,6 +69,12 @@ type ReviewVerdict struct {
 	Findings []ReviewFinding
 	Usage    llm.Usage
 	Model    string
+	// RunID/TranscriptPath identify the reviewer's own persisted sub-run (a
+	// reviewer that runs a real agent loop records it like any other run —
+	// diagnosing a misbehaving reviewer must not require a temp dump). Empty
+	// when the implementation doesn't persist.
+	RunID          string
+	TranscriptPath string
 }
 
 // Reviewer is the injected review-gate implementation (nil = gate off).
@@ -107,6 +113,7 @@ type ReviewReport struct {
 	Blocked       bool              `json:"blocked"`                  // the run ended with blockers standing.
 	Skipped       string            `json:"skipped,omitempty"`        // why the gate never ran (not a git workspace, reviewer error, …).
 	ReviewerModel string            `json:"reviewer_model,omitempty"` // from ReviewVerdict.Model — the per-reviewer calibration axis.
+	ReviewerRuns  []string          `json:"reviewer_runs,omitempty"`  // per-round ReviewVerdict.RunID — links this transcript to the reviewer's own.
 	Findings      []ReviewedFinding `json:"findings,omitempty"`
 	Usage         llm.Usage         `json:"usage"`
 }
@@ -131,7 +138,8 @@ type reviewState struct {
 	skip      string // non-empty => the gate is off for this run, with this recorded reason.
 	rounds    int
 	blocked   bool
-	model     string // reviewer model id, from the first verdict that names one.
+	model     string   // reviewer model id, from the first verdict that names one.
+	runIDs    []string // reviewer sub-run IDs, one per verdict that carried one.
 	findings  []ReviewedFinding
 	pending   []int // indices into findings: blockers fed back, awaiting repaired/expired resolution.
 	usage     llm.Usage
@@ -182,6 +190,7 @@ func (rv *reviewState) report() *ReviewReport {
 		Blocked:       rv.blocked,
 		Skipped:       rv.skip,
 		ReviewerModel: rv.model,
+		ReviewerRuns:  rv.runIDs,
 		Findings:      rv.findings,
 		Usage:         rv.usage,
 	}

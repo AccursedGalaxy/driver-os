@@ -148,6 +148,9 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		if rv.model == "" {
 			rv.model = verdict.Model
 		}
+		if verdict.RunID != "" {
+			rv.runIDs = append(rv.runIDs, verdict.RunID)
+		}
 	}
 	if err != nil {
 		// The reviewer is advisory-blocking, not authoritative: execution already

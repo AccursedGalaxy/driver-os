@@ -29,6 +29,7 @@ type fakeReviewer struct {
 	verdicts [][]ReviewFinding
 	inputs   []ReviewInput
 	err      error
+	runID    string // stamped on every verdict when set (per-call suffix), like a persisting reviewer would.
 }
 
 func (f *fakeReviewer) Review(_ context.Context, in ReviewInput) (*ReviewVerdict, error) {
@@ -44,7 +45,11 @@ func (f *fakeReviewer) Review(_ context.Context, in ReviewInput) (*ReviewVerdict
 	if len(f.verdicts) > 0 {
 		fs = f.verdicts[i]
 	}
-	return &ReviewVerdict{Findings: fs, Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}}, nil
+	v := &ReviewVerdict{Findings: fs, Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}}
+	if f.runID != "" {
+		v.RunID = fmt.Sprintf("%s-%d", f.runID, len(f.inputs))
+	}
+	return v, nil
 }
 
 // gitWorkspace builds a git-initialized workspace (WriteTree needs a repo, not
@@ -502,5 +507,18 @@ func TestReproFenceViolationRejectedAndRestored(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(root, "calc_test.go"))
 	if string(data) != "package calc // pristine\n" {
 		t.Fatalf("fenced file not restored: %q", data)
+	}
+}
+
+// Each reviewer sub-run's identity flows into the report, linking the solver's
+// transcript to the reviewer's own persisted transcripts (one ID per round).
+func TestReviewReportCarriesReviewerRunIDs(t *testing.T) {
+	rv := &fakeReviewer{runID: "rev"}
+	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	if res.Review == nil {
+		t.Fatal("no review report")
+	}
+	if got := res.Review.ReviewerRuns; len(got) != 1 || got[0] != "rev-1" {
+		t.Fatalf("ReviewerRuns = %v, want [rev-1]", got)
 	}
 }
