@@ -1219,7 +1219,7 @@ func truncate(s string) string { return clip(s, observationCap) }
 // caller degrades to HitContextLimit instead of mislabelling it a transport fault.
 func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
 	for attempt := 0; ; attempt++ {
-		resp, err := generateOnce(ctx, cfg, req)
+		resp, err := generateWithRetry(ctx, cfg, req)
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
 		}
@@ -1270,6 +1270,42 @@ func evictOldestTurns(msgs []llm.Message) ([]llm.Message, int) {
 		evicted++
 	}
 	return msgs, evicted
+}
+
+// transientMaxRetries caps how many RE-SENDS one model call gets after a
+// retryable provider fault (each is a fully billed attempt); retryBackoffBase
+// spaces them (2s, then 4s — a var so tests can shrink it). Sized for the
+// measured failure mode: OpenRouter streams die mid-flight on transient
+// upstream faults ({"code":504,"message":"Upstream idle timeout exceeded"},
+// run 20260702-204848) and one unretried fault used to kill the WHOLE run,
+// discarding every prior iteration's progress.
+const transientMaxRetries = 2
+
+var retryBackoffBase = 2 * time.Second
+
+// generateWithRetry re-sends a model call after a RETRYABLE provider error
+// (transient 5xx / mid-stream fault / rate limit — the adapter's
+// classification). A failed attempt never commits a turn, so the verbatim
+// re-send is safe; the partial response of the LAST attempt still rides back
+// with the error so the loops' answer salvage keeps what the model already
+// said. Non-retryable errors (canceled, auth, context length — the eviction
+// wrapper's case) pass through untouched on the first attempt.
+func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := generateOnce(ctx, cfg, req)
+		var perr *llm.ProviderError
+		if err == nil || !errors.As(err, &perr) || !perr.Retryable || attempt >= transientMaxRetries {
+			return resp, err
+		}
+		delay := retryBackoffBase << attempt
+		cfg.Obs.Note(fmt.Sprintf("transient provider error — retry %d/%d in %s: %v",
+			attempt+1, transientMaxRetries, delay, err))
+		select {
+		case <-ctx.Done(): // interrupted mid-backoff: surface the provider error, not a sleep artifact.
+			return resp, err
+		case <-time.After(delay):
+		}
+	}
 }
 
 // generateOnce performs a single model call — the seam where streaming plugs in.

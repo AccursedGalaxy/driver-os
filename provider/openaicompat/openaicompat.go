@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"iter"
 	"net/http"
 	"os"
@@ -516,6 +517,41 @@ func (p *Provider) classify(err error) error {
 		return &llm.ProviderError{Provider: p.name, Kind: llm.KindCanceled, Err: err}
 	}
 
+	// Mid-stream failures never reach the *openai.Error branch below: the
+	// SDK's ssestream surfaces an SSE error EVENT as a plain
+	// fmt.Errorf("received error while streaming: %s", <error JSON>) and a
+	// dropped connection as the raw transport error. Both mean "this attempt
+	// died after the request was accepted" — e.g. OpenRouter's
+	// {"code":504,"message":"Upstream idle timeout exceeded"} when a slow
+	// upstream goes quiet — which is transient, not a fault in the request.
+	// Left unclassified they read as Retryable:false and killed whole runs
+	// (run 20260702-204848). Marking them retryable lets the agent's
+	// generateWithRetry re-send; a streamed error never commits the turn, so
+	// the re-send is safe.
+	if payload, ok := streamErrPayload(err); ok {
+		var e struct {
+			Code    json.Number `json:"code"`
+			Message string      `json:"message"`
+		}
+		_ = json.Unmarshal([]byte(payload), &e)
+		code, _ := e.Code.Int64()
+		kind, retryable := llm.KindUnknown, true
+		switch {
+		case isContextLength(e.Message):
+			// A window overflow can arrive mid-stream too; route it to the
+			// eviction fallback, never to a verbatim (still overlong) retry.
+			kind, retryable = llm.KindContextLength, false
+		case code == http.StatusUnauthorized || code == http.StatusForbidden:
+			kind, retryable = llm.KindAuth, false
+		case code == http.StatusTooManyRequests:
+			kind = llm.KindRateLimit
+		}
+		return &llm.ProviderError{Provider: p.name, Kind: kind, StatusCode: int(code), Retryable: retryable, Err: err}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) { // connection dropped mid-body
+		return &llm.ProviderError{Provider: p.name, Kind: llm.KindUnknown, Retryable: true, Err: err}
+	}
+
 	var apiErr *openai.Error
 	if errors.As(err, &apiErr) {
 		kind := llm.KindUnknown
@@ -544,6 +580,14 @@ func (p *Provider) classify(err error) error {
 	}
 
 	return &llm.ProviderError{Provider: p.name, Kind: llm.KindUnknown, Err: err}
+}
+
+// streamErrPayload extracts the provider error JSON from the SDK's mid-stream
+// error ("received error while streaming: {...}"). The prefix is the stable
+// contract of openai-go's ssestream (packages/ssestream, pinned v1.12.0).
+func streamErrPayload(err error) (string, bool) {
+	_, payload, ok := strings.Cut(err.Error(), "received error while streaming: ")
+	return payload, ok
 }
 
 func isContextLength(msg string) bool {
