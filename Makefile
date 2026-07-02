@@ -1,4 +1,4 @@
-.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold
+.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold fasthttp-ws r1 r2
 
 # Core module hygiene. These cover the Go module only — the embedded
 # frontends have their own *-build targets below. `check` is the
@@ -130,6 +130,26 @@ swebench-gold:
 	go test -tags swebench_integration -count=1 -timeout 60m -run TestGoldPatchResolves -v ./eval/suite/swebench/
 
 
+
+# ROADMAP §C validation runs (docs/ROADMAP.md). Both prompt with a plan + cost
+# estimate before spending; pass Y=1 to skip the prompt. Results land under
+# eval/runs/ (gitignored). Needs OPENROUTER_API_KEY (env or .env), jq, git, go.
+#
+# R1 (~$2, 1.5–3h): gate-only cheap-reviewer block over the 4 banked fasthttp
+# patches — answers "were the 2026-07-02 cheap-reviewer deaths plumbing or
+# capability?" now that the SSE filter + -review-wall knob shipped.
+r1:
+	bash eval/scripts/r1.sh $(if $(Y),-y,)
+
+# R2 (~$5–6, hours): fasthttp #2272 head-to-head at N=3 across the four arms —
+# error bars for the §5.0 baselines that are all N=1 today.
+r2:
+	bash eval/scripts/r2.sh $(if $(Y),-y,)
+
+# Build (or --force rebuild) the pristine fasthttp challenge-workspace template
+# the R runs copy per trial. ARGS="--check" also asserts it starts RED.
+fasthttp-ws:
+	bash eval/scripts/fasthttp-ws.sh $(ARGS)
 
 # Clone/update dependency repos listed in _deps/repos.txt into _deps/ for browsing.
 # Missing repos are shallow-cloned; existing ones are fast-forwarded.
