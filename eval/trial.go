@@ -36,6 +36,13 @@ type Trial struct {
 	Cost   float64 // USD cost of this trial's Usage at the pinned Pricing (meaningless unless Priced).
 	Priced bool    // whether the model had a Pricing entry — false => render "—", not $0.
 
+	// Review is the closing review-gate report (nil when Config.Reviewer was
+	// unset). Persisted per trial so review activity is a recorded fact, not
+	// something to infer from outcome flips and billing deltas (the R4b gap).
+	Review       *agent.ReviewReport `json:"review,omitempty"`
+	ReviewCost   float64             // USD of Review.Usage at the REVIEWER model's pinned Pricing.
+	ReviewPriced bool                // false when the reviewer model has no Pricing entry (or Review is nil).
+
 	// LatencyMs is the agent's wall-clock for this trial (summed model + tool time
 	// across steps). Derived from Steps so it survives in report.json after the full
 	// trace is dropped — lets the report separate slow runs from token-heavy ones.
@@ -127,6 +134,10 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		tr.Steps = res.Steps
 		for _, s := range res.Steps {
 			tr.LatencyMs += s.ModelMs + s.ToolMs
+		}
+		tr.Review = res.Review
+		if res.Review != nil {
+			tr.ReviewCost, tr.ReviewPriced = CostOf(res.Review.ReviewerModel, res.Review.Usage)
 		}
 	}
 	tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)

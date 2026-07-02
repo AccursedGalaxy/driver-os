@@ -181,3 +181,28 @@ func TestRunConcurrentCollectsAllTrials(t *testing.T) {
 		}
 	}
 }
+
+// nopReviewer satisfies agent.Reviewer; on a non-git fixture the gate skips
+// before ever calling it, but the skip must still surface as a non-nil
+// RunResult.Review that the Trial carries (R4b lesson: review activity must be
+// visible per trial, not inferred from outcome flips).
+type nopReviewer struct{}
+
+func (nopReviewer) Review(context.Context, agent.ReviewInput) (*agent.ReviewVerdict, error) {
+	return &agent.ReviewVerdict{Model: "stub/reviewer"}, nil
+}
+
+func TestRunTrialCarriesReview(t *testing.T) {
+	c := markerCase()
+	c.Config.Reviewer = nopReviewer{}
+	fixer := &scriptProvider{name: "fixer", turns: [][]llm.ContentPart{
+		{writeCall("1", "result.txt", "DONE")},
+	}}
+	tr := RunTrial(context.Background(), c, Model{Label: "fixer", Provider: fixer}, 1)
+	if tr.Err != "" {
+		t.Fatalf("unexpected infra error: %s", tr.Err)
+	}
+	if tr.Review == nil {
+		t.Fatal("Trial.Review = nil; a run with the gate configured must carry its ReviewReport")
+	}
+}

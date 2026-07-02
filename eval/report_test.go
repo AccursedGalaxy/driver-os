@@ -181,3 +181,74 @@ func TestMarkdownRendersCellRow(t *testing.T) {
 		t.Errorf("markdown should flag the false positive:\n%s", md)
 	}
 }
+
+func TestWriteFilesPersistsReview(t *testing.T) {
+	dir := t.TempDir()
+	rev := &agent.ReviewReport{Rounds: 2, Blocked: true, ReviewerModel: "openai/gpt-5.5",
+		Usage: llm.Usage{PromptTokens: 1000, CompletionTokens: 100}}
+	r := &Report{Cells: []Cell{{
+		Case: "calc", Model: "deepseek/deepseek-v4-flash", Trials: []Trial{
+			{Case: "calc", Model: "deepseek/deepseek-v4-flash", Index: 1, Outcome: agent.Unverified,
+				Review: rev,
+				Steps:  []agent.Step{{Iter: 1, Verb: "run", Arg: "go test ./..."}}},
+		},
+	}}}
+	if err := r.WriteFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	// report.json carries the compact review report (rounds/blocked/usage)…
+	rj, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rj), `"blocked": true`) {
+		t.Errorf("report.json should carry the review report:\n%s", rj)
+	}
+	// …and so does the archived trace, so a trial's review is replayable in place.
+	tb, err := os.ReadFile(filepath.Join(dir, "traces", "calc__deepseek_deepseek-v4-flash__t1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tb), `"rounds": 2`) {
+		t.Errorf("trace file should carry the review report:\n%s", tb)
+	}
+}
+
+func TestCostTotalIncludesReviewerCost(t *testing.T) {
+	c := Cell{Case: "c", Model: "m", Trials: []Trial{
+		{Cost: 0.10, Priced: true, ReviewCost: 0.25, ReviewPriced: true},
+		{Cost: 0.30, Priced: true}, // review off on this trial
+	}}
+	if total, ok := c.CostTotal(); !ok || math.Abs(total-0.65) > 1e-9 {
+		t.Errorf("CostTotal = %v (ok=%v), want 0.65 (solver + reviewer)", total, ok)
+	}
+	// A cell where ONLY the reviewer was priced still reports a cost (the bill
+	// is real even when the solver model has no Pricing entry).
+	c2 := Cell{Trials: []Trial{{ReviewCost: 0.40, ReviewPriced: true}}}
+	if total, ok := c2.CostTotal(); !ok || math.Abs(total-0.40) > 1e-9 {
+		t.Errorf("CostTotal (reviewer-only) = %v (ok=%v), want 0.40", total, ok)
+	}
+}
+
+func TestMarkdownRendersReviewGateSection(t *testing.T) {
+	rev := &agent.ReviewReport{Rounds: 2, Blocked: true, ReviewerModel: "openai/gpt-5.5",
+		Findings: []agent.ReviewedFinding{{Fate: agent.FateRepaired}, {Fate: agent.FateNote}}}
+	r := &Report{Cells: []Cell{
+		{Case: "calc", Model: "deepseek/deepseek-v4-flash", Trials: []Trial{
+			{Outcome: agent.Unverified, Review: rev},
+			{Outcome: agent.Answered}, // review off: must not break aggregation
+		}},
+	}}
+	md := r.Markdown()
+	if !strings.Contains(md, "## Review gate") {
+		t.Fatalf("markdown should render a review-gate section when any trial carries one:\n%s", md)
+	}
+	if !strings.Contains(md, "openai/gpt-5.5") || !strings.Contains(md, "repaired=1") {
+		t.Errorf("review-gate section should aggregate finding fates per reviewer:\n%s", md)
+	}
+	// No review anywhere -> no section.
+	r2 := &Report{Cells: []Cell{{Trials: []Trial{{Outcome: agent.Answered}}}}}
+	if strings.Contains(r2.Markdown(), "## Review gate") {
+		t.Error("review-gate section must be absent when the gate never ran")
+	}
+}

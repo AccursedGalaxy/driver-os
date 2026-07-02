@@ -206,11 +206,18 @@ func (c Cell) CostP(p float64) (cost float64, ok bool) {
 }
 
 // CostTotal sums the USD cost of every priced trial in the cell — what this
-// cell actually cost to measure. ok=false when nothing was priced.
+// cell actually cost to measure, reviewer bill included (R4b's sweep-cost line
+// underreported 6.5× by pricing only the solver). ok=false when nothing was
+// priced. The $/trial percentile column stays solver-only on purpose: it
+// compares MODELS, while this compares BILLS.
 func (c Cell) CostTotal() (total float64, ok bool) {
 	for _, t := range c.Trials {
 		if t.Priced {
 			total += t.Cost
+			ok = true
+		}
+		if t.ReviewPriced {
+			total += t.ReviewCost
 			ok = true
 		}
 	}
@@ -246,7 +253,7 @@ type Manifest struct {
 // Trial and the reason/latency columns; v3 added Trial.NoAttempt (Grade.
 // NoAttempt) and the best-of-N selection section. Bump on any further shape
 // change.
-const ReportSchemaVersion = "3"
+const ReportSchemaVersion = "4"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
 // renders to Markdown (human) and JSON (machine-diffable, for regression diffs).
@@ -297,6 +304,7 @@ func (r *Report) Markdown() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(bestOfMarkdown(r.Cells))
+	b.WriteString(reviewGateMarkdown(r.Cells))
 	if total, ok := r.SweepCost(); ok {
 		fmt.Fprintf(&b, "_sweep cost: %s (priced models only; unpriced rows show —)_\n", humanUSD(total))
 	}
@@ -343,7 +351,8 @@ func (r *Report) writeTraces(dir string) error {
 				}
 			}
 			rec := traceRecord{Case: t.Case, Model: t.Model, Index: t.Index,
-				Outcome: string(t.Outcome), Pass: t.Pass, Detail: t.Detail, Answer: t.Answer, Steps: t.Steps}
+				Outcome: string(t.Outcome), Pass: t.Pass, Detail: t.Detail, Answer: t.Answer,
+				Review: t.Review, Steps: t.Steps}
 			b, err := json.MarshalIndent(rec, "", "  ")
 			if err != nil {
 				continue
@@ -362,14 +371,15 @@ func (r *Report) writeTraces(dir string) error {
 // reply, but for a PROSE case (issue-review) it is the whole point of the run, so
 // it sits at the top of the file where a reader looks first.
 type traceRecord struct {
-	Case    string       `json:"case"`
-	Model   string       `json:"model"`
-	Index   int          `json:"index"`
-	Outcome string       `json:"outcome"`
-	Pass    bool         `json:"pass"`
-	Detail  string       `json:"detail"`
-	Answer  string       `json:"answer"`
-	Steps   []agent.Step `json:"steps"`
+	Case    string              `json:"case"`
+	Model   string              `json:"model"`
+	Index   int                 `json:"index"`
+	Outcome string              `json:"outcome"`
+	Pass    bool                `json:"pass"`
+	Detail  string              `json:"detail"`
+	Answer  string              `json:"answer"`
+	Review  *agent.ReviewReport `json:"review,omitempty"`
+	Steps   []agent.Step        `json:"steps"`
 }
 
 // slugify makes a model slug safe for a filename: "/" and ":" — the only

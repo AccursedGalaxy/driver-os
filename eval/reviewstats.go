@@ -93,3 +93,32 @@ func RenderReviewFates(stats map[string]*ReviewFateStats) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// reviewGateMarkdown renders the report.md review-gate section: per-reviewer
+// finding-fate aggregates plus the blocked-trial count, so a sweep with the
+// gate armed records what the reviewer DID (empty string when no trial carries
+// a ReviewReport — the section only exists when the gate ran).
+func reviewGateMarkdown(cells []Cell) string {
+	var recs []agent.RunRecord
+	blocked, reviewed := 0, 0
+	for _, c := range cells {
+		for _, t := range c.Trials {
+			if t.Review == nil {
+				continue
+			}
+			reviewed++
+			if t.Review.Blocked {
+				blocked++
+			}
+			recs = append(recs, agent.RunRecord{Review: t.Review})
+		}
+	}
+	if reviewed == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Review gate\n\n")
+	fmt.Fprintf(&b, "reviewed trials: %d · blocked: %d\n\n", reviewed, blocked)
+	b.WriteString("```\n" + RenderReviewFates(AggregateReviewFates(recs)) + "\n```\n\n")
+	return b.String()
+}
