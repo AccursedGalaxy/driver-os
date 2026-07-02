@@ -342,6 +342,12 @@ type Config struct {
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
 	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
 
+	// ReasoningEffort rides on every model call of the run (llm.Request
+	// passthrough: "minimal".."xhigh", "" = provider default). It is a QUALITY
+	// knob, not a termination knob — reasoning tokens still bill against
+	// MaxTokens and MaxTotalTokens, so a higher effort spends more of both.
+	ReasoningEffort string
+
 	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
 	// is the universal backstop for a spiral that dodges every action/observation
 	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool
@@ -708,10 +714,11 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		var err error
 		modelStart := time.Now()
 		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
-			System:      system,
-			Messages:    messages,
-			Temperature: &temp,
-			MaxTokens:   maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
+			System:          system,
+			Messages:        messages,
+			Temperature:     &temp,
+			MaxTokens:       maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
+			ReasoningEffort: cfg.ReasoningEffort,
 		})
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
@@ -1315,6 +1322,12 @@ func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.R
 // loop body is identical either way. Otherwise it is a plain Generate call. The
 // eviction retry in generateWithEviction wraps this, so a streamed context
 // overflow still triggers compaction and a re-stream.
+//
+// Reasoning traces: an adapter that can assemble the turn's reasoning yields it
+// as a Reasoning chunk (the anthropic adapter does — its API REJECTS a replayed
+// tool-using turn missing its signed thinking blocks), and collectStream keeps
+// it, so such providers stream with full replay fidelity. openaicompat does not
+// yet, hence the Config.Stream caveat still applies there.
 func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
 	if cfg.Stream && cfg.Model.Capabilities().Streaming {
 		return collectStream(cfg.Model.Stream(ctx, req), deltaSink(cfg.Obs))
@@ -1330,13 +1343,16 @@ func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Respon
 // eviction wrapper classifies ErrContextLength) — but the PARTIAL response
 // collected so far rides back WITH the error: the turn is not committed, yet the
 // prose that already streamed often carries the model's diagnosis, and the loops'
-// answer salvage must not lose it. Streamed chunks carry no reasoning trace, so
-// the collected Content has none — see Config.Stream.
+// answer salvage must not lose it. Reasoning chunks (assembled traces an adapter
+// yields for replay — see llm.Chunk) are kept, leading the Content the way a
+// thinking provider orders them; adapters that yield none (openaicompat today)
+// still produce reasoning-free streamed responses — see Config.Stream.
 func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.Response, error) {
 	var text strings.Builder
-	var calls []llm.ContentPart
+	var calls, reasoning []llm.ContentPart
 	resp := &llm.Response{}
 	assemble := func() *llm.Response {
+		resp.Content = append(resp.Content, reasoning...)
 		if text.Len() > 0 {
 			resp.Content = append(resp.Content, llm.Text(text.String()))
 		}
@@ -1351,6 +1367,8 @@ func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.
 		case chunk.Done:
 			resp.FinishReason = chunk.FinishReason
 			resp.Usage = chunk.Usage
+		case chunk.Reasoning != nil:
+			reasoning = append(reasoning, *chunk.Reasoning)
 		case chunk.ToolCall != nil:
 			calls = append(calls, *chunk.ToolCall)
 		case chunk.Text != "":

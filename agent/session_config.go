@@ -33,6 +33,16 @@ func (s *Session) SetMaxTokens(n int) { s.cfg.MaxTokens = n }
 // MaxTokens returns the output cap the next Send will run under.
 func (s *Session) MaxTokens() int { return s.cfg.MaxTokens }
 
+// SetReasoningEffort changes the reasoning-effort passthrough for every
+// SUBSEQUENT turn (the /set effort command; "" = provider default). The
+// caller validates the tier name — the wire accepts any string, so a typo
+// would otherwise surface as a provider 400 mid-run. Same calling contract as
+// SetModel.
+func (s *Session) SetReasoningEffort(e string) { s.cfg.ReasoningEffort = e }
+
+// ReasoningEffort returns the effort the next Send will ask for.
+func (s *Session) ReasoningEffort() string { return s.cfg.ReasoningEffort }
+
 // SetVerifyCmd arms (or, with "", disarms) the closing VERIFICATION gate for
 // every SUBSEQUENT turn — the /verify command: the user names the success
 // command mid-session ("go test ./...") and each finish from then on must pass

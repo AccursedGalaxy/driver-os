@@ -107,11 +107,13 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 // reviewFinish is stage 2 for a finish whose fence+verify already passed. It
 // returns exactly one of:
 //
-//	feedback != ""    blocking findings AND repair budget remains — feed the
-//	                  observation back to the solver and keep looping (1d);
+//	feedback != ""    blocking OR advisory findings, AND repair budget
+//	                  remains — feed the observation back to the solver and
+//	                  keep looping (1d);
 //	blockReason != "" blocking findings and no budget — the caller records
 //	                  Unverified (exit 2) with the findings in the report;
-//	both ""           pass (no reviewer / skipped / no blockers) — Answered.
+//	both ""           pass — no reviewer / skipped / no blockers (advisories
+//	                  alone never block; with no budget left they pass).
 func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, blockReason string) {
 	rv := g.review
 	if rv == nil || rv.skip != "" {
@@ -166,7 +168,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	}
 
 	blocking := 0
-	var blockers []ReviewedFinding
+	var blockers, advisories []ReviewedFinding
 	reproBudget := reviewReproCap
 	for _, f := range verdict.Findings {
 		if ro := reviewObserver(g.cfg.Obs); ro != nil {
@@ -175,22 +177,30 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		rf := g.classify(gctx, f, &reproBudget)
 		rf.Round = rv.rounds
 		rv.findings = append(rv.findings, rf)
-		if rf.Fate == "" { // pending = blocking.
+		switch rf.Fate {
+		case "": // pending = blocking.
 			blocking++
 			rv.pending = append(rv.pending, len(rv.findings)-1)
 			blockers = append(blockers, rf)
+		case FateAdvised:
+			advisories = append(advisories, rf)
 		}
 	}
-	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking))
+	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 	if ro := reviewObserver(g.cfg.Obs); ro != nil {
 		ro.ReviewVerdict(blocking, rv.rounds)
 	}
 
-	if blocking == 0 {
+	if blocking == 0 && len(advisories) == 0 {
 		return "", ""
 	}
 	if canContinue && rv.rounds < rv.maxRounds {
-		return reviewFeedback(blockers), ""
+		return reviewFeedback(blockers, advisories), ""
+	}
+	if blocking == 0 {
+		// Only advisories stand and the repair budget is gone: they were
+		// hearsay by construction (unconfirmed, sub-threshold) — pass.
+		return "", ""
 	}
 	rv.blocked = true
 	rv.resolvePending(FateExpired)
@@ -233,8 +243,9 @@ func (rv *reviewState) captureDiff(ctx context.Context) (string, error) {
 //     regardless of confidence, the output travels in the feedback), passing
 //     REFUTES it (downgraded, fate refuted). Capped per round; a repro that
 //     mutates fenced paths is rejected and its damage restored;
-//  4. the confidence hard gate: an unconfirmed blocker below
-//     reviewBlockConfidence is a note.
+//  4. the confidence ladder: an unconfirmed blocker below
+//     reviewBlockConfidence is ADVISORY (fed back, never blocks) down to
+//     reviewAdviseConfidence, and a silent note below that.
 //
 // Fate "" means BLOCKING (pending repair/expiry — resolved by later rounds).
 func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int) ReviewedFinding {
@@ -264,6 +275,14 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 		}
 	}
 	if f.Confidence < reviewBlockConfidence {
+		// Between the two thresholds the finding is ADVISORY: fed back for a
+		// repair round (the solver hears it), never blocking (it can't raise
+		// the false-block rate). Below the advisory floor it stays a silent
+		// note — low-confidence chatter isn't worth a billed round.
+		if f.Confidence >= reviewAdviseConfidence {
+			rf.Fate = FateAdvised
+			return rf
+		}
 		rf.Fate = FateNote
 		return rf
 	}
@@ -305,7 +324,7 @@ func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) b
 
 // reviewFeedback renders blocking findings as the repair observation (1d) —
 // the exact VerifyContinue pattern: the real defect, then "keep working".
-func reviewFeedback(blockers []ReviewedFinding) string {
+func reviewFeedback(blockers, advisories []ReviewedFinding) string {
 	var b strings.Builder
 	for _, f := range blockers {
 		fmt.Fprintf(&b, "[review] a reviewer found a blocking defect: %s (%s: %q).\n", f.FailureScenario, f.File, f.Quote)
@@ -313,7 +332,14 @@ func reviewFeedback(blockers []ReviewedFinding) string {
 			fmt.Fprintf(&b, "The defect was CONFIRMED by executing `%s`, which failed:\n%s\n", f.ReproCmd, f.ReproOut)
 		}
 	}
-	b.WriteString("Fix it without breaking the verified tests; do not argue with the review in prose.")
+	// Advisories are worded as likely-but-unproven so the solver repairs what
+	// is real instead of treating every line as a command — the reviewer's
+	// confidence was below the blocking bar, and a wrong "fix" to a correct
+	// patch is the Self-Refine failure mode the round cap exists for.
+	for _, f := range advisories {
+		fmt.Fprintf(&b, "[review] a reviewer flagged a LIKELY defect (advisory — this will not block): %s (%s: %q).\n", f.FailureScenario, f.File, f.Quote)
+	}
+	b.WriteString("Fix what is real without breaking the verified tests, verifying an advisory against the code before acting on it; do not argue with the review in prose.")
 	return b.String()
 }
 

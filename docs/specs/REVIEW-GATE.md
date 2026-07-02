@@ -149,6 +149,14 @@ Harness-side validation (the anti-hallucination layer, all deterministic):
 - `quote` must appear verbatim in the patched file — mismatch drops the
   finding (PR-Agent's score-0 rule).
 - A finding blocks only if `severity=blocker` AND `confidence >= 8`.
+- **Advisory band** (2026-07-03): an unconfirmed blocker with
+  `5 <= confidence < 8` is fate `advised` — fed back to the solver for a
+  repair round (worded as a LIKELY defect that will not block) but it can
+  NEVER flip the run to Unverified. Calibration case: a confidence-7 blocker
+  with a correct failure scenario but no runnable repro (a visual TUI defect)
+  used to die as a silent `note` and the defect shipped; the band adds no
+  blocking power, so the false-block rate cannot rise. Below 5 stays a
+  silent `note` (low-confidence chatter isn't worth a billed round).
 - **Executable escalation**: if `repro_cmd` is present, run it in the verify
   sandbox. Confirmed-failing → hard block regardless of confidence;
   passing → the finding is downgraded to `note` (the reviewer's claim was
@@ -158,12 +166,15 @@ Harness-side validation (the anti-hallucination layer, all deterministic):
 **Repair loop**: blocking findings are fed back to the solver as an
 observation (exactly the VerifyContinue pattern):
 `[review] a reviewer found a blocking defect: <scenario> (<file>: <quote>).
-Fix it without breaking the verified tests.` Then the FULL gate re-runs
-(Stage 0 → 1 → 2). `ReviewRounds` caps the cycles (default 2). Exit
-conditions, in order: no blocking findings → Answered; rounds exhausted with
-blockers → Unverified (exit 2) with the findings in `RunResult.Review`.
-No new outcome/exit code: the CLI contract stays stable; the review detail
-lives in the result JSON.
+Fix it without breaking the verified tests.` Advisory findings ride in the
+same observation, worded `a reviewer flagged a LIKELY defect (advisory — this
+will not block)`, and trigger a repair round even with no blocker standing.
+Then the FULL gate re-runs (Stage 0 → 1 → 2). `ReviewRounds` caps the cycles
+(default 2). Exit conditions, in order: no blocking findings → Answered
+(advisories alone never block — with the budget gone they pass); rounds
+exhausted with blockers → Unverified (exit 2) with the findings in
+`RunResult.Review`. No new outcome/exit code: the CLI contract stays stable;
+the review detail lives in the result JSON.
 
 ### Config / API surface
 

@@ -168,11 +168,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		var err error
 		modelStart := time.Now()
 		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
-			System:      system,
-			Messages:    messages,
-			Tools:       schemas,
-			Temperature: &temp,
-			MaxTokens:   maxTok,
+			System:          system,
+			Messages:        messages,
+			Tools:           schemas,
+			Temperature:     &temp,
+			MaxTokens:       maxTok,
+			ReasoningEffort: cfg.ReasoningEffort,
 		})
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {

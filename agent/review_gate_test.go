@@ -181,10 +181,11 @@ func TestReviewQuoteValidationDrops(t *testing.T) {
 	}
 }
 
-// The confidence hard gate: a blocker under 8 is a note, never blocks.
+// The confidence ladder's silent band: a blocker under the ADVISORY floor is
+// a note — never blocked, never fed back (no billed repair round).
 func TestReviewConfidenceGate(t *testing.T) {
 	f := blocker("calc.go", "package calc // patched")
-	f.Confidence = 7
+	f.Confidence = reviewAdviseConfidence - 1
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
 	res := reviewedRun(t, rv, Config{}, editThenAnswer())
 	if res.Outcome != Answered {
@@ -192,6 +193,77 @@ func TestReviewConfidenceGate(t *testing.T) {
 	}
 	if got := res.Review.Findings[0].Fate; got != FateNote {
 		t.Fatalf("fate = %s, want note", got)
+	}
+	if n := len(rv.inputs); n != 1 {
+		t.Fatalf("reviewer called %d times, want 1 (a note spends no repair round)", n)
+	}
+}
+
+// The advisory band (the 2026-07-03 confidence-7 word-wrap case): an
+// unconfirmed blocker in [advise, block) is FED BACK for a repair round —
+// the solver hears the finding — but its wording says it will not block.
+func TestReviewAdvisoryFedBack(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.Confidence = 7
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}, {}}} // round 2: clean after repair.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")}, // finish #1 → advisory feedback round.
+		{structuredCall("c2", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched v2\n"})},
+		{llm.Text("done again")}, // finish #2 → clean review → answered.
+	}
+	ns := &nativeScript{turns: turns}
+	sb, root := gitWorkspace(t, map[string]string{"calc.go": "package calc\n"})
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
+		Reviewer: rv, MaxIterations: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered", res.Outcome, res.Reason)
+	}
+	if got := res.Review.Findings[0].Fate; got != FateAdvised {
+		t.Fatalf("fate = %s, want advised", got)
+	}
+	var fed string
+	for _, req := range ns.calls {
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "[review]") {
+				fed = m.Text()
+			}
+		}
+	}
+	for _, want := range []string{"LIKELY defect (advisory", "will not block", "the change breaks X", "calc.go"} {
+		if !strings.Contains(fed, want) {
+			t.Errorf("advisory feedback %q missing %q", fed, want)
+		}
+	}
+}
+
+// Advisories can never flip a run to Unverified: when they persist past the
+// round budget, the run still passes (they were unconfirmed hearsay).
+func TestReviewAdvisoryNeverBlocks(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.Confidence = 7
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}, {f}}} // the advisory persists every round.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},       // round 1 → advisory feedback.
+		{llm.Text("done again")}, // round 2 → advisory again, budget gone → still answered.
+	}
+	res := reviewedRun(t, rv, Config{MaxIterations: 8}, turns)
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered — advisories must never block", res.Outcome, res.Reason)
+	}
+	if res.Review.Blocked {
+		t.Fatal("report Blocked = true, want false for advisory-only findings")
+	}
+	for i, rf := range res.Review.Findings {
+		if rf.Fate != FateAdvised {
+			t.Errorf("finding %d fate = %s, want advised", i, rf.Fate)
+		}
 	}
 }
 

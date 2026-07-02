@@ -21,10 +21,20 @@ import (
 )
 
 // reviewBlockConfidence is the hard confidence gate: a "blocker" finding below
-// it is recorded as a note, never blocks (Anthropic security-review's ≥8/10;
-// revisit once finding-fate calibration data exists). A CONFIRMED repro blocks
-// regardless — execution evidence beats self-reported confidence.
+// it never blocks (Anthropic security-review's ≥8/10; revisit once
+// finding-fate calibration data exists). A CONFIRMED repro blocks regardless —
+// execution evidence beats self-reported confidence.
 const reviewBlockConfidence = 8
+
+// reviewAdviseConfidence is the ADVISORY floor beneath it: an unconfirmed
+// blocker in [advise, block) is fed back to the solver for a repair round but
+// never blocks the run — the solver hears the finding and decides. Calibration
+// case (2026-07-03): a confidence-7 blocker with a correct, concrete failure
+// scenario but no runnable repro (a visual TUI defect) died as a silent note
+// and the defect shipped; the solver would almost certainly have repaired it
+// had it been told. Advisory feedback adds no blocking power, so it cannot
+// raise the false-block rate — its only cost is a bounded repair round.
+const reviewAdviseConfidence = 5
 
 // DefaultReviewRounds bounds the reviewer↔solver repair loop when
 // Config.ReviewRounds is unset. Refine-loop gains concentrate in round 1 with
@@ -99,7 +109,8 @@ const (
 	FateRepaired = "repaired" // blocked a round, was fed back, and a later round no longer stood in the way.
 	FateRefuted  = "refuted"  // its repro command PASSED — the claim was refuted by execution; downgraded to a note.
 	FateExpired  = "expired"  // still blocking when the rounds (or the run) ran out.
-	FateNote     = "note"     // never blocked: severity "note", or a blocker under the confidence gate.
+	FateAdvised  = "advised"  // an unconfirmed blocker under the confidence gate but at/above the advisory floor: fed back for repair, never blocked.
+	FateNote     = "note"     // never blocked or fed back: severity "note", or a blocker under the advisory floor.
 	FateDropped  = "dropped"  // failed deterministic validation (quote not found verbatim / repro touched the fence).
 )
 

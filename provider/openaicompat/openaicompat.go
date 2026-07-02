@@ -268,6 +268,11 @@ func (p *Provider) buildParams(req llm.Request) (openai.ChatCompletionNewParams,
 	if tools := toTools(req.Tools); len(tools) > 0 {
 		params.Tools = tools
 	}
+	if req.ReasoningEffort != "" {
+		// The OpenAI chat-completions param; OpenRouter accepts it too and
+		// folds it into its unified `reasoning` config for other upstreams.
+		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
+	}
 
 	// Provider-specific passthrough (decision 6): merge recognized-by-the-wire
 	// keys into the request body. Unknown keys are simply sent; the server

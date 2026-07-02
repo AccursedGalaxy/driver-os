@@ -36,6 +36,16 @@ type Request struct {
 	// Adapters that don't support tools ignore this (preserving swap-ability).
 	Tools []Tool
 
+	// ReasoningEffort asks a reasoning model to think harder or less
+	// ("minimal" | "low" | "medium" | "high" | "xhigh" — passed through
+	// untyped, so a new tier needs no code change). Empty means unset: the
+	// provider's default, which is what every measurement before 2026-07-03
+	// ran at. Adapters map it to their wire param (openaicompat →
+	// `reasoning_effort`, the OpenAI chat-completions param OpenRouter
+	// normalizes into its unified reasoning system); adapters without a
+	// reasoning surface ignore it.
+	ReasoningEffort string
+
 	// ProviderOptions is a passthrough for provider-specific knobs (e.g.
 	// reasoning effort, thinking budget). Adapters merge recognized keys into
 	// the underlying request and ignore the rest. Prefer the typed helpers
