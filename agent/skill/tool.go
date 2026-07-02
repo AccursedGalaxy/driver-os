@@ -114,26 +114,53 @@ func (st *state) load(ctx context.Context, sb sandbox.Sandbox, byName map[string
 		return fmt.Sprintf("skill %q is already loaded above — its instructions still apply. Bundled files remain at %s/.", name, stageRel), nil
 	}
 
-	var resNote string
-	if len(s.Resources) > 0 {
-		if err := stage(ctx, sb, s, stageRel); err != nil {
-			// (P6) a staging failure is an observation; the skill stays
-			// unloaded so a retry next turn re-attempts the copy.
-			return "", fmt.Errorf("staging skill %q resources: %v", name, err)
-		}
-		resNote = "\nBundled files staged under " + stageRel + "/ (read references with read_file, execute scripts with run; paths are relative to the project root):\n" + resourceList(s.Resources, stageRel)
+	resNote, body, err := stageAndRender(ctx, sb, s)
+	if err != nil {
+		// (P6) a staging failure is an observation; the skill stays unloaded
+		// so a retry next turn re-attempts the copy.
+		return "", err
 	}
 
 	st.mu.Lock()
 	st.loaded[name] = true
 	st.mu.Unlock()
 
-	body := strings.NewReplacer(
+	header := fmt.Sprintf("SKILL %q loaded — the instructions below are the procedure you asked for. Follow them where they apply to the TASK; verify any file paths they mention with tools before relying on them.%s", name, resNote)
+	return header + "\n\n---\n" + body, nil
+}
+
+// stageAndRender is the shared load core: stage the skill's bundled files
+// into the sandbox (when any) and render its body with the staging-dir
+// substitutions applied. Callers compose their own header around resNote.
+func stageAndRender(ctx context.Context, sb sandbox.Sandbox, s *Skill) (resNote, body string, err error) {
+	stageRel := StageDir + "/" + s.Name
+	if len(s.Resources) > 0 {
+		if err := stage(ctx, sb, s, stageRel); err != nil {
+			return "", "", fmt.Errorf("staging skill %q resources: %v", s.Name, err)
+		}
+		resNote = "\nBundled files staged under " + stageRel + "/ (read references with read_file, execute scripts with run; paths are relative to the project root):\n" + resourceList(s.Resources, stageRel)
+	}
+	body = strings.NewReplacer(
 		"${SKILL_DIR}", stageRel,
 		"${CLAUDE_SKILL_DIR}", stageRel, // the Claude Code spelling, for unmodified imported skills.
 	).Replace(s.Body)
+	return resNote, body, nil
+}
 
-	header := fmt.Sprintf("SKILL %q loaded — the instructions below are the procedure you asked for. Follow them where they apply to the TASK; verify any file paths they mention with tools before relying on them.%s", name, resNote)
+// LoadForUser force-loads one skill at the USER's explicit request (the TUI's
+// /skills picker) rather than the model's: it stages the skill's bundled
+// files and returns the same instructions text the `skill` tool would return,
+// for the front-end to inject ahead of the next user message. The
+// enabled/disabled LISTING state is deliberately not consulted — an explicit
+// pick loads regardless of whether the model can see the skill listed.
+// Caveat: the `skill` tool keeps its own per-run dedup state, so a model that
+// later calls skill(<name>) anyway receives the body a second time.
+func LoadForUser(ctx context.Context, sb sandbox.Sandbox, s *Skill) (string, error) {
+	resNote, body, err := stageAndRender(ctx, sb, s)
+	if err != nil {
+		return "", err
+	}
+	header := fmt.Sprintf("SKILL %q loaded at the user's request — follow the instructions below where they apply to the user's TASK; verify any file paths they mention with tools before relying on them.%s", s.Name, resNote)
 	return header + "\n\n---\n" + body, nil
 }
 

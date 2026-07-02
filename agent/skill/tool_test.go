@@ -128,6 +128,45 @@ func TestToolRunJSON(t *testing.T) {
 	}
 }
 
+// LoadForUser is the /skills force-load path: same staging and body as the
+// tool, a header that says the USER picked it, and no dependence on the
+// tool's dedup state or the enabled listing.
+func TestLoadForUser(t *testing.T) {
+	ctx := context.Background()
+	skillDir := writeSkill(t, t.TempDir(), "greeter",
+		"name: greeter\ndescription: Greet things.",
+		"# Greeting procedure\n\nRun ${SKILL_DIR}/scripts/greet.sh.",
+		map[string]string{"scripts/greet.sh": "#!/bin/sh\necho hi\n"})
+	s, _, err := Load(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	sb, err := local.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+
+	text, err := LoadForUser(ctx, sb, s)
+	if err != nil {
+		t.Fatalf("LoadForUser: %v", err)
+	}
+	for _, want := range []string{
+		`SKILL "greeter" loaded at the user's request`,
+		"Run .skills/greeter/scripts/greet.sh", // ${SKILL_DIR} substituted
+		"Bundled files staged under .skills/greeter/",
+		"Greeting procedure",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text missing %q:\n%s", want, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, ".skills", "greeter", "scripts", "greet.sh")); err != nil {
+		t.Errorf("staged script: %v", err)
+	}
+}
+
 func TestExcludeStaging(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
