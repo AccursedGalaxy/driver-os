@@ -522,3 +522,37 @@ func TestReviewReportCarriesReviewerRunIDs(t *testing.T) {
 		t.Fatalf("ReviewerRuns = %v, want [rev-1]", got)
 	}
 }
+
+// The gate hands every round of one run the SAME non-empty SessionKey (with the
+// round number), and a different run gets a different key — the handle a
+// stateful reviewer needs to continue its own round-1 exploration safely.
+func TestReviewRoundsShareSessionKey(t *testing.T) {
+	run := func() []ReviewInput {
+		rv := &fakeReviewer{verdicts: [][]ReviewFinding{
+			{blocker("calc.go", "package calc // patched")},
+			{}, // round 2: clean.
+		}}
+		turns := [][]llm.ContentPart{
+			{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+			{llm.Text("done")},
+			{structuredCall("c2", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched v2\n"})},
+			{llm.Text("done again")},
+		}
+		res := reviewedRun(t, rv, Config{ReviewRounds: 2}, turns)
+		if res.Outcome != Answered || len(rv.inputs) != 2 {
+			t.Fatalf("outcome=%s rounds=%d, want answered/2", res.Outcome, len(rv.inputs))
+		}
+		return rv.inputs
+	}
+	a := run()
+	if a[0].SessionKey == "" || a[0].SessionKey != a[1].SessionKey {
+		t.Fatalf("rounds must share one non-empty key: %q vs %q", a[0].SessionKey, a[1].SessionKey)
+	}
+	if a[0].Round != 1 || a[1].Round != 2 {
+		t.Fatalf("rounds numbered %d,%d, want 1,2", a[0].Round, a[1].Round)
+	}
+	b := run()
+	if b[0].SessionKey == a[0].SessionKey {
+		t.Fatal("two distinct runs share a session key")
+	}
+}

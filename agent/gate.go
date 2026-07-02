@@ -138,10 +138,12 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		ro.ReviewStart(rv.rounds)
 	}
 	verdict, err := g.cfg.Reviewer.Review(gctx, ReviewInput{
-		Task:    g.cfg.Task,
-		Diff:    diff,
-		Root:    g.cfg.Root,
-		Signals: substanceSignals(diff),
+		Task:       g.cfg.Task,
+		Diff:       diff,
+		Root:       g.cfg.Root,
+		Signals:    substanceSignals(diff),
+		SessionKey: rv.sessionKey,
+		Round:      rv.rounds,
 	})
 	if verdict != nil {
 		rv.usage = addUsage(rv.usage, verdict.Usage)

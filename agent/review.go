@@ -59,6 +59,14 @@ type ReviewInput struct {
 	Diff    string
 	Root    string
 	Signals []string
+	// SessionKey is a run-scoped handle, identical across the rounds of one run
+	// and unique per run. A stateful reviewer may key a continuation on it —
+	// round 2 re-uses round 1's exploration instead of re-reading the repo
+	// (REVIEW-GATE-PLAN §5.3 follow-up (a): the re-read was most of the
+	// two-round bill). Empty when the caller doesn't do rounds. Round is the
+	// 1-based round number for the same purpose.
+	SessionKey string
+	Round      int
 }
 
 // ReviewVerdict is a Reviewer's structured answer plus its token cost. Model
@@ -131,18 +139,19 @@ type ReviewObserver interface {
 // reviewState is the run-scoped review gate: the git base tree captured at run
 // start, the round budget, and the accumulated findings+fates.
 type reviewState struct {
-	cfg       Config
-	maxRounds int
-	alias     string // model-visible root prefix, for quote-validation path normalization.
-	baseTree  string
-	skip      string // non-empty => the gate is off for this run, with this recorded reason.
-	rounds    int
-	blocked   bool
-	model     string   // reviewer model id, from the first verdict that names one.
-	runIDs    []string // reviewer sub-run IDs, one per verdict that carried one.
-	findings  []ReviewedFinding
-	pending   []int // indices into findings: blockers fed back, awaiting repaired/expired resolution.
-	usage     llm.Usage
+	cfg        Config
+	maxRounds  int
+	alias      string // model-visible root prefix, for quote-validation path normalization.
+	baseTree   string
+	skip       string // non-empty => the gate is off for this run, with this recorded reason.
+	rounds     int
+	blocked    bool
+	model      string   // reviewer model id, from the first verdict that names one.
+	runIDs     []string // reviewer sub-run IDs, one per verdict that carried one.
+	sessionKey string   // run-scoped continuation handle handed to every round (ReviewInput.SessionKey).
+	findings   []ReviewedFinding
+	pending    []int // indices into findings: blockers fed back, awaiting repaired/expired resolution.
+	usage      llm.Usage
 }
 
 // newReviewState captures the diff BASELINE at run start: a git tree object of
@@ -154,7 +163,9 @@ func newReviewState(ctx context.Context, cfg Config) *reviewState {
 	if cfg.Reviewer == nil {
 		return nil
 	}
-	rv := &reviewState{cfg: cfg, maxRounds: cfg.ReviewRounds, alias: sandboxAlias(cfg.Sandbox)}
+	// sessionKey is a fresh nonce per run (not the run ID — the state exists
+	// before the result is stamped); its only contract is same-run stability.
+	rv := &reviewState{cfg: cfg, maxRounds: cfg.ReviewRounds, alias: sandboxAlias(cfg.Sandbox), sessionKey: newRunID()}
 	if rv.maxRounds <= 0 {
 		rv.maxRounds = DefaultReviewRounds
 	}
