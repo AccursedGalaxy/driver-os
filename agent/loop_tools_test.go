@@ -92,6 +92,28 @@ func readback(t *testing.T, sb sandbox.Sandbox, path string) string {
 	return string(data)
 }
 
+// Every step records WHY that turn's generation stopped. This is the figure
+// that tells a truncated stream apart from a clean stop in a post-mortem: an
+// answer step with FinishReason "" means the stream ended WITHOUT a terminal
+// chunk (silent EOF — the answer is likely cut off), "length" means the token
+// cap, "stop" a genuine finish.
+func TestStepsRecordFinishReason(t *testing.T) {
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "read_file", map[string]any{"path": "go.mod"})},
+		{llm.Text("done")},
+	}
+	res, _, _ := runNative(t, map[string]string{"go.mod": "module x\n"}, turns)
+	if len(res.Steps) < 2 {
+		t.Fatalf("steps = %+v", res.Steps)
+	}
+	if got := res.Steps[0].FinishReason; got != llm.FinishToolUse {
+		t.Errorf("tool step FinishReason = %q, want %q", got, llm.FinishToolUse)
+	}
+	if got := res.Steps[len(res.Steps)-1].FinishReason; got != llm.FinishStop {
+		t.Errorf("answer step FinishReason = %q, want %q", got, llm.FinishStop)
+	}
+}
+
 func TestRunNativeToolThenAnswer(t *testing.T) {
 	turns := [][]llm.ContentPart{
 		{structuredCall("c1", "read_file", map[string]any{"path": "go.mod"})}, // call a tool

@@ -191,6 +191,13 @@ type Step struct {
 	Observation string    // the tool result fed back (empty on the answer turn).
 	Grounded    bool      // had any tool returned a real observation by end of this step.
 	Usage       llm.Usage // token accounting for THIS turn's model call.
+	// FinishReason is why THIS turn's generation stopped — a turn property
+	// (every step of a multi-call turn carries it, like ReasoningAdvanced).
+	// The post-mortem discriminator for a mid-sentence answer: "stop" = the
+	// model chose to end there, "length" = token cap, "" on a streamed call =
+	// the stream ended with NO terminal chunk (silent EOF — likely truncated
+	// upstream).
+	FinishReason llm.FinishReason
 	// ModelMs/ToolMs split the turn's wall-clock so provider latency and tool
 	// execution can be told apart (a 25s `run` vs a 25s slow model look identical
 	// in iteration counts). ToolMs is 0 on the answer turn (no tool dispatched).
@@ -752,7 +759,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 		// The harness DISPOSES: we parse the proposed action ourselves (P2, P7).
 		verb, arg := parseAction(reply, cfg.Tools)
-		step := Step{Iter: i, Reply: reply, Verb: verb, Arg: arg, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced}
+		step := Step{Iter: i, Reply: reply, Verb: verb, Arg: arg, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 
 		// ---- Principle 5: a done-signal the model can emit. ----
 		if verb == "answer" {

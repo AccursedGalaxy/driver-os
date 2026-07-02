@@ -265,7 +265,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				cfg.Obs.Note("empty finish — nudging to use the " + cfg.FinishTool + " tool")
 				continue
 			}
-			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced})
+			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason})
 			// (P1/continuation seam) The model's final tool-call-free turn is part of the
 			// conversation a Session carries forward — append it before any terminal
 			// return so RunResult.Messages ends with the answer the model gave. Covers all
@@ -348,7 +348,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					if c.ID == fin.ID {
 						continue
 					}
-					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced}
+					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 					usageForFinish, modelMsForFinish, replyForFinish = llm.Usage{}, 0, ""
 					obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
 					if !isErr {
@@ -368,7 +368,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// dispatch is a no-op terminal signal, but the transcript must not carry
 				// an unanswered tool call.
 				messages = append(messages, llm.ToolResultMsg(fin.ID, msg, false))
-				res.Steps = append(res.Steps, Step{Iter: i, Reply: msg, Verb: fin.Name, Arg: msg, Grounded: grounded, Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced})
+				res.Steps = append(res.Steps, Step{Iter: i, Reply: msg, Verb: fin.Name, Arg: msg, Grounded: grounded, Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason})
 				// (FinishTool verification, finding #3) An explicit finish is NOT ground
 				// truth that the task is done: unless the caller vouches for it
 				// (FinishToolTrustsCaller), route it through the SAME authoritative gate
@@ -438,7 +438,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
 			if repeats++; repeats >= repeatThreshold(reasoningAdvanced) {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)...)
 				res.Outcome = KilledRepeat
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
 				return gs.upgradeIfVerified(ctx, res), nil
@@ -461,7 +461,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// ignoring its observations) still dies at the window. Either way the spiral
 			// stays bounded well before the iteration cap.
 			if navRun++; navRun >= spiralLimit(spiralWindow, reasoningAdvanced) {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply)...)
+				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)...)
 				res.Outcome = KilledSpiral
 				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)
 				return gs.upgradeIfVerified(ctx, res), nil
@@ -483,7 +483,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		modelMsForTurn := modelMs  // likewise the model-call latency: a per-turn cost.
 		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
 		for idx, c := range calls {
-			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced}
+			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 			if idx == 0 {
 				step.Reply = turnReply // the turn's narration rides its first step (review #6).
 			}
@@ -774,19 +774,19 @@ func allCallsDiscovery(calls []llm.ToolCallPart) bool {
 // turnSteps builds the trace steps for a turn killed by a detector BEFORE
 // dispatch (so they carry no observation): one Step per call, the turn's usage
 // attributed to the first, all flagged with the run's current grounded state.
-func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage, modelMs int64, reasoningAdvanced bool, reply string) []Step {
+func turnSteps(iter int, calls []llm.ToolCallPart, tools map[string]Tool, grounded bool, usage llm.Usage, modelMs int64, reasoningAdvanced bool, reply string, finish llm.FinishReason) []Step {
 	steps := make([]Step, len(calls))
 	for i, c := range calls {
 		// The turn's single model call produced ALL its calls — attribute its usage
 		// and latency to the first step only (a per-turn cost, not per-call), like the
 		// live tool loop does; the model's prose narration (reply) rides the first
-		// step the same way (review #6). ReasoningAdvanced is a turn property, so
-		// every step carries it.
+		// step the same way (review #6). ReasoningAdvanced and FinishReason are turn
+		// properties, so every step carries them.
 		u, mm, rep := llm.Usage{}, int64(0), ""
 		if i == 0 {
 			u, mm, rep = usage, modelMs, reply
 		}
-		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u, ModelMs: mm, Reply: rep, ReasoningAdvanced: reasoningAdvanced}
+		steps[i] = Step{Iter: iter, Verb: c.Name, Arg: callArg(c, tools), Grounded: grounded, Usage: u, ModelMs: mm, Reply: rep, ReasoningAdvanced: reasoningAdvanced, FinishReason: finish}
 	}
 	return steps
 }
