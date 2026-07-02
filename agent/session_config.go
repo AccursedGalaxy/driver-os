@@ -32,3 +32,15 @@ func (s *Session) SetMaxTokens(n int) { s.cfg.MaxTokens = n }
 
 // MaxTokens returns the output cap the next Send will run under.
 func (s *Session) MaxTokens() int { return s.cfg.MaxTokens }
+
+// SetTools swaps the toolset used for every SUBSEQUENT turn — the /skills
+// picker's seam: toggling a skill rebuilds the `skill` meta-tool (its Level-1
+// listing is baked into the tool description) and the whole map is swapped
+// here. nil falls back to DefaultTools at loop time, like Config.Tools. Same
+// calling contract as SetModel: only from the driving goroutine, never
+// mid-Send. A skill already loaded into the conversation keeps its body in
+// history — SetTools governs what the model can LOAD next, not what it read.
+func (s *Session) SetTools(t map[string]Tool) { s.cfg.Tools = t }
+
+// Tools returns the toolset the next Send will run with.
+func (s *Session) Tools() map[string]Tool { return s.cfg.Tools }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
@@ -103,6 +105,45 @@ func TestSessionSetMaxIterations(t *testing.T) {
 	}
 	if res.Outcome != HitCap || res.Iterations != 4 {
 		t.Fatalf("turn 2 = %s after %d iterations, want %s after 4 (new cap not applied)", res.Outcome, res.Iterations, HitCap)
+	}
+}
+
+// SetTools must govern the NEXT Send: the /skills picker rebuilds the toolset
+// (adding or dropping the `skill` meta-tool) on a live conversation.
+func TestSessionSetToolsSwapsToolset(t *testing.T) {
+	var saw [][]string
+	loop := func(_ context.Context, cfg Config) (*RunResult, error) {
+		keys := make([]string, 0, len(cfg.Tools))
+		for k := range cfg.Tools {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		saw = append(saw, keys)
+		return &RunResult{Outcome: Answered, Answer: "ok"}, nil
+	}
+	echo := func(string) Tool {
+		return Tool{Name: "echo", Run: func(context.Context, string) (string, error) { return "", nil }}
+	}
+
+	s := NewSession(Config{
+		Model: swapProvider{id: "m"},
+		Tools: map[string]Tool{"echo": echo("echo")},
+	}, loop)
+	if _, err := s.Send(context.Background(), "first"); err != nil {
+		t.Fatalf("Send 1: %v", err)
+	}
+
+	s.SetTools(map[string]Tool{"echo": echo("echo"), "skill": echo("skill")})
+	if got := len(s.Tools()); got != 2 {
+		t.Fatalf("Tools() has %d entries after SetTools, want 2", got)
+	}
+	if _, err := s.Send(context.Background(), "second"); err != nil {
+		t.Fatalf("Send 2: %v", err)
+	}
+
+	want := [][]string{{"echo"}, {"echo", "skill"}}
+	if len(saw) != 2 || !slices.Equal(saw[0], want[0]) || !slices.Equal(saw[1], want[1]) {
+		t.Fatalf("loop saw toolsets %v; want %v", saw, want)
 	}
 }
 
