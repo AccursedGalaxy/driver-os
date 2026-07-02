@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"net/http"
@@ -197,6 +198,30 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 
 		yield(llm.Chunk{Done: true, FinishReason: mapStop(acc.StopReason), Usage: usageFrom(acc.Usage)}, nil)
 	}
+}
+
+// ModelEntry is one entry of the account's model catalog (/v1/models) — the
+// subset a front-end needs (picker rows, model-ref validation).
+type ModelEntry struct {
+	ID             string
+	DisplayName    string
+	MaxInputTokens int
+}
+
+// ListModels fetches the models this API key can use, as the API orders them
+// (newest first). It exists so front-ends can VALIDATE a typed model id and
+// offer a picker instead of discovering a typo as a mid-run 400.
+func (p *Provider) ListModels(ctx context.Context) ([]ModelEntry, error) {
+	var out []ModelEntry
+	it := p.client.Models.ListAutoPaging(ctx, sdk.ModelListParams{})
+	for it.Next() {
+		m := it.Current()
+		out = append(out, ModelEntry{ID: m.ID, DisplayName: m.DisplayName, MaxInputTokens: int(m.MaxInputTokens)})
+	}
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("llm: %s: list models: %w", p.name, err)
+	}
+	return out, nil
 }
 
 // buildParams maps a provider-agnostic Request onto the Messages API params,

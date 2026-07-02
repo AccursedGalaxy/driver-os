@@ -436,3 +436,25 @@ func TestIsClaude5(t *testing.T) {
 		}
 	}
 }
+
+// ListModels must surface the account catalog as picker/validation-ready
+// entries (the /v1/models page shape).
+func TestListModels(t *testing.T) {
+	p := newTestProvider(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[
+			{"id":"claude-fable-5","display_name":"Claude Fable 5","created_at":"2026-06-01T00:00:00Z","max_input_tokens":500000,"capabilities":{}},
+			{"id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","created_at":"2025-10-01T00:00:00Z","max_input_tokens":200000,"capabilities":{}}],
+			"has_more":false,"first_id":"claude-fable-5","last_id":"claude-haiku-4-5"}`)
+	})
+	ms, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 2 || ms[0].ID != "claude-fable-5" || ms[0].DisplayName != "Claude Fable 5" || ms[0].MaxInputTokens != 500000 {
+		t.Fatalf("models = %+v", ms)
+	}
+}
