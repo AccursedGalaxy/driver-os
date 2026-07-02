@@ -1,4 +1,4 @@
-.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold fasthttp-ws r1 r2
+.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress lab lab-build lab-dev vault vault-build vault-dev vault-gen vault-deploy swebench swebench-gold fasthttp-ws r1 r2 r3
 
 # Core module hygiene. These cover the Go module only — the embedded
 # frontends have their own *-build targets below. `check` is the
@@ -145,6 +145,12 @@ r1:
 # error bars for the §5.0 baselines that are all N=1 today.
 r2:
 	bash eval/scripts/r2.sh $(if $(Y),-y,)
+
+# R3 (~$1.5–2, ~1h): designed tasks 1–3 × {deepseek+review, deepseek-solo} at
+# N=5 — error bars on the "near-free QA" claim (§5.3), and re-exercises round
+# continuation. No network clones; runs from the eval/fixtures/review-gate/tasks.
+r3:
+	bash eval/scripts/r3.sh $(if $(Y),-y,)
 
 # Build (or --force rebuild) the pristine fasthttp challenge-workspace template
 # the R runs copy per trial. ARGS="--check" also asserts it starts RED.

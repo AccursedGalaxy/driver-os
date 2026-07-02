@@ -1,0 +1,67 @@
+# Continuous integration: vet + build + test the Go module on every push and PR
+# to master (ROADMAP §A item 1 — the repo had NO test CI, only the issue bot).
+# This is the pre-merge bar; keep it deterministically green.
+#
+# Two build hazards this workflow resolves on purpose (both diagnosed 2026-07-02):
+#   1. experiments/cmd/agentville embeds Ebitengine, whose glfw cgo needs X11 dev
+#      headers — `go build ./...` fails without them. The apt list below is
+#      Ebitengine's documented Linux set (ebitengine.org/en/documents/install).
+#   2. Two agent tests are GREEN here but RED in some sandboxes: they assume the
+#      running toolchain already satisfies every dependency's `go` directive and
+#      that GOROOT is a standalone tree. actions/setup-go installs go 1.26.1
+#      (go.mod) as the base toolchain with a GOROOT under the hosted-tool cache
+#      (disjoint from GOMODCACHE), so both hold and both tests pass — see the
+#      test step's comment.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Default shallow (single commit) is deliberate: nothing in the tested
+        # scope needs git history. The only history-replay tests
+        # (eval/suite/selfhist) are excluded below for an unrelated reason, so a
+        # full-history fetch would only slow the job down.
+        uses: actions/checkout@v4
+
+      - name: Install Ebitengine build deps (X11/GL headers for the cgo build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libc6-dev libglu1-mesa-dev libgl1-mesa-dev libxcursor-dev libxi-dev \
+            libxinerama-dev libxrandr-dev libxxf86vm-dev libasound2-dev pkg-config
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod # installs the pinned toolchain; caches modules
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        # Full module MINUS two packages that cannot pass on a bare CI runner,
+        # excluded explicitly (never silently) with their reasons:
+        #   - experiments/lab embeds a Vite frontend (//go:embed all:web/dist);
+        #     the committed dist has only a .gitkeep, so TestServerSPAFallback
+        #     serves 503 until `make lab-build` (npm) runs. Frontend CI is out of
+        #     scope for this Go check.
+        #   - eval/suite/selfhist replays real repo history into a temp worktree
+        #     whose historical go.mod uses `replace => ../mneme`; that relative
+        #     replace can't resolve from a temp dir on a runner, so the tests
+        #     can't grade there (they self-skip on a shallow checkout regardless).
+        # Everything else — including the whole agent/ suite — runs green here.
+        run: go test $(go list ./... | grep -vE 'experiments/lab$|eval/suite/selfhist$') -count=1
