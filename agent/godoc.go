@@ -132,12 +132,16 @@ func goDocRun(ctx context.Context, workdir string, flags, target []string) (stri
 // isn't in the current module's build list" case (as opposed to a bad symbol or a
 // genuine error) — the only failure the module-cache fallback can help with.
 func packageNotInModule(out string) bool {
-	// go doc emits different wording depending on the arg form: "cannot find
-	// package" / "no such package" for an import path, "no required module
-	// provides package" in module mode. Match all of them.
+	// go doc emits different wording depending on the arg form and version:
+	// "cannot find package" / "no such package" for an import path, "no
+	// required module provides package" in module mode, and (go 1.26, under
+	// -mod=readonly) "cannot find module providing package". Match all of
+	// them — an unmatched phrasing skips the fallback and the raw error text
+	// would be returned as if it were doc output.
 	return strings.Contains(out, "cannot find package") ||
 		strings.Contains(out, "no such package") ||
 		strings.Contains(out, "no required module provides package") ||
+		strings.Contains(out, "cannot find module providing package") ||
 		strings.Contains(out, "is not in std")
 }
 
