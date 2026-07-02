@@ -389,3 +389,50 @@ func TestContextLengthNotRetryable(t *testing.T) {
 		t.Errorf("overflow = %+v, want non-retryable KindContextLength", perr)
 	}
 }
+
+// Claude 5 models reject `temperature` outright (400 "deprecated for this
+// model") — and the agent loop pins temperature on every run, so the adapter
+// must DROP it for the 5 family while still honoring it on 4.x and older.
+func TestTemperatureDroppedForClaude5(t *testing.T) {
+	var gotBody map[string]any
+	p := newTestProvider(t, Config{Model: "claude-fable-5"}, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_5","type":"message","role":"assistant","model":"claude-fable-5",
+			"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn",
+			"usage":{"input_tokens":5,"output_tokens":1}}`)
+	})
+	temp := 0.0
+	if _, err := p.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.User("hi")}, Temperature: &temp,
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, present := gotBody["temperature"]; present {
+		t.Errorf("temperature sent to a Claude 5 model: %v", gotBody["temperature"])
+	}
+}
+
+func TestIsClaude5(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-mythos-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"claude-fable-5.5", true},
+		{"claude-haiku-4-5", false}, // 4.5, not the 5 family.
+		{"claude-sonnet-4-6", false},
+		{"claude-opus-4-8", false},
+		{"claude-3-5-sonnet-20241022", false},
+		{"claude-fable-50", false},
+		{"gpt-5.5", false},
+	}
+	for _, c := range cases {
+		if got := isClaude5(c.model); got != c.want {
+			t.Errorf("isClaude5(%q) = %v, want %v", c.model, got, c.want)
+		}
+	}
+}

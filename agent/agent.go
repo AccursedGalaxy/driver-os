@@ -242,6 +242,10 @@ type RunResult struct {
 	// Reviewer was configured; populated on every loop exit when one was, even
 	// if the gate never fired (Skipped says why).
 	Review *ReviewReport
+	// Plan is the plan-stage record — the plan the solver was handed (or why
+	// there was none) and the planner's own token cost, kept OUT of Usage so
+	// per-role spend stays attributable. nil when no Planner was configured.
+	Plan *PlanReport
 	// Messages is the FULL conversation as it stood when the run ended — the
 	// system-framed TASK (or the seeded History plus this turn's input), every
 	// assistant turn, and every tool result. It is the continuation seam: a chat
@@ -435,6 +439,13 @@ type Config struct {
 	// DefaultReviewRounds). Bounded on purpose: refine-loop gains concentrate in
 	// round 1, and unbounded review loops flip correct patches to wrong.
 	ReviewRounds int
+
+	// Planner arms the PLAN STAGE (triad slice 3, plan.go): an injected,
+	// independent planner model run ONCE before the first solver turn, whose
+	// plan is appended to the seeded task. Fails OPEN — a planner error never
+	// blocks the run. nil = stage off. Implementations live outside agent
+	// (council.Planner) — same injection pattern as Reviewer.
+	Planner Planner
 
 	// FinishNudgeWindow arms HP-4's near-cap FINISHER. When > 0, and the run is
 	// within this many turns of the iteration cap, AND the world looks SETTLED — the
@@ -635,10 +646,19 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 	}()
 
+	// (TRIAD) The opening PLAN stage: an injected planner explores the tree
+	// read-only and its plan rides into the seeded task. Runs AFTER newGates on
+	// purpose — the reviewer judges the ORIGINAL task, not the plan-augmented
+	// one; recall (below) and RunResult.Task also keep the original. Fails open.
+	planTask, planRep := runPlanStage(ctx, cfg)
+	res.Plan = planRep
+	seedCfg := cfg
+	seedCfg.Task = planTask
+
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(cfg, observeEnvironment(ctx, cfg.Sandbox))
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox))
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Registered after `messages` exists so the closure reads
 	// its final value; the closure captures the variable, which the loop reassigns.

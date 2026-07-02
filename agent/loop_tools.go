@@ -98,9 +98,16 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 	}()
 
+	// (TRIAD) The opening PLAN stage — see Run's twin for the ordering notes
+	// (after newGates so the reviewer judges the original task; fails open).
+	planTask, planRep := runPlanStage(ctx, cfg)
+	res.Plan = planRep
+	seedCfg := cfg
+	seedCfg.Task = planTask
+
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(cfg, observeEnvironment(ctx, cfg.Sandbox))
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox))
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
 	// registered after `messages` exists so the closure reads its final value.

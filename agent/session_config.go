@@ -55,6 +55,16 @@ func (s *Session) SetVerifyCmd(cmd string) { s.cfg.VerifyCmd = cmd }
 // ("" = gate off).
 func (s *Session) VerifyCmd() string { return s.cfg.VerifyCmd }
 
+// SetPlanner arms (or, with nil, disarms) the PLAN STAGE for every SUBSEQUENT
+// turn — the /plan command: an independent planner model explores the tree
+// read-only before the solver's first turn and its plan rides into the task.
+// Same calling contract as SetModel: only from the driving goroutine, never
+// mid-Send.
+func (s *Session) SetPlanner(p Planner) { s.cfg.Planner = p }
+
+// Planner returns the planner the next Send will open with (nil = stage off).
+func (s *Session) Planner() Planner { return s.cfg.Planner }
+
 // SetReviewer arms (or, with nil, disarms) the REVIEW GATE for every
 // SUBSEQUENT turn — the /review command: an independent reviewer model judges
 // each turn's diff after the fence and VerifyCmd pass. Same calling contract

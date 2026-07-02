@@ -227,7 +227,11 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 		}
 		params.CacheControl = sdk.NewCacheControlEphemeralParam()
 	}
-	if req.Temperature != nil {
+	if req.Temperature != nil && !isClaude5(model) {
+		// Claude 5 models REJECT temperature outright ("`temperature` is
+		// deprecated for this model", 400) — and the agent loop pins
+		// temperature on every run, so sending it would brick every 5-family
+		// call. Dropped for the 5 family only; 4.x and older still honor it.
 		params.Temperature = sdk.Float(*req.Temperature)
 	}
 	if req.TopP != nil {
@@ -252,6 +256,31 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 		reqOpts = append(reqOpts, option.WithJSONSet(k, v))
 	}
 	return params, reqOpts
+}
+
+// isClaude5 reports whether a model id names a Claude 5-family model
+// (claude-fable-5, claude-mythos-5, a dated claude-<name>-5-YYYYMMDD, …) —
+// the tier that dropped sampling knobs (temperature) and is adaptive-thinking
+// only. Matched structurally so new 5-family names need no code change.
+func isClaude5(model string) bool {
+	rest, ok := strings.CutPrefix(model, "claude-")
+	if !ok {
+		return false
+	}
+	// The tier digit follows an ALPHABETIC family name: "fable-5",
+	// "sonnet-5-20260101". A digit-led segment is the legacy tier-first
+	// naming ("claude-3-5-sonnet-…"), which is not the 5 family.
+	i := strings.IndexByte(rest, '-')
+	if i <= 0 {
+		return false
+	}
+	for _, r := range rest[:i] {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	v := rest[i+1:]
+	return strings.HasPrefix(v, "5") && (len(v) == 1 || v[1] == '-' || v[1] == '.')
 }
 
 // toSystem folds Request.System plus any RoleSystem messages into the

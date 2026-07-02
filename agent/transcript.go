@@ -86,7 +86,11 @@ type RunRecord struct {
 	// (FP rate per reviewer = refuted+expired / total blockers). Absent when
 	// the run had no Reviewer configured.
 	Review *ReviewReport `json:"review,omitempty"`
-	Steps  []Step        `json:"steps,omitempty"`
+	// Plan is the plan-stage record (the plan handed to the solver, or why
+	// there was none, plus the planner's own usage — kept out of Usage so
+	// per-role spend stays attributable). Absent when the run had no Planner.
+	Plan  *PlanReport `json:"plan,omitempty"`
+	Steps []Step      `json:"steps,omitempty"`
 }
 
 // RecordFrom builds a RunRecord from a finished run. model is the caller's label
@@ -106,6 +110,7 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Iterations:    res.Iterations,
 		Usage:         res.Usage,
 		Review:        res.Review,
+		Plan:          res.Plan,
 		Steps:         res.Steps,
 	}
 	if !res.StartedAt.IsZero() {
