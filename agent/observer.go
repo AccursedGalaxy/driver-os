@@ -31,6 +31,26 @@ type DeltaObserver interface {
 	ModelDelta(delta string) // one incremental text fragment from the streaming model call.
 }
 
+// VerifyObserver is an OPTIONAL Observer extension, discovered by
+// type-assertion like DeltaObserver: an Observer that ALSO implements it
+// receives the outcome of every VerifyCmd execution — the finish-gate checks
+// (verifyTermination) and the kill/cap upgrade attempts (upgradeIfVerified)
+// alike. It exists for the TUI's verify chip: a front-end that shows the gate's
+// live green/red must not parse Note prose (a PASSING verification emits no
+// Note at all). ok is the command's ground truth: it started, ran, and exited
+// clean; a command that could not even start reports ok=false — the gate could
+// not confirm success, which is exactly what the chip should say.
+type VerifyObserver interface {
+	VerifyResult(cmd string, ok bool)
+}
+
+// notifyVerify forwards one VerifyCmd outcome to the observer when it opted in.
+func notifyVerify(obs Observer, cmd string, ok bool) {
+	if v, ok2 := obs.(VerifyObserver); ok2 {
+		v.VerifyResult(cmd, ok)
+	}
+}
+
 // deltaSink returns the observer's ModelDelta method when it implements
 // DeltaObserver, else nil. The streaming collector calls it per text chunk; nil
 // means "collect silently" (a non-streaming observer, or a silent run).

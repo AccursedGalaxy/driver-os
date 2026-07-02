@@ -1058,6 +1058,9 @@ func upgradeIfVerified(ctx context.Context, cfg Config, res *RunResult, runTimeo
 		return res
 	}
 	out, skipped, err := verifyRun(ctx, cfg, runTimeout)
+	if !skipped {
+		notifyVerify(cfg.Obs, cfg.VerifyCmd, err == nil && !isRunFailure(out))
+	}
 	if skipped || err != nil || isRunFailure(out) {
 		return res
 	}
@@ -1086,9 +1089,10 @@ func upgradeIfVerified(ctx context.Context, cfg Config, res *RunResult, runTimeo
 func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) string {
 	if cfg.VerifyCmd != "" {
 		out, skipped, err := verifyRun(ctx, cfg, runTimeout)
-		if skipped { // user cancel — no check ran, so the claim stays unconfirmed.
+		if skipped { // user cancel — no check ran, so the claim stays unconfirmed (and no VerifyResult: nothing was measured).
 			return fmt.Sprintf("run canceled before verification command %q could confirm success", cfg.VerifyCmd)
 		}
+		notifyVerify(cfg.Obs, cfg.VerifyCmd, err == nil && !isRunFailure(out))
 		if err != nil { // couldn't even start it — we cannot confirm success.
 			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err)
 		}

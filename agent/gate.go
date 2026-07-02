@@ -84,6 +84,9 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		return res
 	}
 	out, skipped, err := verifyRun(ctx, g.cfg, g.runTimeout)
+	if !skipped {
+		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
+	}
 	if skipped || err != nil || isRunFailure(out) {
 		return res
 	}

@@ -33,6 +33,27 @@ func (s *Session) SetMaxTokens(n int) { s.cfg.MaxTokens = n }
 // MaxTokens returns the output cap the next Send will run under.
 func (s *Session) MaxTokens() int { return s.cfg.MaxTokens }
 
+// SetVerifyCmd arms (or, with "", disarms) the closing VERIFICATION gate for
+// every SUBSEQUENT turn — the /verify command: the user names the success
+// command mid-session ("go test ./...") and each finish from then on must pass
+// it or the turn ends Unverified (or keeps working, under VerifyContinue).
+// Same calling contract as SetModel: only from the driving goroutine, never
+// mid-Send.
+func (s *Session) SetVerifyCmd(cmd string) { s.cfg.VerifyCmd = cmd }
+
+// VerifyCmd returns the verification command the next Send will gate on
+// ("" = gate off).
+func (s *Session) VerifyCmd() string { return s.cfg.VerifyCmd }
+
+// SetReviewer arms (or, with nil, disarms) the REVIEW GATE for every
+// SUBSEQUENT turn — the /review command: an independent reviewer model judges
+// each turn's diff after the fence and VerifyCmd pass. Same calling contract
+// as SetModel: only from the driving goroutine, never mid-Send.
+func (s *Session) SetReviewer(r Reviewer) { s.cfg.Reviewer = r }
+
+// Reviewer returns the reviewer the next Send will gate on (nil = gate off).
+func (s *Session) Reviewer() Reviewer { return s.cfg.Reviewer }
+
 // SetTools swaps the toolset used for every SUBSEQUENT turn — the /skills
 // picker's seam: toggling a skill rebuilds the `skill` meta-tool (its Level-1
 // listing is baked into the tool description) and the whole map is swapped
