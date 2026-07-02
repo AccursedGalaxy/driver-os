@@ -33,6 +33,9 @@ __debug_bin*
 /.ruff_cache/
 /.playwright-mcp/
 
+# session scratch (chat-delivered artifacts, temp working files)
+/scratchpad/
+
 # Cloned dependency source for browsing (see _deps/README.md).
 # Leading underscore so the go tool ignores it (keeps `go build ./...` clean).
 /_deps/*
