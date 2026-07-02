@@ -1280,15 +1280,25 @@ func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Respon
 // Generate's output: accumulated text becomes a single leading Text part, then the
 // fully-assembled tool calls in arrival order, with FinishReason and Usage taken
 // from the terminal Done chunk. A streamed error aborts and propagates (the
-// eviction wrapper classifies ErrContextLength). Streamed chunks carry no
-// reasoning trace, so the collected Content has none — see Config.Stream.
+// eviction wrapper classifies ErrContextLength) — but the PARTIAL response
+// collected so far rides back WITH the error: the turn is not committed, yet the
+// prose that already streamed often carries the model's diagnosis, and the loops'
+// answer salvage must not lose it. Streamed chunks carry no reasoning trace, so
+// the collected Content has none — see Config.Stream.
 func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.Response, error) {
 	var text strings.Builder
 	var calls []llm.ContentPart
 	resp := &llm.Response{}
+	assemble := func() *llm.Response {
+		if text.Len() > 0 {
+			resp.Content = append(resp.Content, llm.Text(text.String()))
+		}
+		resp.Content = append(resp.Content, calls...)
+		return resp
+	}
 	for chunk, err := range seq {
 		if err != nil {
-			return nil, err
+			return assemble(), err
 		}
 		switch {
 		case chunk.Done:
@@ -1303,11 +1313,7 @@ func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.
 			}
 		}
 	}
-	if text.Len() > 0 {
-		resp.Content = append(resp.Content, llm.Text(text.String()))
-	}
-	resp.Content = append(resp.Content, calls...)
-	return resp, nil
+	return assemble(), nil
 }
 
 // evictOldestTurn is HP-1's reactive compaction unit: it drops the OLDEST tool

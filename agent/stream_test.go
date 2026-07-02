@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 // prove the stream path — not Generate — was used when Config.Stream is set.
 type streamProvider struct {
 	turns     [][]llm.Chunk
+	err       error // when set, yielded after each turn's chunks (a mid-stream fault).
 	n         int
 	genCalled bool
 }
@@ -41,6 +43,9 @@ func (s *streamProvider) Stream(context.Context, llm.Request) iter.Seq2[llm.Chun
 			if !yield(c, nil) {
 				return
 			}
+		}
+		if s.err != nil {
+			yield(llm.Chunk{}, s.err)
 		}
 	}
 }
@@ -89,13 +94,43 @@ func TestCollectStream(t *testing.T) {
 }
 
 // A streamed error aborts collection and propagates (so the eviction wrapper can
-// classify ErrContextLength).
+// classify ErrContextLength) — but the text that already streamed rides WITH the
+// error, so a mid-stream fault doesn't discard what the model said.
 func TestCollectStreamError(t *testing.T) {
 	seq := func(yield func(llm.Chunk, error) bool) {
 		_ = yield(llm.Chunk{Text: "partial"}, nil) && yield(llm.Chunk{}, llm.ErrContextLength)
 	}
-	if _, err := collectStream(seq, nil); err == nil {
+	resp, err := collectStream(seq, nil)
+	if err == nil {
 		t.Fatal("expected the streamed error to propagate")
+	}
+	if resp == nil || resp.Text() != "partial" {
+		t.Fatalf("partial text lost on error: %+v", resp)
+	}
+}
+
+// A stream that dies mid-turn ends the run as ProviderErr — but whatever prose
+// already streamed becomes the salvage answer (the N1 rule: a dead turn often
+// carries the diagnosis; don't return silence when the model already spoke).
+func TestRunNativeSalvagesStreamedTextOnProviderError(t *testing.T) {
+	sp := &streamProvider{
+		turns: [][]llm.Chunk{{{Text: "the leak is in the idle-worker restart path"}}},
+		err:   errors.New("stream torn down"),
+	}
+	res, err := RunNative(context.Background(), Config{
+		Model:   sp,
+		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
+		Task:    "diagnose",
+		Stream:  true,
+	})
+	if err == nil {
+		t.Fatal("want the provider error surfaced")
+	}
+	if res.Outcome != ProviderErr {
+		t.Fatalf("outcome = %s, want provider_error", res.Outcome)
+	}
+	if res.Answer != "the leak is in the idle-worker restart path" {
+		t.Fatalf("streamed prose not salvaged: answer = %q", res.Answer)
 	}
 }
 

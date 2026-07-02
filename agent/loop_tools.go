@@ -176,6 +176,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		})
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
+			// A streamed turn that died mid-flight still returns the prose collected
+			// before the fault (collectStream). Feed it to the N1 salvage so every
+			// typed stop below carries what the model already said instead of silence
+			// — the turn itself is NOT committed to messages.
+			if resp != nil {
+				if txt := strings.TrimSpace(resp.Text()); txt != "" {
+					lastAssistantText = txt
+				}
+			}
 			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
 			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
 				res.Outcome = HitDeadline
