@@ -161,11 +161,13 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 }
 
 // Stream runs a completion incrementally (decision 5). It yields text deltas as
-// they arrive and each tool call once fully assembled, then one terminal Done
-// chunk carrying FinishReason + Usage. The same request mapping as Generate feeds
-// it (buildParams), so caching, tools, and sampling knobs behave identically; only
-// the transport differs. Errors mid-stream are classified like Generate's and end
-// the iteration.
+// they arrive, then the turn's reasoning trace once fully reassembled (a
+// Reasoning chunk — `reasoning_details` streams as block fragments, and only the
+// complete trace is replayable; see reasoningAccumulator), then each tool call
+// once fully assembled, then one terminal Done chunk carrying FinishReason +
+// Usage. The same request mapping as Generate feeds it (buildParams), so caching,
+// tools, and sampling knobs behave identically; only the transport differs.
+// Errors mid-stream are classified like Generate's and end the iteration.
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Chunk, error] {
 	return func(yield func(llm.Chunk, error) bool) {
 		params, reqOpts := p.buildParams(req)
@@ -184,6 +186,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		// (include_usage sends usage only on the final chunk; "last chunk that
 		// carries usage wins" is robust regardless.)
 		acc := openai.ChatCompletionAccumulator{}
+		var reasoning reasoningAccumulator
 		var usage openai.CompletionUsage
 		for stream.Next() {
 			chunk := stream.Current()
@@ -192,9 +195,17 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 				usage = chunk.Usage
 			}
 
-			// Stream text deltas live — that's the value of streaming. Skip empty
-			// deltas (usage-only and role-only chunks carry no text).
 			if len(chunk.Choices) > 0 {
+				// Reassemble the reasoning trace: the SDK accumulator drops
+				// unmodeled extra fields, so `reasoning_details` fragments must be
+				// merged here or the streamed turn loses its trace (fatal for
+				// Gemini's encrypted signature — see llm.ReasoningPart). Same
+				// Raw()-not-Valid() gate as toResponse.
+				if raw := chunk.Choices[0].Delta.JSON.ExtraFields["reasoning_details"].Raw(); raw != "" && raw != "null" {
+					reasoning.add(json.RawMessage(raw))
+				}
+				// Stream text deltas live — that's the value of streaming. Skip empty
+				// deltas (usage-only and role-only chunks carry no text).
 				if d := chunk.Choices[0].Delta.Content; d != "" {
 					if !yield(llm.Chunk{Text: d}, nil) {
 						return
@@ -205,6 +216,17 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		if err := stream.Err(); err != nil {
 			yield(llm.Chunk{}, p.classify(err))
 			return
+		}
+
+		// The reassembled reasoning trace, surfaced like a tool call: once,
+		// complete, at end-of-stream (a partial trace is not replayable — a
+		// truncated signature is exactly the corruption replay must avoid). ONE
+		// chunk carrying the whole array, mirroring the single ReasoningPart the
+		// non-streaming path attaches.
+		if raw, ok := reasoning.raw(); ok {
+			if !yield(llm.Chunk{Reasoning: &llm.ReasoningPart{Raw: raw}}, nil) {
+				return
+			}
 		}
 
 		// Tool calls are surfaced from the FULLY accumulated result, not live: the

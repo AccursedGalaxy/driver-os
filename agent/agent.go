@@ -319,10 +319,10 @@ type Config struct {
 	// Claude-Code-style live-typing feel a chat front-end wants. Off by default, so
 	// every existing caller (eval, issue-bot, council) keeps the single Generate call
 	// and byte-identical behavior. A non-streaming provider silently uses Generate
-	// even when this is set. NOTE: streamed chunks carry no reasoning trace, so a
-	// streaming run falls back to the STRICT no-progress thresholds (the reasoning-
-	// aware lenient window needs ReasoningPart content only Generate returns) — fine
-	// for interactive use, which rarely approaches those detectors.
+	// even when this is set. Adapters yield the turn's reasoning trace as an
+	// assembled Reasoning chunk (llm.Chunk) and collectStream keeps it, so a
+	// streamed turn replays its trace — and sees the reasoning-aware no-progress
+	// window — the same as a Generate turn.
 	Stream bool
 
 	// MinIsolation is the SAFETY PRECONDITION (P2/§5): the weakest sandbox isolation
@@ -1323,11 +1323,11 @@ func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.R
 // eviction retry in generateWithEviction wraps this, so a streamed context
 // overflow still triggers compaction and a re-stream.
 //
-// Reasoning traces: an adapter that can assemble the turn's reasoning yields it
-// as a Reasoning chunk (the anthropic adapter does — its API REJECTS a replayed
-// tool-using turn missing its signed thinking blocks), and collectStream keeps
-// it, so such providers stream with full replay fidelity. openaicompat does not
-// yet, hence the Config.Stream caveat still applies there.
+// Reasoning traces: adapters yield the turn's reasoning once fully assembled
+// (a Reasoning chunk) and collectStream keeps it, so streaming replays with
+// full fidelity — anthropic's API REJECTS a replayed tool-using turn missing
+// its signed thinking blocks, and openaicompat reassembles the streamed
+// `reasoning_details` fragments (Gemini's encrypted signature) the same way.
 func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
 	if cfg.Stream && cfg.Model.Capabilities().Streaming {
 		return collectStream(cfg.Model.Stream(ctx, req), deltaSink(cfg.Obs))
@@ -1345,8 +1345,9 @@ func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Respon
 // prose that already streamed often carries the model's diagnosis, and the loops'
 // answer salvage must not lose it. Reasoning chunks (assembled traces an adapter
 // yields for replay — see llm.Chunk) are kept, leading the Content the way a
-// thinking provider orders them; adapters that yield none (openaicompat today)
-// still produce reasoning-free streamed responses — see Config.Stream.
+// thinking provider orders them; a stream that dies BEFORE its end-of-stream
+// Reasoning chunk salvages without a trace — correct, since a partial trace
+// (a truncated signature) must never be replayed.
 func collectStream(seq iter.Seq2[llm.Chunk, error], onDelta func(string)) (*llm.Response, error) {
 	var text strings.Builder
 	var calls, reasoning []llm.ContentPart
