@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +44,12 @@ const (
 	// non-negotiable termination, prevents infinite spend. Exported so the CLI can
 	// use it as a flag default. A longer/complex task raises this via Config.
 	DefaultMaxIterations = 8
+
+	// UncappedIterations is a MaxIterations sentinel meaning "effectively no cap" —
+	// for interactive front-ends where a human watches the loop and can interrupt.
+	// It is a large positive value so it flows through the loop's `maxIter <= 0 ->
+	// DefaultMaxIterations` fallback unchanged.
+	UncappedIterations = math.MaxInt32
 	// DefaultMaxTokens caps a single model turn's output when Config.MaxTokens is
 	// unset. Too low silently clips a long final answer — or a write_file/edit_file
 	// content block — mid-sentence (P7: our knob, not the model's).
