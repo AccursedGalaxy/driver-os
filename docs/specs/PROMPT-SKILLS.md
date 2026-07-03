@@ -227,3 +227,20 @@ A/B, now under the harness's intended production config). Round 1's REJECT
 stands for the no-nudge config; round 2's verdict governs the
 structured+nudge combination. Both sealed dirs open together at slice-4
 freeze.
+
+## Holdout round 2 — ACCEPT (2026-07-03)
+
+Round 2 (eval/runs/ps2-holdout-20260703T121901Z, amendment config:
+-finish-nudge 3 both arms): legacy 13/18 vs structured 14/18, 0 hard
+regressions, 1 soft vs 2 soft gains, 0 consistent flips. Blind outcome
+histograms: legacy answered=13/hit_cap=4/unverified=1; structured
+answered=16/hit_cap=2/unverified=0. Verdict: **slice 2 ACCEPTED** under the
+production config (structured + finish-nudge): no pass regression, cleaner
+terminations (unverified eliminated, hit_cap halved), cost +15% prompt
+tokens. No pass-rate improvement CLAIM (0 consistent flips — the +1 total is
+within noise per the frozen rules). Confirms the round-1 diagnosis: the
+verification mandate needs the finish nudge as its termination valve.
+
+Default flip deferred to the combined gate (all slices on vs off), per plan.
+Slice-3 A/B launched next over the same sealed protocol: BASE=structured
+CAND=auto, NUDGE=3.

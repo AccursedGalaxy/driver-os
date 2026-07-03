@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -61,6 +63,21 @@ type Provider struct {
 	client openai.Client
 	caps   llm.Capabilities
 	cache  bool // PromptCache: emit cache_control breakpoints (Anthropic-via-OpenRouter).
+
+	// Provider pinning for OpenRouter Gemini encrypted-thought-signature
+	// portability (see docs/backlog.md 2026-07-03). Gemini's
+	// `reasoning_details` with format "google-gemini-v1" are encrypted
+	// per-upstream: a signature minted by "Google AI Studio" fails on
+	// "Google" (Vertex) with INVALID_ARGUMENT "Corrupted thought signature".
+	// OpenRouter hops providers between turns under load, so the stickiness
+	// must live in the adapter itself, not in the agent loop.
+	//
+	// Set by the first response that carries such a signature, then injected
+	// into every subsequent request via OpenRouter's `provider` routing
+	// field: `{"order":["<slug>"],"allow_fallbacks":false}`.
+	mu             sync.Mutex
+	pinnedProvider string // empty = not yet pinned
+	isOpenRouter   bool   // gate: only engage for the OpenRouter constructor
 }
 
 // WithPromptCache returns the provider with Anthropic prompt-caching breakpoints
@@ -103,12 +120,27 @@ func New(cfg Config) *Provider {
 	if cfg.Capabilities != nil {
 		caps = *cfg.Capabilities
 	}
+
+	// OpenRouter-specific: Gemini encrypted-thought-signature portability.
+	// When OPENROUTER_PIN_PROVIDER is set (e.g. "google-vertex"), every
+	// request pins to that upstream from turn 1; the sticky response-based
+	// rule below then never needs to fire.
+	isOR := cfg.Name == "openrouter"
+	var pinned string
+	if isOR {
+		if slug := os.Getenv("OPENROUTER_PIN_PROVIDER"); slug != "" {
+			pinned = slug
+		}
+	}
+
 	return &Provider{
-		name:   cfg.Name,
-		model:  cfg.Model,
-		client: openai.NewClient(opts...),
-		caps:   caps,
-		cache:  cfg.PromptCache,
+		name:           cfg.Name,
+		model:          cfg.Model,
+		client:         openai.NewClient(opts...),
+		caps:           caps,
+		cache:          cfg.PromptCache,
+		isOpenRouter:   isOR,
+		pinnedProvider: pinned,
 	}
 }
 
@@ -157,6 +189,18 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 	if err != nil {
 		return nil, p.classify(err)
 	}
+
+	// Sticky provider pinning: if the response carried Gemini encrypted
+	// reasoning, record the responding upstream for subsequent turns.
+	if p.isOpenRouter {
+		providerRaw := json.RawMessage(cc.JSON.ExtraFields["provider"].Raw())
+		var reasoningRaw json.RawMessage
+		if len(cc.Choices) > 0 {
+			reasoningRaw = json.RawMessage(cc.Choices[0].Message.JSON.ExtraFields["reasoning_details"].Raw())
+		}
+		p.maybePin(providerRaw, reasoningRaw)
+	}
+
 	return toResponse(cc), nil
 }
 
@@ -188,11 +232,20 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		acc := openai.ChatCompletionAccumulator{}
 		var reasoning reasoningAccumulator
 		var usage openai.CompletionUsage
+		var providerRaw json.RawMessage // OpenRouter: captured for sticky pinning.
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
 			if chunk.Usage.TotalTokens > 0 {
 				usage = chunk.Usage
+			}
+
+			// Capture the responding upstream from the first chunk that carries it
+			// (every SSE chunk carries a top-level `provider` field on OpenRouter).
+			if p.isOpenRouter && len(providerRaw) == 0 {
+				if raw := chunk.JSON.ExtraFields["provider"].Raw(); raw != "" && raw != "null" {
+					providerRaw = json.RawMessage(raw)
+				}
 			}
 
 			if len(chunk.Choices) > 0 {
@@ -216,6 +269,14 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		if err := stream.Err(); err != nil {
 			yield(llm.Chunk{}, p.classify(err))
 			return
+		}
+
+		// Sticky provider pinning: if the stream carried Gemini encrypted
+		// reasoning, record the responding upstream for subsequent turns.
+		if p.isOpenRouter {
+			if raw, _ := reasoning.raw(); raw != nil {
+				p.maybePin(providerRaw, raw)
+			}
 		}
 
 		// The reassembled reasoning trace, surfaced like a tool call: once,
@@ -294,6 +355,19 @@ func (p *Provider) buildParams(req llm.Request) (openai.ChatCompletionNewParams,
 		// The OpenAI chat-completions param; OpenRouter accepts it too and
 		// folds it into its unified `reasoning` config for other upstreams.
 		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
+	}
+
+	// Provider pinning for OpenRouter Gemini encrypted-signature portability.
+	p.mu.Lock()
+	pinned := p.pinnedProvider
+	p.mu.Unlock()
+	if pinned != "" {
+		params.SetExtraFields(map[string]any{
+			"provider": map[string]any{
+				"order":           []string{pinned},
+				"allow_fallbacks": false,
+			},
+		})
 	}
 
 	// Provider-specific passthrough (decision 6): merge recognized-by-the-wire
@@ -624,4 +698,68 @@ func isContextLength(msg string) bool {
 		strings.Contains(m, "maximum context") ||
 		strings.Contains(m, "too many tokens") ||
 		strings.Contains(m, "reduce the length")
+}
+
+// pinProviderName maps OpenRouter's display name for an upstream to the routing
+// slug expected by the `provider.order` request field. An unknown name returns
+// "" (fail open — do not pin).
+func pinProviderName(display string) string {
+	switch display {
+	case "Google AI Studio":
+		return "google-ai-studio"
+	case "Google":
+		return "google-vertex"
+	}
+	return ""
+}
+
+// hasEncryptedReasoning returns true when raw JSON contains any
+// `reasoning_details` entry whose "format" is "google-gemini-v1" (Gemini's
+// per-upstream encrypted thought signature). It parses minimally — only enough
+// to decide stickiness — and never interprets the payload.
+func hasEncryptedReasoning(raw json.RawMessage) bool {
+	var entries []struct {
+		Format string `json:"format"`
+	}
+	if json.Unmarshal(raw, &entries) != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Format == "google-gemini-v1" {
+			return true
+		}
+	}
+	return false
+}
+
+// maybePin is the response-side of the sticky-provider rule. After a
+// (successful) Generate or Stream turn that carried encrypted reasoning,
+// record the responding upstream so every subsequent request uses the same one.
+// Does nothing for non-OpenRouter providers, when already pinned, or when the
+// provider name can't be mapped.
+func (p *Provider) maybePin(providerField json.RawMessage, reasoningRaw json.RawMessage) {
+	if !p.isOpenRouter {
+		return
+	}
+	if !hasEncryptedReasoning(reasoningRaw) {
+		return
+	}
+
+	var name string
+	if json.Unmarshal(providerField, &name) != nil || name == "" {
+		return
+	}
+	slug := pinProviderName(name)
+	if slug == "" {
+		if os.Getenv("DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "openaicompat: OpenRouter responded via unknown provider %q, not pinning\n", name)
+		}
+		return
+	}
+
+	p.mu.Lock()
+	if p.pinnedProvider == "" {
+		p.pinnedProvider = slug
+	}
+	p.mu.Unlock()
 }
