@@ -682,3 +682,96 @@ func TestReviewRoundsShareSessionKey(t *testing.T) {
 		t.Fatal("two distinct runs share a session key")
 	}
 }
+
+// ---- early-stop: recurring confirmed blocker ----
+
+// A CONFIRMED blocker (repro failed) whose File+Quote recur unchanged
+// round after round triggers an early stop — the solver cannot fix it.
+func TestReviewRecurringConfirmedBlockerEarlyStop(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.ReproCmd = "echo the-bug-persists && false" // fails → confirmed.
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{
+		{f}, // round 1: confirmed blocker.
+		{f}, // round 2: same confirmed blocker recurs → early stop.
+	}}
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},
+		{structuredCall("c2", "write_file", map[string]any{"path": "helper.go", "content": "package calc\n"})},
+		{llm.Text("done again")},
+	}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 3, MaxIterations: 8}, turns)
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (early stop)", res.Outcome)
+	}
+	if !strings.Contains(res.Reason, "confirmed review blocker recurred unresolved after repair round 2") {
+		t.Fatalf("reason = %q, want recurrence message", res.Reason)
+	}
+	if !res.Review.Blocked {
+		t.Fatal("report.Blocked must be true")
+	}
+	if res.Review.Rounds != 2 {
+		t.Fatalf("rounds = %d, want 2 (early stop, not 3)", res.Review.Rounds)
+	}
+	for i, rf := range res.Review.Findings {
+		if rf.Fate != FateExpired {
+			t.Errorf("finding %d fate = %s, want expired", i, rf.Fate)
+		}
+	}
+}
+
+// Different findings each round must not trigger the early-stop — the
+// normal feedback loop proceeds unaltered.
+func TestReviewDifferentFindingsNoEarlyStop(t *testing.T) {
+	f1 := blocker("calc.go", "package calc // patched")
+	f2 := blocker("calc.go", "package calc // patched v2")
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{
+		{f1}, // round 1.
+		{f2}, // round 2: different quote → no recurrence.
+		{},   // round 3: clean.
+	}}
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},
+		{structuredCall("c2", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched v2\n"})},
+		{llm.Text("done again")},
+		{structuredCall("c3", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched v3\n"})},
+		{llm.Text("done yet again")},
+	}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 3, MaxIterations: 8}, turns)
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered (no early stop)", res.Outcome, res.Reason)
+	}
+	if res.Review.Rounds != 3 {
+		t.Fatalf("rounds = %d, want 3 (full loop)", res.Review.Rounds)
+	}
+}
+
+// A recurring UNconfirmed blocker (no repro, or repro passed) must NOT
+// trigger the early stop — it burns the normal round budget.
+func TestReviewRecurringUnconfirmedNoEarlyStop(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	// No repro → Confirmed stays false — the finding blocks on confidence alone.
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{
+		{f}, // round 1: unconfirmed blocker.
+		{f}, // round 2: same unconfirmed blocker recurs.
+		{f}, // round 3: maxRounds exhausted → normal block.
+	}}
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},
+		{structuredCall("c2", "write_file", map[string]any{"path": "helper.go", "content": "package calc\n"})},
+		{llm.Text("done again")},
+		{llm.Text("done yet again")},
+	}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 3, MaxIterations: 8}, turns)
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (rounds exhausted)", res.Outcome)
+	}
+	if !strings.Contains(res.Reason, "review blockers remain after 3 round(s)") {
+		t.Fatalf("reason = %q, want normal exhaustion message", res.Reason)
+	}
+	if res.Review.Rounds != 3 {
+		t.Fatalf("rounds = %d, want 3 (no early stop)", res.Review.Rounds)
+	}
+}

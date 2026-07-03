@@ -232,6 +232,31 @@ func (rv *reviewState) resolvePending(fate string) {
 	rv.pending = nil
 }
 
+// findRecurringConfirmedBlocker checks the current round's pending (blocking)
+// findings for a CONFIRMED blocker whose File+Quote exactly match a confirmed
+// finding from an earlier round — the solver saw it, tried, and couldn't fix
+// it. Returns (current index, earlier index, ok). When ok, the caller should
+// stop the repair loop: another round won't help.
+func (rv *reviewState) findRecurringConfirmedBlocker() (int, int, bool) {
+	for _, idx := range rv.pending {
+		rf := &rv.findings[idx]
+		if !rf.Confirmed {
+			continue
+		}
+		for j := range rv.findings {
+			prev := &rv.findings[j]
+			if prev.Round >= rv.rounds || !prev.Confirmed {
+				continue
+			}
+			if prev.File != rf.File || prev.Quote != rf.Quote {
+				continue
+			}
+			return idx, j, true
+		}
+	}
+	return 0, 0, false
+}
+
 // reviewObserver extracts the optional typed-event sink from the observer.
 func reviewObserver(obs Observer) ReviewObserver {
 	if ro, ok := obs.(ReviewObserver); ok {

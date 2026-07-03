@@ -74,6 +74,9 @@ type gates struct {
 // solver's diff will be taken against (slice 1a). It also measures the
 // VerifyCmd baseline (pre-flight) when configured.
 func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates {
+	if cfg.Obs == nil {
+		cfg.Obs = nopObserver{}
+	}
 	g := &gates{
 		cfg:        cfg,
 		runTimeout: runTimeout,
@@ -107,6 +110,36 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 func (g *gates) applyBaseline(res *RunResult) {
 	res.VerifyBaselineRed = g.verifyBaselineRed
 	res.VerifyBaselineOut = g.verifyBaselineOut
+}
+
+// baselinePreamble returns an environment-preamble block warning the solver
+// that the verify command already fails on the untouched workspace.  It is
+// appended to the first-turn message so the solver knows the gate was red
+// BEFORE any changes — it can focus on fixing the failure, or, if the task is
+// unrelated, complete the task and explain the pre-existing red gate rather
+// than grind against it.  Returns "" when the baseline is green or unmeasured.
+func (g *gates) baselinePreamble() string {
+	if !g.verifyBaselineRed {
+		return ""
+	}
+	out := g.verifyBaselineOut
+	if out == "" {
+		out = "(no output)"
+	} else {
+		out = clip(out, 2000)
+	}
+	return fmt.Sprintf(
+		"\n\n⚠️ PRE-FLIGHT VERIFY BASELINE — RED ⚠️\n"+
+			"The verify command:\n"+
+			"  %s\n"+
+			"ALREADY fails on the UNTOUCHED workspace (before any changes):\n"+
+			"%s\n\n"+
+			"If your task is to fix this failure, proceed. "+
+			"If your task is unrelated, the gate may be unsatisfiable — "+
+			"complete your task, then answer explaining that the verify command "+
+			"was already red before any changes rather than grinding against it.",
+		g.cfg.VerifyCmd, out,
+	)
 }
 
 // reviewReport exposes the terminal review record for RunResult.Review (nil
@@ -262,6 +295,18 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		case FateAdvised:
 			advisories = append(advisories, rf)
 		}
+	}
+	// Early-stop: a CONFIRMED blocker whose File+Quote recurred unchanged
+	// after a repair round proves the solver cannot fix it — stop now
+	// instead of burning every remaining round on it.
+	if curIdx, prevIdx, ok := rv.findRecurringConfirmedBlocker(); ok {
+		rv.findings[prevIdx].Fate = FateExpired // correct the earlier Repaired mislabel.
+		rv.blocked = true
+		rv.resolvePending(FateExpired)
+		cur := rv.findings[curIdx]
+		g.cfg.Obs.Note(fmt.Sprintf("review: confirmed blocker recurred unresolved after a repair round — stopping early: %s: %s",
+			cur.File, oneLine(cur.Quote)))
+		return "", fmt.Sprintf("confirmed review blocker recurred unresolved after repair round %d", rv.rounds)
 	}
 	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 	if ro := reviewObserver(g.cfg.Obs); ro != nil {
