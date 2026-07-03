@@ -102,6 +102,18 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	gs.applyBaseline(res)
+	// AbortOnRedBaseline: if the baseline is red and the caller wants us to stop,
+	// return immediately before any model call — the gate is unsatisfiable at base.
+	if cfg.AbortOnRedBaseline && gs.verifyBaselineRed {
+		res.Outcome = Unverified
+		res.Reason = fmt.Sprintf(
+			"refused to run: the verify command %q is ALREADY failing on the untouched workspace — "+
+				"the gate is unsatisfiable at base (-verify-baseline=abort caused this refusal)",
+			cfg.VerifyCmd,
+		)
+		res.Iterations = 0
+		return res, nil
+	}
 	// The review report travels on EVERY exit path (findings + fates are the
 	// calibration telemetry) — nil when the gate is off.
 	defer func() {
@@ -119,7 +131,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox))
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
 	// registered after `messages` exists so the closure reads its final value.
@@ -533,6 +545,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// (P3) Churn nudge. Skipped on a kill turn (we're terminating anyway).
 			if !kill && tr.churnNudge() {
 				obs += churnNudge
+			}
+
+			// Green-repeat nudge: the model keeps re-running the same passing
+			// command with no file changes between — nudge, never kill.
+			if !kill && tr.greenRepeatNudge() {
+				obs += greenRepeatNudgeText
 			}
 
 			step.Grounded = grounded

@@ -408,6 +408,16 @@ type Config struct {
 	// whether the gate starts red.
 	SkipVerifyBaseline bool
 
+	// AbortOnRedBaseline, when true AND the pre-flight baseline measures red,
+	// causes BOTH loops to return immediately before the first model call with
+	// Outcome Unverified, Iterations 0, and a Reason stating the verify command
+	// was already failing on the untouched workspace. The caller sets this when
+	// a red baseline means the gate is unsatisfiable and the run should not
+	// spend any budget. Requires VerifyCmd; inert when SkipVerifyBaseline is
+	// also set (skip wins — baseline is not measured, so there is no signal to
+	// abort on).
+	AbortOnRedBaseline bool
+
 	// VerifyLastRun is the no-VerifyCmd FALLBACK: when set (and VerifyCmd is empty),
 	// a silent finish is marked Unverified if the most recent `run` this session was
 	// still failing and nothing succeeded after it. Off by default and opt-in
@@ -663,6 +673,18 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	gs.applyBaseline(res)
+	// AbortOnRedBaseline: if the baseline is red and the caller wants us to stop,
+	// return immediately before any model call — the gate is unsatisfiable at base.
+	if cfg.AbortOnRedBaseline && gs.verifyBaselineRed {
+		res.Outcome = Unverified
+		res.Reason = fmt.Sprintf(
+			"refused to run: the verify command %q is ALREADY failing on the untouched workspace — "+
+				"the gate is unsatisfiable at base (-verify-baseline=abort caused this refusal)",
+			cfg.VerifyCmd,
+		)
+		res.Iterations = 0
+		return res, nil
+	}
 	// The review report travels on EVERY exit path (findings + fates are the
 	// calibration telemetry, recorded from day one) — nil when the gate is off.
 	defer func() {
@@ -683,7 +705,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox))
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Registered after `messages` exists so the closure reads
 	// its final value; the closure captures the variable, which the loop reassigns.
@@ -958,6 +980,13 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			observation += churnNudge
 		}
 
+		// Green-repeat nudge: the model keeps re-running the same passing command
+		// with no file changes between. Appended to the observation the model
+		// reads next — a nudge, never a kill.
+		if tr.greenRepeatNudge() {
+			observation += greenRepeatNudgeText
+		}
+
 		// (HP-4) Near-cap finisher (shared tracker), appended to THIS observation
 		// so the model reads it next turn. See Config.FinishNudgeWindow.
 		if tr.finishNudge(i) {
@@ -992,6 +1021,16 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 const churnNudge = "\n\n[hint: the tests have failed several times. If you've been making incremental edits, " +
 	"stop and rewrite the whole file in ONE write_file with a complete, correct implementation — " +
 	"that is usually faster than chasing line-by-line edits, and avoids line-number drift.]"
+
+// greenRepeatNudgeText is the one-time hint appended to an observation when the
+// model re-runs the SAME passing command 3+ times with no file changes between
+// (see turnTracker.greenRepeatNudge). A thinking model that keeps running a green
+// test without touching files is spinning — it read the result, thought, and ran
+// again rather than acting on the green signal. This nudges it to finish or take a
+// genuinely new action, without killing (the false-kill lesson from the
+// two-threshold detector).
+const greenRepeatNudgeText = "\n\n[harness: the same command has now passed 3 times with no file changes in between — " +
+	"re-running it gains nothing; either finish (answer) or take a genuinely new action.]"
 
 // finishNudgeText / finishNudgeNative are HP-4's one-time near-cap finisher hint
 // (see Config.FinishNudgeWindow): injected once a session is within the window of the

@@ -44,6 +44,14 @@ type turnTracker struct {
 	// files have been stable; finishNudged fires the hint at most once.
 	lastEditIter int
 	finishNudged bool
+
+	// Green-repeat detector: tracks the runFingerprint of the last PASSING run
+	// and how many times the SAME green result recurred with no file mutation
+	// between. A model that keeps re-running the same passing command without
+	// changing anything is spinning — it needs a nudge, not a kill.
+	lastGreenFP  string
+	greenRepeat  int
+	greenNudged  bool
 }
 
 func newTurnTracker(cfg Config, maxIter int) *turnTracker {
@@ -72,6 +80,23 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 	default: // a NEW failure — the world changed, count restarts.
 		t.stagnant, t.lastRunFP = 1, runFingerprint(obs)
 	}
+
+	// Green-repeat detector: track consecutive IDENTICAL passing runs with no
+	// file mutation between them. A DIFFERENT green fingerprint resets to 1
+	// (it's a new command, not a re-run of the same thing); a failing run
+	// resets entirely.
+	if t.lastRunPassed {
+		fp := runFingerprint(obs)
+		if fp == t.lastGreenFP {
+			t.greenRepeat++
+		} else {
+			t.greenRepeat = 1
+			t.lastGreenFP = fp
+		}
+	} else {
+		t.greenRepeat, t.lastGreenFP = 0, ""
+	}
+
 	return t.stagnant >= maxStagnant, t.stagnant
 }
 
@@ -85,6 +110,7 @@ func (t *turnTracker) observeAction(i int, verb string) (mutated bool) {
 	if verb == "write_file" || verb == "edit_file" {
 		t.lastEditIter = i // (HP-4) a file mutation resets the "files stable" clock.
 		t.editsSinceGreen++
+		t.greenRepeat = 0 // the world changed — a re-run of the same green command is now legitimate.
 		return true
 	}
 	return false
@@ -140,6 +166,24 @@ func (t *turnTracker) finishNudge(i int) bool {
 	}
 	if t.maxIter-i <= w && t.lastRunPassed && i-t.lastEditIter >= w {
 		t.finishNudged = true
+		return true
+	}
+	return false
+}
+
+// greenRepeatNudge reports whether the ONE-TIME green-repeat hint fires now
+// (latching): the model has re-run the SAME passing command 3+ times with NO
+// file mutation between runs. It is a nudge only — never a kill — because a
+// thinking model re-running a green test is the benign side of the coin whose
+// malicious side is the stagnant-observation kill (the two-threshold detector
+// comments in agent.go explain the measured false-kill tradeoff). The caller
+// appends greenRepeatNudgeText to whatever the model reads next.
+func (t *turnTracker) greenRepeatNudge() bool {
+	if t.greenNudged {
+		return false
+	}
+	if t.greenRepeat >= 3 {
+		t.greenNudged = true
 		return true
 	}
 	return false
