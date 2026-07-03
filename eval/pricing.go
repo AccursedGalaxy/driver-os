@@ -1,6 +1,10 @@
 package eval
 
-import "github.com/AccursedGalaxy/driver-os/llm"
+import (
+	"strings"
+
+	"github.com/AccursedGalaxy/driver-os/llm"
+)
 
 // Price is a model's list price in USD per 1,000,000 tokens, split by prompt vs
 // completion (the two bill at different rates). It is the cost axis the DOGFOOD
@@ -8,16 +12,30 @@ import "github.com/AccursedGalaxy/driver-os/llm"
 // price?" is the other half, and it splits a field that pass-rate alone collapses
 // (gemini-3.1-pro and opus-4.8 both 5/5, but one spends ~4× the tokens).
 type Price struct {
-	InPerM  float64 // USD per 1M prompt tokens.
-	OutPerM float64 // USD per 1M completion tokens.
+	InPerM        float64 // USD per 1M prompt tokens.
+	OutPerM       float64 // USD per 1M completion tokens.
+	CacheReadPerM float64 // USD per 1M cache-read prompt tokens.
 }
 
-// Cost returns the USD cost of one trial's token usage at this price. Cached
-// prompt tokens are billed at the full prompt rate here: Usage.CachedTokens is a
-// subset of PromptTokens that is already counted once, and OpenRouter discounts
-// it — so NOT subtracting it is a deliberate, documented over-estimate (a cost
-// ceiling), never a silent under-count.
+// Cost returns the USD cost of one trial's token usage at this price.
+//
+// When CacheReadPerM > 0, Usage.CachedTokens (a subset of PromptTokens) are
+// billed at that rate, and only the remainder at InPerM.
+//
+// When CacheReadPerM == 0, cached tokens are billed at the full prompt rate:
+// Usage.CachedTokens is a subset of PromptTokens that is already counted once,
+// and OpenRouter discounts it — so NOT subtracting it is a deliberate,
+// documented over-estimate (a cost ceiling), never a silent under-count.
 func (p Price) Cost(u llm.Usage) float64 {
+	if p.CacheReadPerM > 0 {
+		uncached := u.PromptTokens - u.CachedTokens
+		if uncached < 0 {
+			uncached = 0
+		}
+		return float64(uncached)/1e6*p.InPerM +
+			float64(u.CachedTokens)/1e6*p.CacheReadPerM +
+			float64(u.CompletionTokens)/1e6*p.OutPerM
+	}
 	return float64(u.PromptTokens)/1e6*p.InPerM + float64(u.CompletionTokens)/1e6*p.OutPerM
 }
 
@@ -57,6 +75,7 @@ var Pricing = map[string]Price{
 	"openai/gpt-5.4":              {InPerM: 2.50, OutPerM: 15.00},
 	"openai/gpt-5.2-codex":        {InPerM: 1.75, OutPerM: 14.00},
 	"anthropic/claude-sonnet-4.6": {InPerM: 3.00, OutPerM: 15.00},
+	"claude-fable-5":              {InPerM: 10.00, OutPerM: 50.00, CacheReadPerM: 1.00},
 	"qwen/qwen3-coder":            {InPerM: 0.22, OutPerM: 1.80},
 	"minimax/minimax-m3":          {InPerM: 0.30, OutPerM: 1.20},
 	"google/gemini-3.5-flash":     {InPerM: 1.50, OutPerM: 9.00},
@@ -68,6 +87,16 @@ var Pricing = map[string]Price{
 // priced at all. ok=false means the slug is absent from Pricing — the caller
 // renders "—", not 0, because free and unknown are different facts.
 func CostOf(model string, u llm.Usage) (cost float64, ok bool) {
+	// Normalize the model string by stripping a leading known-provider prefix
+	// before the table lookup. This matches the convention in
+	// internal/cli.SplitModelRef (keep the list of five providers in sync).
+	if i := strings.IndexByte(model, ':'); i > 0 {
+		switch p := model[:i]; p {
+		case "openrouter", "anthropic", "xai", "openai", "ollama":
+			model = model[i+1:]
+		}
+	}
+
 	p, ok := Pricing[model]
 	if !ok {
 		return 0, false
