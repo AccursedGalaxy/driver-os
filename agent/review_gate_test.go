@@ -62,6 +62,38 @@ func (f *fakeReviewer) Review(_ context.Context, in ReviewInput) (*ReviewVerdict
 	return v, nil
 }
 
+// fakeSolicitor extends fakeReviewer with ReproSolicitor — the harness
+// discovers it via type assertion and calls SolicitRepro after a round.
+type fakeSolicitor struct {
+	fakeReviewer
+	// solicitReplies maps (file, quote) → (reproCmd, noReproReason). When a
+	// key isn't found the solicitor returns the finding unchanged.
+	solicitReplies map[string]struct{ cmd, reason string }
+	solicitErr     error         // non-nil => fail the solicitation call.
+	solicitCalls   []ReviewInput // records every SolicitRepro call.
+}
+
+func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, error) {
+	f.solicitCalls = append(f.solicitCalls, in)
+	if f.solicitErr != nil {
+		return findings, f.solicitErr
+	}
+	out := make([]ReviewFinding, len(findings))
+	copy(out, findings)
+	for i := range out {
+		key := strings.TrimSpace(out[i].File) + "\x00" + strings.TrimSpace(out[i].Quote)
+		if r, ok := f.solicitReplies[key]; ok {
+			if r.cmd != "" {
+				out[i].ReproCmd = r.cmd
+			}
+			if r.reason != "" {
+				out[i].NoReproReason = r.reason
+			}
+		}
+	}
+	return out, nil
+}
+
 // gitWorkspace builds a git-initialized workspace (WriteTree needs a repo, not
 // commits) with the given files, returning the sandbox and its root.
 func gitWorkspace(t *testing.T, files map[string]string) (sandbox.Sandbox, string) {
@@ -816,5 +848,221 @@ func TestReviewRecurringUnconfirmedNoEarlyStop(t *testing.T) {
 	}
 	if res.Review.Rounds != 3 {
 		t.Fatalf("rounds = %d, want 3 (no early stop)", res.Review.Rounds)
+	}
+}
+
+// ---- slice 2c: repro solicitation ----
+
+// Test (a): a conf-8 blocker without repro_cmd triggers exactly one
+// solicitation call, the merged repro_cmd gets executed, and the finding
+// becomes confirmed.
+func TestSolicitRepro_ConfirmsHighConfidenceBlocker(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 8,
+		FailureScenario: "the change breaks X",
+		// No ReproCmd — the harness must solicit one.
+	}
+	fs := &fakeSolicitor{
+		fakeReviewer: fakeReviewer{verdicts: [][]ReviewFinding{{f}}},
+		solicitReplies: map[string]struct{ cmd, reason string }{
+			"calc.go\x00package calc // patched": {cmd: "echo the-defect && false"},
+		},
+	}
+	// One round only — the solicitation should make the finding confirmed
+	// and the confirmed blocker blocks.
+	res := reviewedRun(t, fs, Config{ReviewRounds: 1}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (confirmed blocker blocks)", res.Outcome)
+	}
+	// Exactly one solicitation call.
+	if len(fs.solicitCalls) != 1 {
+		t.Fatalf("solicitation called %d times, want 1", len(fs.solicitCalls))
+	}
+	rf := res.Review.Findings[0]
+	if !rf.Confirmed {
+		t.Fatalf("finding not confirmed: %+v", rf)
+	}
+	if rf.ReproCmd != "echo the-defect && false" {
+		t.Fatalf("ReproCmd = %q, want solicited command", rf.ReproCmd)
+	}
+	if rf.Fate != FateExpired {
+		t.Fatalf("fate = %s, want expired (1 round, blocker)", rf.Fate)
+	}
+}
+
+// Test (b): findings with repro_cmd already present, notes, and conf < 7
+// blockers do NOT trigger solicitation.
+func TestSolicitRepro_OnlyEligibleFindingsTrigger(t *testing.T) {
+	f1 := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 9,
+		FailureScenario: "high-conf with repro already",
+		ReproCmd:        "false", // already has a repro — NOT eligible.
+	}
+	f2 := ReviewFinding{
+		File: "calc.go", Quote: "different",
+		Severity: "note", Confidence: 9,
+		FailureScenario: "note, not a blocker",
+	}
+	f3 := ReviewFinding{
+		File: "calc.go", Quote: "low",
+		Severity: "blocker", Confidence: 6, // under the confidence-7 floor.
+		FailureScenario: "low-conf blocker",
+	}
+	fs := &fakeSolicitor{
+		fakeReviewer: fakeReviewer{verdicts: [][]ReviewFinding{{f1, f2, f3}}},
+		solicitReplies: map[string]struct{ cmd, reason string }{
+			"calc.go\x00package calc // patched": {cmd: "echo should-not-be-called"},
+		},
+	}
+	res := reviewedRun(t, fs, Config{ReviewRounds: 1}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (f1 has repro, blocks on conf)", res.Outcome)
+	}
+	// Solicitation must NOT be called — none of the findings are eligible
+	// (one already has a repro, one is a note, one is conf < 7).
+	if len(fs.solicitCalls) != 0 {
+		t.Fatalf("solicitation called %d times, want 0 (no eligible findings)", len(fs.solicitCalls))
+	}
+}
+
+// Test (c): a solicitation reply with no_repro_reason leaves the finding
+// expiring and carries the reason through to the report.
+func TestSolicitRepro_NoReproReasonExpires(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 8,
+		FailureScenario: "visual ordering defect",
+	}
+	fs := &fakeSolicitor{
+		fakeReviewer: fakeReviewer{verdicts: [][]ReviewFinding{{f}}},
+		solicitReplies: map[string]struct{ cmd, reason string }{
+			"calc.go\x00package calc // patched": {reason: "visual TUI defect — no runnable command can demonstrate"},
+		},
+	}
+	res := reviewedRun(t, fs, Config{ReviewRounds: 1}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (blocker on confidence, no repro)", res.Outcome)
+	}
+	rf := res.Review.Findings[0]
+	if rf.Confirmed {
+		t.Fatal("finding must not be confirmed — no repro was provided")
+	}
+	if rf.NoReproReason != "visual TUI defect — no runnable command can demonstrate" {
+		t.Fatalf("NoReproReason = %q", rf.NoReproReason)
+	}
+	if rf.Fate != FateExpired {
+		t.Fatalf("fate = %s, want expired", rf.Fate)
+	}
+}
+
+// Test (d): a solicitation call error fails open — the review completes as
+// today, the findings stay unconfirmed, and the run outcome is unchanged
+// (blocker still stands on confidence, not because of the solicitation).
+func TestSolicitRepro_ErrorFailsOpen(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 8,
+		FailureScenario: "the change breaks X",
+	}
+	fs := &fakeSolicitor{
+		fakeReviewer: fakeReviewer{verdicts: [][]ReviewFinding{{f}}},
+		solicitErr:   errors.New("provider melted during solicitation"),
+	}
+	res := reviewedRun(t, fs, Config{ReviewRounds: 1}, editThenAnswer())
+	// The run still ends Unverified (blocker on confidence), not Answered
+	// — the solicitation failure did not change the blocker's fate.
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (blocker still stands)", res.Outcome)
+	}
+	rf := res.Review.Findings[0]
+	if rf.Confirmed {
+		t.Fatal("finding must not be confirmed — solicitation failed")
+	}
+	if rf.ReproCmd != "" {
+		t.Fatalf("ReproCmd = %q, want empty (solicitation failed)", rf.ReproCmd)
+	}
+	// The solicitation was attempted (one call) and the error was surfaced
+	// through the return path. The gate's fail-open note goes to the
+	// observer (default nopObserver in reviewedRun), so we verify the
+	// outcome rather than the note text.
+	if len(fs.solicitCalls) != 1 {
+		t.Fatalf("solicitation called %d times, want 1 (attempted, then failed)", len(fs.solicitCalls))
+	}
+}
+
+// Test (e): category, impact, and reproducible round-trip from the reviewer's
+// JSON (via the fake reviewer verdict) through to the ReviewedFinding in the
+// report.
+func TestRubricFieldsRoundTrip(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "note", Confidence: 5,
+		FailureScenario: "minor style nit",
+		Category:        "style",
+		Impact:          "low",
+		Reproducible:    "false",
+	}
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
+	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s, want answered (note, not blocking)", res.Outcome)
+	}
+	rf := res.Review.Findings[0]
+	if rf.Category != "style" {
+		t.Errorf("category = %q, want style", rf.Category)
+	}
+	if rf.Impact != "low" {
+		t.Errorf("impact = %q, want low", rf.Impact)
+	}
+	if rf.Reproducible != "false" {
+		t.Errorf("reproducible = %q, want false", rf.Reproducible)
+	}
+}
+
+// When the reviewer does NOT implement ReproSolicitor (plain fakeReviewer),
+// the solicitation path is never entered and findings without repro commands
+// expire as today — the gate behaves identically to pre-solicitation.
+func TestSolicitRepro_SkippedWithoutSolicitor(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 9,
+		FailureScenario: "high-conf without repro",
+		// plain fakeReviewer does NOT implement ReproSolicitor.
+	}
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 1}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified (blocker on confidence)", res.Outcome)
+	}
+	rf := res.Review.Findings[0]
+	if rf.Confirmed {
+		t.Fatal("finding must not be confirmed — no solicitor available")
+	}
+}
+
+// The report carries confirmed_blockers and unconfirmed_blockers summary
+// counts so callers can distinguish execution-evidenced blockers from
+// unconfirmed claims at a glance.
+func TestReportSummaryCounts(t *testing.T) {
+	// Two findings: one confirmed (repro fails), one unconfirmed (no repro).
+	fc := blocker("calc.go", "package calc // patched")
+	fc.ReproCmd = "echo leak && false" // fails → confirmed.
+	fu := ReviewFinding{
+		File: "helper.go", Quote: "func H()",
+		Severity: "blocker", Confidence: 8,
+		FailureScenario: "unconfirmed claim",
+	}
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{fc, fu}}}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 1}, editThenAnswer())
+	if res.Review == nil {
+		t.Fatal("no review report")
+	}
+	if res.Review.ConfirmedBlockers != 1 {
+		t.Errorf("ConfirmedBlockers = %d, want 1", res.Review.ConfirmedBlockers)
+	}
+	if res.Review.UnconfirmedBlockers != 1 {
+		t.Errorf("UnconfirmedBlockers = %d, want 1", res.Review.UnconfirmedBlockers)
 	}
 }

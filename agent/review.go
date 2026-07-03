@@ -58,6 +58,20 @@ type ReviewFinding struct {
 	Confidence      int    `json:"confidence"`
 	FailureScenario string `json:"failure_scenario"`
 	ReproCmd        string `json:"repro_cmd,omitempty"` // a command expected to FAIL on this code (slice 2).
+
+	// NoReproReason is set when the reviewer was asked for a repro command
+	// (via ReproSolicitor) but explicitly declined with a reason — the defect
+	// cannot be demonstrated by a runnable command (e.g. a visual TUI defect).
+	// A finding with a NoReproReason expires as today (unconfirmed).
+	NoReproReason string `json:"no_repro_reason,omitempty"`
+
+	// Severity-rubric fields (slice 2b) — the reviewer is asked to fill these
+	// to make the gate's JSON report self-describing without re-reading the
+	// full finding prose. Missing/invalid values parse as empty and never
+	// affect the blocking decision.
+	Category     string `json:"category,omitempty"`     // correctness|performance|security|maintainability|style
+	Impact       string `json:"impact,omitempty"`        // high|medium|low
+	Reproducible string `json:"reproducible,omitempty"`  // "true"|"false" — could a runnable command demonstrate it?
 }
 
 // ReviewInput is what a Reviewer judges: the task, the solver's unified diff
@@ -103,6 +117,19 @@ type Reviewer interface {
 	Review(ctx context.Context, in ReviewInput) (*ReviewVerdict, error)
 }
 
+// ReproSolicitor is an optional Reviewer extension: after a review round
+// produces blocker findings without repro commands, the harness can ask the
+// reviewer to supply runnable repro commands in a single follow-up call per
+// round. The reviewer receives the batched list of eligible findings and
+// returns each with either a repro_cmd or an explicit no_repro_reason.
+// Implementations that don't implement this are simply not consulted —
+// findings without repro commands expire as today. The harness discovers it
+// via type assertion; the Reviewer interface itself stays unchanged so
+// existing implementations (including the fake in tests) compile untouched.
+type ReproSolicitor interface {
+	SolicitRepro(ctx context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, error)
+}
+
 // Finding fates — the calibration telemetry (docs/specs/REVIEW-GATE.md finding 8),
 // recorded from day one so reviewer false-positive rates are measurable
 // (FP rate = refuted+expired / total blockers).
@@ -137,6 +164,16 @@ type ReviewReport struct {
 	Summaries     []string          `json:"summaries,omitempty"`      // per-round free-prose preambles; "" when absent.
 	Findings      []ReviewedFinding `json:"findings,omitempty"`
 	Usage         llm.Usage         `json:"usage"`
+
+	// ConfirmedBlockers counts blocker findings whose repro command FAILED
+	// (Confirmed=true, execution-evidenced). UnconfirmedBlockers counts
+	// blocker findings that stood without execution evidence — either the
+	// reviewer supplied no repro command, the command passed (and confidence
+	// was high enough not to refute), or the repro couldn't run. A caller
+	// can tell CAUGHT-with-confirmed-repro from CAUGHT-on-unconfirmed-claims
+	// at a glance.
+	ConfirmedBlockers   int `json:"confirmed_blockers"`
+	UnconfirmedBlockers int `json:"unconfirmed_blockers"`
 }
 
 // ReviewObserver is an OPTIONAL Observer extension, discovered by
@@ -210,15 +247,28 @@ func (rv *reviewState) report() *ReviewReport {
 		return nil
 	}
 	rv.resolvePending(FateExpired)
+	var confirmed, unconfirmed int
+	for _, f := range rv.findings {
+		if f.Severity != "blocker" {
+			continue
+		}
+		if f.Confirmed {
+			confirmed++
+		} else {
+			unconfirmed++
+		}
+	}
 	return &ReviewReport{
-		Rounds:        rv.rounds,
-		Blocked:       rv.blocked,
-		Skipped:       rv.skip,
-		ReviewerModel: rv.model,
-		ReviewerRuns:  rv.runIDs,
-		Summaries:     rv.summaries,
-		Findings:      rv.findings,
-		Usage:         rv.usage,
+		Rounds:              rv.rounds,
+		Blocked:             rv.blocked,
+		Skipped:             rv.skip,
+		ReviewerModel:       rv.model,
+		ReviewerRuns:        rv.runIDs,
+		Summaries:           rv.summaries,
+		Findings:            rv.findings,
+		Usage:               rv.usage,
+		ConfirmedBlockers:   confirmed,
+		UnconfirmedBlockers: unconfirmed,
 	}
 }
 

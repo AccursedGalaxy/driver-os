@@ -326,6 +326,53 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		return "", ""
 	}
 
+	// Repro solicitation (slice 2c): blocker findings with Confidence >= 7
+	// that arrived WITHOUT a repro command are sent back to the reviewer in
+	// one batched follow-up call. The reviewer can supply runnable repro_cmds
+	// or explicit no_repro_reason strings. This closes the gap where
+	// high-confidence blockers expired unverified because the reviewer never
+	// provided a command — the measured run had 4/4 conf-8-9 blockers
+	// arrive without repro_cmd, so zero were confirmed.
+	if solicitor, ok := g.cfg.Reviewer.(ReproSolicitor); ok {
+		var eligible []ReviewFinding
+		for _, f := range verdict.Findings {
+			if strings.ToLower(strings.TrimSpace(f.Severity)) == "blocker" &&
+				f.Confidence >= 7 &&
+				strings.TrimSpace(f.ReproCmd) == "" {
+				eligible = append(eligible, f)
+			}
+		}
+		if len(eligible) > 0 {
+			merged, serr := solicitor.SolicitRepro(gctx, ReviewInput{
+				Task:       g.cfg.Task,
+				Root:       g.cfg.Root,
+				SessionKey: rv.sessionKey,
+				Round:      rv.rounds,
+			}, eligible)
+			if serr != nil {
+				// Fail-open: solicitation errors leave findings as-is.
+				g.cfg.Obs.Note("review: repro solicitation failed (findings stay unconfirmed): " + serr.Error())
+			} else {
+				// Merge returned repro_cmds/no_repro_reasons back into
+				// the verdict findings in place (match by file+quote).
+				for i := range verdict.Findings {
+					for _, m := range merged {
+						if strings.TrimSpace(verdict.Findings[i].File) == strings.TrimSpace(m.File) &&
+							strings.TrimSpace(verdict.Findings[i].Quote) == strings.TrimSpace(m.Quote) {
+							if m.ReproCmd != "" {
+								verdict.Findings[i].ReproCmd = m.ReproCmd
+							}
+							if m.NoReproReason != "" {
+								verdict.Findings[i].NoReproReason = m.NoReproReason
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
 	blocking := 0
 	var blockers, advisories []ReviewedFinding
 	reproBudget := reviewReproCap
