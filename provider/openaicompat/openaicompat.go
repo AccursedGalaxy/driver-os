@@ -89,6 +89,9 @@ type Provider struct {
 // it off for plain OpenAI, which rejects the field.
 func (p *Provider) WithPromptCache() *Provider { p.cache = true; return p }
 
+// PromptCacheEnabled returns true if Anthropic-style prompt caching is enabled.
+func (p *Provider) PromptCacheEnabled() bool { return p.cache }
+
 var _ llm.Provider = (*Provider)(nil)
 
 // New builds a provider from an explicit Config. Use it for arbitrary or
