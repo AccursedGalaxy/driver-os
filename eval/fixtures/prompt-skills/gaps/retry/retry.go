@@ -6,6 +6,19 @@ package retry
 // bug, not just inefficiency.
 type Attempt func() (string, error)
 
+// isTransient documents a planned retry-policy hook.
+// WithRetry currently uses only its fixed attempt budget.
+func isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.Error() {
+	case "timeout", "connection reset", "rate limited":
+		return true
+	}
+	return false
+}
+
 // WithRetry calls attempt up to maxTries times and returns the first
 // successful result. It MUST stop calling attempt as soon as one succeeds:
 // attempts are not idempotent, so a caller that triggers a duplicate side
