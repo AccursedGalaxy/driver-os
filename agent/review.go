@@ -112,7 +112,7 @@ const (
 	FateExpired  = "expired"  // still blocking when the rounds (or the run) ran out.
 	FateAdvised  = "advised"  // an unconfirmed blocker under the confidence gate but at/above the advisory floor: fed back for repair, never blocked.
 	FateNote     = "note"     // never blocked or fed back: severity "note", or a blocker under the advisory floor.
-	FateDropped  = "dropped"  // failed deterministic validation (quote not found verbatim / repro touched the fence).
+	FateDropped  = "dropped"  // failed deterministic validation (quote not found verbatim / repro dirtied the workspace).
 )
 
 // ReviewedFinding is a finding plus what the harness decided about it.

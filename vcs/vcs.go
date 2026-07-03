@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -118,6 +119,97 @@ func WriteTree(ctx context.Context, dir string) (string, error) {
 // WriteTree). Empty output means the trees are identical.
 func DiffTrees(ctx context.Context, dir, a, b string) (string, error) {
 	return run(ctx, dir, "diff", a, b)
+}
+
+// DiffTreeNames returns the paths whose content differs between two tree objects.
+func DiffTreeNames(ctx context.Context, dir, a, b string) ([]string, error) {
+	out, err := run(ctx, dir, "diff", "--name-only", "-z", a, b)
+	if err != nil {
+		return nil, err
+	}
+	return splitNUL(out), nil
+}
+
+// RestoreTree restores the working tree to the exact content captured in tree,
+// where tree is a hash returned by WriteTree. It uses a temporary index for all
+// git plumbing, so the user's real index is not read or modified. Files present
+// in the current working tree but absent from tree are removed; modified and
+// deleted files are restored from tree.
+func RestoreTree(ctx context.Context, dir, tree string) error {
+	cur, err := WriteTree(ctx, dir)
+	if err != nil {
+		return err
+	}
+	added, err := diffTreeNamesFiltered(ctx, dir, tree, cur, "A")
+	if err != nil {
+		return err
+	}
+	for _, name := range added {
+		path, ok := safeTreePath(dir, name)
+		if !ok {
+			return fmt.Errorf("refusing to remove unsafe git path %q", name)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		pruneEmptyParents(dir, name)
+	}
+
+	// The index path must not pre-exist; see WriteTree for the same git quirk.
+	tmpDir, err := os.MkdirTemp("", "driver-os-index-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	env := []string{"GIT_INDEX_FILE=" + tmpDir + "/index"}
+	if _, err := runEnv(ctx, dir, env, "read-tree", tree); err != nil {
+		return err
+	}
+	_, err = runEnv(ctx, dir, env, "checkout-index", "-af")
+	return err
+}
+
+func diffTreeNamesFiltered(ctx context.Context, dir, a, b, filter string) ([]string, error) {
+	out, err := run(ctx, dir, "diff", "--name-only", "-z", "--diff-filter="+filter, a, b)
+	if err != nil {
+		return nil, err
+	}
+	return splitNUL(out), nil
+}
+
+func splitNUL(out string) []string {
+	if out == "" {
+		return nil
+	}
+	raw := strings.Split(out, "\x00")
+	paths := raw[:0]
+	for _, p := range raw {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+func safeTreePath(root, name string) (string, bool) {
+	if name == "" || strings.HasPrefix(name, "/") {
+		return "", false
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return filepath.Join(root, clean), true
+}
+
+func pruneEmptyParents(root, name string) {
+	parent := filepath.Dir(filepath.Clean(filepath.FromSlash(name)))
+	for parent != "." && parent != string(os.PathSeparator) {
+		if err := os.Remove(filepath.Join(root, parent)); err != nil {
+			return
+		}
+		parent = filepath.Dir(parent)
+	}
 }
 
 // Apply applies a patch file to the working tree (`git apply`). Used by the

@@ -21,6 +21,7 @@ import (
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/driver-os/sandbox/local"
+	"github.com/AccursedGalaxy/driver-os/vcs"
 )
 
 // fakeReviewer returns the i-th verdict per Review call (clamping to the
@@ -633,6 +634,48 @@ func TestReproFenceViolationRejectedAndRestored(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(root, "calc_test.go"))
 	if string(data) != "package calc // pristine\n" {
 		t.Fatalf("fenced file not restored: %q", data)
+	}
+}
+
+func TestReproWorkspaceMutationRejectedAndRestoredWithoutFence(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.ReproCmd = "printf 'sabotage\\n' > notes.txt && false"
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
+	sb, root := gitWorkspace(t, map[string]string{
+		"calc.go":   "package calc\n",
+		"notes.txt": "pristine notes\n",
+	})
+	ctx := context.Background()
+	baseTree, err := vcs.WriteTree(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := &nativeScript{turns: editThenAnswer()}
+	res, err := RunNative(ctx, Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewRounds: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered (finding rejected)", res.Outcome, res.Reason)
+	}
+	got := res.Review.Findings[0]
+	if got.Fate != FateDropped || !strings.Contains(got.DropWhy, "modified the workspace") || !strings.Contains(got.DropWhy, "notes.txt") {
+		t.Fatalf("finding = %+v, want dropped for workspace drift", got)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "notes.txt"))
+	if string(data) != "pristine notes\n" {
+		t.Fatalf("non-fenced repro damage not restored: %q", data)
+	}
+	curTree, err := vcs.WriteTree(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := vcs.DiffTrees(ctx, root, baseTree, curTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "+package calc // patched") || strings.Contains(diff, "sabotage") || strings.Contains(diff, "notes.txt") {
+		t.Fatalf("run diff should contain only the solver change, got:\n%s", diff)
 	}
 }
 

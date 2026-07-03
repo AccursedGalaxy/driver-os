@@ -214,3 +214,54 @@ func TestWriteTreeOnCommitlessRepoAndIsRepo(t *testing.T) {
 		t.Error("IsRepo must be false outside a repo")
 	}
 }
+
+func TestRestoreTreeRestoresModifiedDeletedAndAddedFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := initRepo(t)
+	write(t, dir, "delete-me.txt", "keep me\n")
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "nested/keep.txt", "nested original\n")
+	base, err := WriteTree(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, dir, "README.md", "tampered\n")
+	if err := os.Remove(filepath.Join(dir, "delete-me.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "added.txt", "new junk\n")
+	write(t, dir, "nested/new.txt", "more junk\n")
+
+	if err := RestoreTree(ctx, dir, base); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := WriteTree(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != base {
+		diff, _ := DiffTrees(ctx, dir, base, restored)
+		t.Fatalf("restored tree = %s, want %s; diff:\n%s", restored, base, diff)
+	}
+	for name, want := range map[string]string{
+		"README.md":       "hello\n",
+		"delete-me.txt":   "keep me\n",
+		"nested/keep.txt": "nested original\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q err=%v, want %q", name, got, err, want)
+		}
+	}
+	for _, name := range []string{"added.txt", "nested/new.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after RestoreTree (err=%v)", name, err)
+		}
+	}
+	if out, _ := run(ctx, dir, "diff", "--cached", "--name-only"); strings.TrimSpace(out) != "" {
+		t.Fatalf("RestoreTree polluted the real index: %q", out)
+	}
+}

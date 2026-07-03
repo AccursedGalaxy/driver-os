@@ -369,7 +369,7 @@ func (rv *reviewState) captureDiff(ctx context.Context) (string, error) {
 //     (downgraded, fate refuted), but a high-confidence finding whose repro
 //     passes is only downgraded to ADVISORY (fate advised) — a clean run of
 //     a race reproducer is weak evidence. Capped per round; a repro that
-//     mutates fenced paths is rejected and its damage restored;
+//     mutates the workspace is rejected and its damage restored;
 //  4. the confidence ladder: an unconfirmed blocker below
 //     reviewBlockConfidence is ADVISORY (fed back, never blocks) down to
 //     reviewAdviseConfidence, and a silent note below that.
@@ -420,21 +420,64 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 // policy as verifyRun: detached from cancellation, bounded by the run
 // timeout). Returns true when execution SETTLED the finding — confirmed
 // (repro failed), refuted (repro passed, low confidence), advised (repro
-// passed, high confidence), or fence-rejected. False means execution gave no
+// passed, high confidence), or workspace-rejected. False means execution gave no
 // signal (the command couldn't start) and the prose ladder continues.
 func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) bool {
+	snapCtx, cancel := gateContext(ctx, gateDiffTimeout)
+	preTree, err := vcs.WriteTree(snapCtx, g.cfg.Root)
+	cancel()
+	if err != nil {
+		g.cfg.Obs.Note("review: repro skipped because the workspace could not be snapshotted (" + err.Error() + ") — falling back to the confidence gate")
+		return false
+	}
+
 	out, err := runOp(ctx, g.cfg.verifySandbox(), cmd, g.runTimeout)
-	// A repro must never mutate the fence (the reviewer's brief says new files
-	// go under /tmp). If it did, undo the damage from the snapshot and reject
-	// the finding — the reviewer's sin must not fail the SOLVER's fence gate.
+	// A repro must never mutate the workspace (the reviewer's brief says new
+	// files go under /tmp). Bracket it with temp-index git trees so unfenced
+	// tracked/untracked changes are caught without touching the user's real
+	// index. Keep the fence check too: it covers configured ignored paths that
+	// WriteTree intentionally excludes.
+	var fencedChanged []string
 	if g.fence != nil {
-		if changed := g.fence.drift(ctx, g.cfg.Sandbox); len(changed) > 0 {
-			if rerr := g.fence.restore(ctx, g.cfg.Sandbox, changed); rerr != nil {
-				g.cfg.Obs.Note("review: repro mutated fenced paths and restore failed: " + rerr.Error())
-			}
-			rf.Fate, rf.DropWhy = FateDropped, "repro command modified fenced paths: "+strings.Join(changed, ", ")
-			return true
+		fencedChanged = g.fence.drift(ctx, g.cfg.Sandbox)
+	}
+	snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
+	postTree, snapErr := vcs.WriteTree(snapCtx, g.cfg.Root)
+	cancel()
+	if snapErr != nil || postTree != preTree || len(fencedChanged) > 0 {
+		var changed []string
+		if snapErr == nil && postTree != preTree {
+			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
+			changed, _ = vcs.DiffTreeNames(snapCtx, g.cfg.Root, preTree, postTree)
+			cancel()
 		}
+		if len(fencedChanged) > 0 {
+			if rerr := g.fence.restore(ctx, g.cfg.Sandbox, fencedChanged); rerr != nil {
+				g.cfg.Obs.Note("review: repro mutated fenced paths and fence restore failed: " + rerr.Error())
+			}
+		}
+		if snapErr == nil && postTree != preTree {
+			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
+			if rerr := vcs.RestoreTree(snapCtx, g.cfg.Root, preTree); rerr != nil {
+				g.cfg.Obs.Note("review: repro modified the workspace and restore failed: " + rerr.Error())
+			}
+			cancel()
+		} else if snapErr != nil {
+			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
+			if rerr := vcs.RestoreTree(snapCtx, g.cfg.Root, preTree); rerr != nil {
+				g.cfg.Obs.Note("review: repro left the workspace unsnapshottable and restore failed: " + rerr.Error())
+			}
+			cancel()
+		}
+		if len(fencedChanged) > 0 {
+			rf.Fate, rf.DropWhy = FateDropped, "repro command modified fenced paths: "+strings.Join(fencedChanged, ", ")
+		} else if snapErr != nil {
+			rf.Fate, rf.DropWhy = FateDropped, "repro command left the workspace unsnapshottable: "+snapErr.Error()
+		} else {
+			rf.Fate, rf.DropWhy = FateDropped, "repro command modified the workspace: "+pathSummary(changed)
+		}
+		g.cfg.Obs.Note("review: " + rf.DropWhy)
+		return true
 	}
 	if err != nil {
 		g.cfg.Obs.Note("review: repro could not run (" + err.Error() + ") — falling back to the confidence gate")
@@ -451,6 +494,17 @@ func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) b
 		rf.Fate = FateAdvised // high-confidence clean run: inconclusive, downgraded to advisory.
 	}
 	return true
+}
+
+func pathSummary(paths []string) string {
+	if len(paths) == 0 {
+		return "tree hash changed"
+	}
+	const max = 5
+	if len(paths) <= max {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%d paths (%s, …)", len(paths), strings.Join(paths[:max], ", "))
 }
 
 // reviewFeedback renders blocking findings as the repair observation (1d) —
