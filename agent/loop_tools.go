@@ -51,6 +51,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
+	// (PROMPT-SKILLS slice 2) Resolve the base prompt BEFORE any paid call (the
+	// plan stage bills first) — an unknown profile must abort, not run mislabeled.
+	basePrompt, err := systemPromptFor(cfg.PromptProfile)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
@@ -118,7 +124,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}()
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
 	scope := scopeOrDefault(cfg.MemoryScope)
-	system := withPersona(cfg.Persona, nativeSystemPrompt()) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+	system := withPersona(cfg.Persona, basePrompt) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
 	temp := 0.0
 
@@ -851,4 +857,43 @@ func nativeSystemPrompt() string {
 		"basing each action on the latest tool results (real external state). " +
 		"Pick the tool that most directly advances the task. " +
 		"When you have enough information to finish, reply with your final answer as plain text and DO NOT call a tool."
+}
+
+// structuredSystemPrompt is the PROMPT-SKILLS slice-2 candidate: the same loop
+// contract as nativeSystemPrompt plus a short block of working rules. The rules
+// are the council-calibrated forms (docs/specs/PROMPT-SKILLS.md, run
+// 20260703-104826-a38361): scoped verification with a feasibility escape hatch
+// (an explanation-only task must not trigger a test run), a test-integrity rule
+// that blocks reward hacking WITHOUT blocking test maintenance, and the
+// convention/dependency/comment/scope discipline every serious harness ships.
+// Deliberately SHORT (~250 words): cheap models degrade under long prompts and
+// attend to few instructions, so every rule here has to earn its slot — depth
+// lives in the tool descriptions and skills, which load per-use. The blunt
+// IMPORTANT/NEVER emphasis is intentional for the cheap-model tier this profile
+// targets; do not "clean it up" into calm prose without re-running the A/B.
+func structuredSystemPrompt() string {
+	return `You are a software engineering agent working in a sandboxed project checkout. Use the provided tools to accomplish the TASK, basing each action on the latest tool results (real external state). Pick the action that most directly advances the task.
+
+Working rules:
+- VERIFY before you finish: run the most relevant available check (the task's named test/build command, or the tests for the package you changed — not the whole suite when a narrower run answers it). If no check is feasible (no tests, broken dependencies, or an explanation-only task where running code proves nothing), say exactly why and what weaker verification you did. NEVER present unverified work as verified.
+- Tests are the spec: NEVER weaken, delete, or special-case a test just to make it pass. Adding a regression test, updating a golden file, or changing a test because the TASK intentionally changed behavior is normal work — do it and state the reason.
+- Follow the existing code: mimic the surrounding style, naming, and idioms; use the project's own utilities. NEVER assume a library is available — confirm it is already a dependency (imports, go.mod, or the language's manifest) before using it.
+- Comments: do not narrate your changes or restate what code does. Comment only a non-obvious WHY, matching the file's existing comment density.
+- Scope: do what the TASK asks, nothing more — no drive-by refactors, renames, or extra files. If you checked and something genuinely isn't there, saying so is a valid answer.
+
+When the TASK is complete and verified, reply with your final answer as plain text and DO NOT call a tool.`
+}
+
+// systemPromptFor maps Config.PromptProfile to the native loop's base prompt.
+// Unknown profiles are an ERROR, not a fallback: this knob exists to be A/B'd,
+// and a typo that silently ran "legacy" would corrupt a paid experiment's arm.
+func systemPromptFor(profile string) (string, error) {
+	switch profile {
+	case "", "legacy":
+		return nativeSystemPrompt(), nil
+	case "structured":
+		return structuredSystemPrompt(), nil
+	default:
+		return "", fmt.Errorf("unknown PromptProfile %q (valid: \"\", \"legacy\", \"structured\")", profile)
+	}
 }

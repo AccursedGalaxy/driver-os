@@ -352,6 +352,17 @@ type Config struct {
 	// MaxTokens and MaxTotalTokens, so a higher effort spends more of both.
 	ReasoningEffort string
 
+	// PromptProfile selects the NATIVE loop's base system prompt (PROMPT-SKILLS
+	// slice 2). "" or "legacy" = the historical four-sentence prompt (the
+	// default, so every existing caller is byte-identical); "structured" = the
+	// sectioned working-rules prompt measured against it. It is an independent
+	// switch — not derived from the model — precisely so an A/B arm differs in
+	// this field alone and acceptance/rollback is one flag flip. An unknown
+	// value fails CLOSED before the first model call: a typo must not silently
+	// run the wrong arm of a paid experiment. The text loop ignores it
+	// (Run/buildSystemPrompt is protocol-shaped, not profile-shaped).
+	PromptProfile string
+
 	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
 	// is the universal backstop for a spiral that dodges every action/observation
 	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool
