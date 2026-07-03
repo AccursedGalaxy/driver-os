@@ -98,11 +98,13 @@ at it rather than duplicate it on stdout.
 - `transcript_path` — a string, or `null` if the transcript write failed
   (see below).
 - `worktree_path` — with `-worktree`, the path of the kept throwaway git
-  worktree when the run left changes (or cleanup/bookkeeping failed); `null`
-  when `-worktree` is off or the clean worktree was removed.
+  worktree when the run left changes and the CLI intentionally kept it for
+  inspection/review (or cleanup/bookkeeping failed); `null` when `-worktree` is
+  off, the clean worktree was removed, or a non-success run's changed worktree
+  was collapsed to its banked patch and removed.
 - `patch_path` — with `-worktree`, the `<run-id>.patch` file written next to
   the transcript when changed worktree contents were captured; `null` when
-  `-worktree` is off, the clean worktree was removed, or patch writing failed.
+  `-worktree` is off, no patch could be written, or there were no changes.
 - `review` — the review-gate report (rounds, findings, usage), or `null` when
   the gate was off.
 - `plan` — the plan-stage report (plan, usage), or `null` when the stage was off.
@@ -119,10 +121,12 @@ today's bug where SUMMARY prints only on `err==nil`).
 `-worktree` isolation mode. With that flag, the run starts from a detached git
 worktree at `HEAD`; uncommitted main-checkout changes are intentionally not
 visible. At the end, the CLI captures `git diff --binary HEAD` after intent-to-add
-staging, writes `<run-id>.patch` next to the transcript when non-empty, and keeps
-the worktree for inspection. A clean worktree is removed, leaving both fields
-`null`. Bookkeeping failures warn on stderr and do not change the run's exit
-code.
+staging and writes `<run-id>.patch` next to the transcript when non-empty.
+Successful changed runs keep the worktree for inspection; non-success changed
+runs (for example `hit_cap`) remove the worktree after the patch is banked, so
+/tmp does not accumulate registered throwaway worktrees. A clean worktree is
+removed, leaving both fields `null`. Bookkeeping failures warn on stderr and do
+not change the run's exit code.
 
 **Transcript-write failure is not a run failure.** The transcript write is
 best-effort (it already is in `main.go`). If it fails *after* a valid
