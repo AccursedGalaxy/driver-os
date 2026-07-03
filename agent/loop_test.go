@@ -432,7 +432,7 @@ func (p *blockProvider) Generate(ctx context.Context, _ llm.Request) (*llm.Respo
 		p.blocked = nil
 	}
 	<-ctx.Done()
-	return nil, context.Cause(ctx)
+	return nil, ctx.Err()
 }
 
 func TestRunCanceledMidCall(t *testing.T) {
@@ -520,6 +520,68 @@ func TestRunNativeCanceledAtAnswerTime(t *testing.T) {
 	}
 	if exec.execs != 0 {
 		t.Errorf("verify command should NOT have run on canceled ctx; got %d exec(s)", exec.execs)
+	}
+}
+
+func TestRunCanceledWithCustomCause(t *testing.T) {
+	bp := &blockProvider{blocked: make(chan struct{})}
+	ctx, cancel := context.WithCancelCause(context.Background())
+
+	type runOut struct {
+		res *RunResult
+		err error
+	}
+	ch := make(chan runOut, 1)
+	go func() {
+		res, err := Run(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		ch <- runOut{res, err}
+	}()
+
+	// Wait for Generate to be entered, then cancel with a custom cause.
+	select {
+	case <-bp.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("provider never entered Generate")
+	}
+	cancel(errors.New("interrupt signal received"))
+
+	out := <-ch
+	if out.err != nil {
+		t.Fatalf("Run returned unexpected err: %v", out.err)
+	}
+	if out.res.Outcome != Canceled {
+		t.Fatalf("Outcome = %q, want Canceled", out.res.Outcome)
+	}
+}
+
+func TestRunNativeCanceledWithCustomCause(t *testing.T) {
+	bp := &blockProvider{blocked: make(chan struct{})}
+	ctx, cancel := context.WithCancelCause(context.Background())
+
+	type runOut struct {
+		res *RunResult
+		err error
+	}
+	ch := make(chan runOut, 1)
+	go func() {
+		res, err := RunNative(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		ch <- runOut{res, err}
+	}()
+
+	// Wait for Generate to be entered, then cancel with a custom cause.
+	select {
+	case <-bp.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("provider never entered Generate")
+	}
+	cancel(errors.New("interrupt signal received"))
+
+	out := <-ch
+	if out.err != nil {
+		t.Fatalf("RunNative returned unexpected err: %v", out.err)
+	}
+	if out.res.Outcome != Canceled {
+		t.Fatalf("Outcome = %q, want Canceled", out.res.Outcome)
 	}
 }
 

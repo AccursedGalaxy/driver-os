@@ -233,7 +233,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// A caller cancel is a normal typed stop, not an infrastructure error.
 			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
 			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
-			if errors.Is(context.Cause(ctx), context.Canceled) {
+			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+			// a custom signalError cause, and Err() is cause-agnostic while still
+			// distinguishing deadline expiry.
+			if errors.Is(ctx.Err(), context.Canceled) {
 				res.Outcome = Canceled
 				res.Reason = "run canceled by the caller (interrupt)"
 				return res, nil
@@ -320,7 +323,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// A caller cancel mid-answer stops the run cleanly as Canceled — the
 			// verify command was skipped (verifyRun refuses on a canceled ctx), and
 			// the run must not continue (the next model call would also fail).
-			if errors.Is(context.Cause(ctx), context.Canceled) {
+			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+			// a custom signalError cause, and Err() is cause-agnostic while still
+			// distinguishing deadline expiry.
+			if errors.Is(ctx.Err(), context.Canceled) {
 				res.Outcome = Canceled
 				res.Reason = "run canceled by the caller (interrupt)"
 				return res, nil
@@ -426,7 +432,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				if !cfg.FinishToolTrustsCaller {
 					reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
 					// A caller cancel mid-finish stops the run cleanly as Canceled.
-					if errors.Is(context.Cause(ctx), context.Canceled) {
+					// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+					// a custom signalError cause, and Err() is cause-agnostic while still
+					// distinguishing deadline expiry.
+					if errors.Is(ctx.Err(), context.Canceled) {
 						res.Outcome = Canceled
 						res.Reason = "run canceled by the caller (interrupt)"
 						return res, nil

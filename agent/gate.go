@@ -45,12 +45,15 @@ func gateContext(parent context.Context, timeout time.Duration) (context.Context
 	base := context.WithoutCancel(parent) // drops deadline and cancellation
 	ctx, cancelInner := context.WithTimeout(base, timeout)
 	// Propagate only explicit user cancellation, not deadline expiry.
+	// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+	// a custom signalError cause, and Err() is cause-agnostic while still
+	// distinguishing deadline expiry.
 	stop := context.AfterFunc(parent, func() {
-		if errors.Is(context.Cause(parent), context.Canceled) {
+		if errors.Is(parent.Err(), context.Canceled) {
 			cancelInner()
 		}
 	})
-	if errors.Is(context.Cause(parent), context.Canceled) {
+	if errors.Is(parent.Err(), context.Canceled) {
 		cancelInner()
 	}
 	return ctx, func() {

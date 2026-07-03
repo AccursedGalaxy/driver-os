@@ -315,6 +315,7 @@ type Config struct {
 	VerifySandbox sandbox.Sandbox
 	Tools         map[string]Tool // optional: nil = DefaultTools(Sandbox).
 	Task          string          // required: the goal (this turn's user input when continuing a conversation).
+	TaskImages    []llm.ImagePart // optional image parts for THIS turn's user message; cfg.Task stays the text projection used for recall/memory/plan/RunResult.
 	// History is a prior conversation to CONTINUE from (the continuation seam, see
 	// Session). When non-empty, the loop seeds its message slice with these and
 	// appends Task as the next user turn — so the model sees the whole prior
@@ -611,11 +612,25 @@ type Config struct {
 // behaves identically across them.
 func seedMessages(cfg Config, env string) []llm.Message {
 	if len(cfg.History) == 0 {
+		if len(cfg.TaskImages) > 0 {
+			return []llm.Message{llm.UserParts(append([]llm.ContentPart{llm.Text("TASK: " + cfg.Task + env)}, imagesAsParts(cfg.TaskImages)...)...)}
+		}
 		return []llm.Message{llm.User("TASK: " + cfg.Task + env)}
 	}
 	msgs := make([]llm.Message, 0, len(cfg.History)+1)
 	msgs = append(msgs, cfg.History...)
+	if len(cfg.TaskImages) > 0 {
+		return append(msgs, llm.UserParts(append([]llm.ContentPart{llm.Text(cfg.Task)}, imagesAsParts(cfg.TaskImages)...)...))
+	}
 	return append(msgs, llm.User(cfg.Task))
+}
+
+func imagesAsParts(images []llm.ImagePart) []llm.ContentPart {
+	parts := make([]llm.ContentPart, len(images))
+	for i, img := range images {
+		parts[i] = img
+	}
+	return parts
 }
 
 func checkIsolation(cfg Config) *RunResult {
@@ -815,7 +830,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// A caller cancel is a normal typed stop, not an infrastructure error.
 			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
 			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
-			if errors.Is(context.Cause(ctx), context.Canceled) {
+			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+			// a custom signalError cause, and Err() is cause-agnostic while still
+			// distinguishing deadline expiry.
+			if errors.Is(ctx.Err(), context.Canceled) {
 				res.Outcome = Canceled
 				res.Reason = "run canceled by the caller (interrupt)"
 				return res, nil
@@ -862,7 +880,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// A caller cancel mid-answer stops the run cleanly as Canceled — the
 			// verify command was skipped (verifyRun refuses on a canceled ctx), and
 			// the run must not continue (the next model call would also fail).
-			if errors.Is(context.Cause(ctx), context.Canceled) {
+			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
+			// a custom signalError cause, and Err() is cause-agnostic while still
+			// distinguishing deadline expiry.
+			if errors.Is(ctx.Err(), context.Canceled) {
 				res.Outcome = Canceled
 				res.Reason = "run canceled by the caller (interrupt)"
 				return res, nil
