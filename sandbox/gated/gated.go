@@ -224,6 +224,12 @@ func DefaultPolicy(cmd sandbox.Command) Verdict {
 	return Ask
 }
 
+// Chained reports whether a command line can run more than the one command
+// its prefix suggests — the exported form of the guard DefaultPolicy applies,
+// for callers building their OWN prefix allowlists (the driver's session
+// "always allow" list): a chained line must never ride in on a trusted prefix.
+func Chained(line string) bool { return hasShellChaining(line) }
+
 // hasShellChaining reports whether a command line can run more than the one
 // command its prefix suggests — via sequencing, piping, redirection, command
 // substitution, or a newline. Such a line is never auto-allowed.
