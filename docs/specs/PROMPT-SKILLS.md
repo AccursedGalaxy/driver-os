@@ -207,3 +207,23 @@ task3 csvcut, fasthttp #2272), SWE-bench (by instance ID).
 Known-stats disclosure: published aggregate baselines for task3/fasthttp
 (TRIAD-AB, review-gate §5.0) have been read by the author; the seal applies
 to per-task A/B outcomes and transcripts from THIS plan's runs.
+
+## Holdout round 1 — REJECT (2026-07-03), protocol amendment for round 2
+
+Round 1 (eval/runs/ps2-holdout-20260703T114400Z, frozen config, no finish
+nudge): legacy 14/18 vs structured 12/18, 0 hard regressions, 2 soft, 0
+flips ⇒ mechanical REJECT. Blind outcome histograms (aggregates, protocol-
+legal): legacy answered=13/hit_cap=3/unverified=2; structured answered=12/
+hit_cap=6/unverified=0. Diagnosis without unsealing: the verification rule
+eliminates unverified finishes but converts them (and more) into iteration-
+cap deaths — the model verifies instead of answering. This is HP-4's known
+hit_cap-but-passing signature, whose shipped countermeasure (-finish-nudge)
+was measured to convert those to clean answers with 0 false positives and
+is default-on in the driver TUI — but was absent from the acceptance config.
+
+AMENDMENT (recorded before round 2 runs): round 2 re-runs the identical
+holdout with `-finish-nudge 3` on BOTH arms (symmetric — still a pure prompt
+A/B, now under the harness's intended production config). Round 1's REJECT
+stands for the no-nudge config; round 2's verdict governs the
+structured+nudge combination. Both sealed dirs open together at slice-4
+freeze.

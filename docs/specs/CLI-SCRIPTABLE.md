@@ -54,14 +54,14 @@ The terminal event nests the D3 result object under a `result` key (not flattene
 into the event), so `type` never collides with a result field. It is the same
 object `-format json` emits.
 
-### D3 — The result object (schema_version 3)
+### D3 — The result object (schema_version 4)
 Reuses the persisted transcript summary (`agent.RecordFrom`). **Summary, not full
 trace** — the complete `Steps` trace is already written to `<id>.json`; we point
 at it rather than duplicate it on stdout.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "20260603-201500-a1b2c3",
   "outcome": "answered",
   "exit_code": 0,
@@ -75,6 +75,8 @@ at it rather than duplicate it on stdout.
   "started_at": "2026-06-03T20:15:00Z",
   "ended_at":   "2026-06-03T20:15:07Z",
   "transcript_path": "/home/aki/.local/state/driver-os/runs/20260603-201500-a1b2c3.json",
+  "worktree_path": null,
+  "patch_path": null,
   "error": null,
   "review": null,
   "plan": null,
@@ -95,6 +97,12 @@ at it rather than duplicate it on stdout.
 - `error` — an object `{kind, message}` for `provider_error`, else `null`.
 - `transcript_path` — a string, or `null` if the transcript write failed
   (see below).
+- `worktree_path` — with `-worktree`, the path of the kept throwaway git
+  worktree when the run left changes (or cleanup/bookkeeping failed); `null`
+  when `-worktree` is off or the clean worktree was removed.
+- `patch_path` — with `-worktree`, the `<run-id>.patch` file written next to
+  the transcript when changed worktree contents were captured; `null` when
+  `-worktree` is off, the clean worktree was removed, or patch writing failed.
 - `review` — the review-gate report (rounds, findings, usage), or `null` when
   the gate was off.
 - `plan` — the plan-stage report (plan, usage), or `null` when the stage was off.
@@ -106,6 +114,15 @@ at it rather than duplicate it on stdout.
 
 The object is emitted for **every** `RunResult`, including error outcomes (fixes
 today's bug where SUMMARY prints only on `err==nil`).
+
+**schema_version 4** adds `worktree_path` and `patch_path` for the opt-in
+`-worktree` isolation mode. With that flag, the run starts from a detached git
+worktree at `HEAD`; uncommitted main-checkout changes are intentionally not
+visible. At the end, the CLI captures `git diff --binary HEAD` after intent-to-add
+staging, writes `<run-id>.patch` next to the transcript when non-empty, and keeps
+the worktree for inspection. A clean worktree is removed, leaving both fields
+`null`. Bookkeeping failures warn on stderr and do not change the run's exit
+code.
 
 **Transcript-write failure is not a run failure.** The transcript write is
 best-effort (it already is in `main.go`). If it fails *after* a valid
@@ -119,9 +136,10 @@ sandbox build failure) produce no `RunResult`, but once `-format` has resolved t
 unconditionally. Emit a CLI-error object instead of the result object:
 
 ```json
-{ "schema_version": 3, "outcome": "cli_error", "exit_code": 1,
+{ "schema_version": 4, "outcome": "cli_error", "exit_code": 1,
   "error": { "kind": "no_provider_key",
              "message": "no provider key found; set OPENROUTER_API_KEY or X_AI_API_KEY" },
+  "worktree_path": null, "patch_path": null,
   "solver_cost_usd": null, "reviewer_cost_usd": null,
   "planner_cost_usd": null, "total_cost_usd": null }
 ```
