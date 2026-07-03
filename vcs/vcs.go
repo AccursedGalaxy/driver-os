@@ -136,7 +136,10 @@ func run(ctx context.Context, dir string, args ...string) (string, error) {
 // runEnv is run with extra environment entries (e.g. a temporary
 // GIT_INDEX_FILE) merged over the inherited environment.
 func runEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	full := append([]string{"-C", dir}, args...)
+	full := args
+	if dir != "" {
+		full = append([]string{"-C", dir}, args...)
+	}
 	cmd := exec.CommandContext(ctx, "git", full...)
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)

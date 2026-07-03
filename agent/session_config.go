@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/AccursedGalaxy/driver-os/llm"
+import (
+	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
+)
 
 // This file extends Session with live reconfiguration for interactive
 // front-ends (cmd/cc's /model command). It lives in its own file so the core
@@ -15,6 +18,20 @@ func (s *Session) SetModel(p llm.Provider) { s.cfg.Model = p }
 
 // Model returns the provider the next Send will use.
 func (s *Session) Model() llm.Provider { return s.cfg.Model }
+
+// SetWorkspace swaps the sandbox/root pair used for every SUBSEQUENT turn while
+// keeping the conversation and memory. Interactive front-ends use this for
+// per-turn worktree isolation: build a fresh sandbox rooted at the worktree,
+// call SetWorkspace, Send once, then restore the normal workspace. Same calling
+// contract as SetModel: only from the driving goroutine, never mid-Send.
+func (s *Session) SetWorkspace(root string, sb sandbox.Sandbox) {
+	s.cfg.Root = root
+	s.cfg.Sandbox = sb
+	s.cfg.VerifySandbox = nil
+}
+
+// Workspace returns the root/sandbox pair the next Send will use.
+func (s *Session) Workspace() (string, sandbox.Sandbox) { return s.cfg.Root, s.cfg.Sandbox }
 
 // SetMaxIterations changes the per-turn iteration cap for every SUBSEQUENT
 // turn (the /set max-iters command) — raising it after a hit_cap turn lets

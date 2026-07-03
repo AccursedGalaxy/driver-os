@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/enforce-driver-os.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
