@@ -1,7 +1,9 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"reflect"
@@ -88,4 +90,105 @@ func (f *fakeProvider) Generate(_ context.Context, _ Request) (*Response, error)
 }
 func (f *fakeProvider) Stream(context.Context, Request) iter.Seq2[Chunk, error] {
 	return UnsupportedStream(f.name)
+}
+
+// --- Usage JSON shape ---
+
+func TestUsageMarshalSnakeCase(t *testing.T) {
+	u := Usage{
+		PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14,
+		CachedTokens: 4, ReasoningTokens: 2,
+	}
+	data := marsh(u)
+	// Every key must be snake_case; no PascalCase leakage.
+	if containsKey(data, "PromptTokens") || containsKey(data, "CompletionTokens") ||
+		containsKey(data, "TotalTokens") || containsKey(data, "CachedTokens") ||
+		containsKey(data, "ReasoningTokens") {
+		t.Fatalf("marshal leaked PascalCase keys:\n%s", data)
+	}
+	for _, want := range []string{`"prompt_tokens":11`, `"completion_tokens":3`, `"total_tokens":14`,
+		`"cached_tokens":4`, `"reasoning_tokens":2`} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Errorf("marshal missing %q in:\n%s", want, data)
+		}
+	}
+}
+
+func TestUsageUnmarshalNewShapeRoundTrip(t *testing.T) {
+	orig := Usage{
+		PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14,
+		CachedTokens: 4, ReasoningTokens: 2,
+	}
+	data := marsh(orig)
+	var got Usage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != orig {
+		t.Fatalf("round-trip mismatch: %+v != %+v", got, orig)
+	}
+}
+
+func TestUsageUnmarshalLegacyShape(t *testing.T) {
+	// Regression: the 2026-07 corpus writes PascalCase keys; readers must
+	// still decode them correctly — not silently zero them.
+	legacy := `{"PromptTokens":11,"CompletionTokens":3,"TotalTokens":14,"CachedTokens":4,"ReasoningTokens":2}`
+	var got Usage
+	if err := json.Unmarshal([]byte(legacy), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14, CachedTokens: 4, ReasoningTokens: 2}
+	if got != want {
+		t.Fatalf("legacy decode: got %+v, want %+v", got, want)
+	}
+}
+
+func TestUsageUnmarshalSnakeWinsWhenBothPresent(t *testing.T) {
+	// When a (possibly hand-edited) record carries both shapes, snake_case
+	// wins — the new canonical shape is the authority.
+	mixed := `{"prompt_tokens":1,"PromptTokens":999,"completion_tokens":2,"CompletionTokens":888,"total_tokens":3,"TotalTokens":777,"cached_tokens":4,"CachedTokens":666,"reasoning_tokens":5,"ReasoningTokens":555}`
+	var got Usage
+	if err := json.Unmarshal([]byte(mixed), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3, CachedTokens: 4, ReasoningTokens: 5}
+	if got != want {
+		t.Fatalf("mixed-shape decode: got %+v, want %+v", got, want)
+	}
+}
+
+func TestUsageUnmarshalPartialFields(t *testing.T) {
+	// Absent fields stay zero.
+	var got Usage
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":5}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PromptTokens != 5 || got.CompletionTokens != 0 || got.TotalTokens != 0 ||
+		got.CachedTokens != 0 || got.ReasoningTokens != 0 {
+		t.Fatalf("partial decode: got %+v", got)
+	}
+}
+
+func TestUsageUnmarshalEmpty(t *testing.T) {
+	var got Usage
+	if err := json.Unmarshal([]byte(`{}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != (Usage{}) {
+		t.Fatalf("empty object: got %+v, want zero", got)
+	}
+}
+
+// --- tiny test helpers ---
+
+func marsh(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func containsKey(data []byte, key string) bool {
+	return bytes.Contains(data, []byte(`"`+key+`"`))
 }

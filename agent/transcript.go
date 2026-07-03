@@ -17,7 +17,11 @@ import (
 // TranscriptSchemaVersion is the on-disk RunRecord schema. Bump on any shape
 // change so a reader can refuse an incompatible record instead of misreading
 // absent-vs-zero fields.
-const TranscriptSchemaVersion = "1"
+//
+//	v1 = original; Usage had no json tags → PascalCase keys on disk.
+//	v2 = Usage carries snake_case json tags (llm.Usage.UnmarshalJSON dual-accepts
+//	     both shapes for backward-compat with v1-era records).
+const TranscriptSchemaVersion = "2"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
