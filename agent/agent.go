@@ -254,6 +254,13 @@ type RunResult struct {
 	// reaches the loop; nil for a pre-loop refusal (too-weak sandbox).
 	Messages []llm.Message
 
+	// VerifyBaselineRed is true when VerifyCmd was configured and it already
+	// failed on the untouched workspace before the first model call.
+	VerifyBaselineRed bool `json:"verify_baseline_red,omitempty"`
+	// VerifyBaselineOut is the failing output of the baseline VerifyCmd run,
+	// clipped like other observations. Empty when the baseline was green.
+	VerifyBaselineOut string `json:"verify_baseline_out,omitempty"`
+
 	// memDone closes when the post-answer memory store finishes; nil when no
 	// store was started. Unexported (a process handle, not run data) — await it
 	// through AwaitMemory.
@@ -394,6 +401,12 @@ type Config struct {
 	// success. Empty = no closing check. The harness does NOT guess the success
 	// criterion; the caller states it.
 	VerifyCmd string
+
+	// SkipVerifyBaseline, when true, opts out of the pre-flight verification
+	// check. By default (false), when VerifyCmd is set, the harness runs it
+	// once on the untouched workspace BEFORE the first model call to record
+	// whether the gate starts red.
+	SkipVerifyBaseline bool
 
 	// VerifyLastRun is the no-VerifyCmd FALLBACK: when set (and VerifyCmd is empty),
 	// a silent finish is marked Unverified if the most recent `run` this session was
@@ -649,6 +662,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	gs := newGates(ctx, cfg, runTimeout)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	gs.applyBaseline(res)
 	// The review report travels on EVERY exit path (findings + fates are the
 	// calibration telemetry, recorded from day one) — nil when the gate is off.
 	defer func() {

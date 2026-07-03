@@ -101,6 +101,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	answerNudgeOK := isObserveOnly(cfg.Tools)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	gs.applyBaseline(res)
 	// The review report travels on EVERY exit path (findings + fates are the
 	// calibration telemetry) — nil when the gate is off.
 	defer func() {

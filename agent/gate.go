@@ -29,18 +29,49 @@ type gates struct {
 	runTimeout time.Duration
 	fence      *fenceState
 	review     *reviewState
+
+	verifyBaselineRed bool
+	verifyBaselineOut string
 }
 
 // newGates snapshots the run-start state both closing gates need: the fence
 // hashes (slice 0) and, when a Reviewer is injected, the git base tree the
-// solver's diff will be taken against (slice 1a).
+// solver's diff will be taken against (slice 1a). It also measures the
+// VerifyCmd baseline (pre-flight) when configured.
 func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates {
-	return &gates{
+	g := &gates{
 		cfg:        cfg,
 		runTimeout: runTimeout,
 		fence:      newFenceState(ctx, cfg),
 		review:     newReviewState(ctx, cfg),
 	}
+	g.measureVerifyBaseline(ctx)
+	return g
+}
+
+func (g *gates) measureVerifyBaseline(ctx context.Context) {
+	if g.cfg.VerifyCmd == "" || g.cfg.SkipVerifyBaseline {
+		return
+	}
+	// A user cancel skips the baseline like it skips the final check.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	// Run detached from cancellation (like verifyRun) but bounded by the sandbox timeout.
+	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, g.runTimeout)
+	if err != nil {
+		return // couldn't even start it — no signal.
+	}
+	if isRunFailure(out) {
+		g.verifyBaselineRed = true
+		g.verifyBaselineOut = out
+		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable")
+	}
+}
+
+func (g *gates) applyBaseline(res *RunResult) {
+	res.VerifyBaselineRed = g.verifyBaselineRed
+	res.VerifyBaselineOut = g.verifyBaselineOut
 }
 
 // reviewReport exposes the terminal review record for RunResult.Review (nil
@@ -65,7 +96,11 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) strin
 	if reason := g.fenceCheck(ctx); reason != "" {
 		return reason
 	}
-	return verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
+	reason := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
+	if reason != "" && g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
+		reason += " note: the verify command was ALREADY failing before any changes were made (pre-existing red baseline — the gate may be unsatisfiable)"
+	}
+	return reason
 }
 
 // upgradeIfVerified is the kill/cap/deadline/budget exit, gate-composed: the
@@ -376,6 +411,8 @@ func NewGate(ctx context.Context, cfg Config) *Gate {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
+	// The standalone gate judges a FINISHED tree — there is no "before any changes" to baseline.
+	cfg.SkipVerifyBaseline = true
 	rt := cfg.RunTimeout
 	if rt <= 0 {
 		rt = defaultRunTimeout
