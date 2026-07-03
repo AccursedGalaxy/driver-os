@@ -104,12 +104,21 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
-	// Run detached from cancellation (like verifyRun) but bounded by the sandbox timeout.
-	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, g.runTimeout)
+	// Run detached from cancellation (like verifyRun) but bounded by the
+	// verify timeout — the baseline runs the SAME VerifyCmd as the closing
+	// gate and must have the same time budget.
+	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, verifyTimeout(g.cfg, g.runTimeout))
 	if err != nil {
 		return // couldn't even start it — no signal.
 	}
 	if isRunFailure(out) {
+		if isRunTimeout(out) {
+			// A timed-out baseline is NO SIGNAL — the verify suite might
+			// pass given enough time. Do NOT set verifyBaselineRed, so
+			// -verify-baseline=abort does not falsely refuse the run.
+			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
+			return
+		}
 		g.verifyBaselineRed = true
 		g.verifyBaselineOut = out
 		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable")
@@ -171,15 +180,28 @@ func (g *gates) fenceCheck(ctx context.Context) string {
 // FinishTool): fence first — a run that edited the tests is Unverified no
 // matter what the suite now says — then the caller-named VerifyCmd (or the
 // VerifyLastRun heuristic). Non-empty reason ⇒ the finish does not hold.
-// baselineUnsatisfiable is true when the verify failure is the SAME failure
-// as the pre-existing red baseline — the solver didn't break anything new,
-// and a VerifyContinue loop would just grind against an unsatisfiable gate.
-func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (reason string, baselineUnsatisfiable bool) {
+// noContinue is true when VerifyContinue should NOT loop for this failure:
+// either the verify timed out (nothing is known to be broken, so "keep
+// working: fix the code" is wrong), or the verify failure fingerprints
+// identically to a pre-existing red baseline AND the single grace round
+// was already spent (a second identical failure proves the gate is
+// unsatisfiable).
+func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (reason string, noContinue bool) {
 	if reason := g.fenceCheck(ctx); reason != "" {
 		return reason, false
 	}
 	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
-	if reason != "" && g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
+	if reason == "" {
+		return "", false
+	}
+	// A timed-out verify is INCONCLUSIVE — we could not confirm success,
+	// but we also don't know anything is broken. Suppress VerifyContinue:
+	// feeding "keep working: fix the code" to the model when nothing is
+	// known to be broken is wrong.
+	if isRunTimeout(verifyOut) {
+		return reason, true
+	}
+	if g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
 		reason += " note: the verify command was ALREADY failing before any changes were made (pre-existing red baseline — the gate may be unsatisfiable)"
 		if verifyOut != "" && runFingerprint(verifyOut) == runFingerprint(g.verifyBaselineOut) {
 			if !g.baselineGraceUsed {
@@ -190,11 +212,11 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (reas
 				// identical failure — after a full round — proves the gate
 				// is unsatisfiable and goes terminal.
 			} else {
-				baselineUnsatisfiable = true
+				noContinue = true
 			}
 		}
 	}
-	return reason, baselineUnsatisfiable
+	return reason, noContinue
 }
 
 // upgradeIfVerified is the kill/cap/deadline/budget exit, gate-composed: the

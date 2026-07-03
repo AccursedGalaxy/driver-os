@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 type noteSpy struct {
@@ -329,5 +331,105 @@ func TestVerifyContinueBaselineRescuePreserved(t *testing.T) {
 	// write_file turn, then successful finish.
 	if len(ns.calls) != 3 {
 		t.Errorf("model calls = %d, want 3 (premature finish, write_file, successful finish)", len(ns.calls))
+	}
+}
+
+// timedOutExecSandbox wraps a sandbox and returns a canned timeout result for
+// Exec — used to simulate a verify command that exceeds its time bound.
+type timedOutExecSandbox struct {
+	sandbox.Sandbox
+}
+
+func (s *timedOutExecSandbox) Exec(ctx context.Context, cmd sandbox.Command) (*sandbox.Result, error) {
+	return &sandbox.Result{TimedOut: true, ExitCode: 124}, nil
+}
+
+// TestVerifyTimeoutAtFinish verifies that when VerifyCmd times out at the
+// closing gate with VerifyContinue=true, the run ends Unverified at iteration 1
+// (no continue loop), the reason says "inconclusive"/"timed out", and does NOT
+// contain the "did not pass" wording.
+func TestVerifyTimeoutAtFinish(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("done")},
+	}}
+	base := sbWith(t, nil)
+	// The verify sandbox always times out, so the closing gate sees a timeout.
+	cfg := Config{
+		Model:          ns,
+		Sandbox:        base,
+		VerifySandbox:  &timedOutExecSandbox{Sandbox: base},
+		Task:           "test task",
+		VerifyCmd:      "go test ./...",
+		VerifyContinue: true,
+		MaxIterations:  10,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Unverified {
+		t.Errorf("Outcome = %s, want Unverified", res.Outcome)
+	}
+	if res.Iterations != 1 {
+		t.Errorf("Iterations = %d, want 1 (no continue for timeout)", res.Iterations)
+	}
+	if !strings.Contains(res.Reason, "inconclusive") && !strings.Contains(res.Reason, "INCONCLUSIVE") {
+		t.Errorf("Reason = %q, want it to say 'inconclusive' / 'INCONCLUSIVE'", res.Reason)
+	}
+	if strings.Contains(res.Reason, "did not pass") {
+		t.Errorf("Reason = %q, must NOT contain 'did not pass' for a timeout", res.Reason)
+	}
+}
+
+// TestBaselineTimeoutIsNotRed verifies that a timed-out baseline does NOT set
+// VerifyBaselineRed, and with AbortOnRedBaseline=true the run still proceeds
+// (does not refuse before the first model call).
+func TestBaselineTimeoutIsNotRed(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("done")},
+	}}
+	base := sbWith(t, nil)
+	cfg := Config{
+		Model:              ns,
+		Sandbox:            base,
+		VerifySandbox:      &timedOutExecSandbox{Sandbox: base},
+		Task:               "test task",
+		VerifyCmd:          "go test ./...",
+		AbortOnRedBaseline: true,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.VerifyBaselineRed {
+		t.Error("VerifyBaselineRed = true, want false (timed-out baseline is no signal)")
+	}
+	// The run must have proceeded past the baseline — iterations > 0 proves
+	// AbortOnRedBaseline did NOT fire.
+	if res.Iterations == 0 {
+		t.Error("Iterations = 0, want > 0 (AbortOnRedBaseline must not fire on timeout baseline)")
+	}
+	if len(ns.calls) == 0 {
+		t.Error("model was never called — AbortOnRedBaseline falsely refused the run")
+	}
+}
+
+// TestVerifyTimeoutResolution tests the verifyTimeout resolver directly.
+func TestVerifyTimeoutResolution(t *testing.T) {
+	// Explicit VerifyTimeout wins.
+	if got := verifyTimeout(Config{VerifyTimeout: 42 * time.Second, RunTimeout: 30 * time.Second}, 30*time.Second); got != 42*time.Second {
+		t.Errorf("explicit VerifyTimeout=42s: got %v, want 42s", got)
+	}
+	// VerifyTimeout=0, RunTimeout=30s -> floor of 5m.
+	if got := verifyTimeout(Config{}, 30*time.Second); got != 5*time.Minute {
+		t.Errorf("VerifyTimeout=0, RunTimeout=30s: got %v, want 5m", got)
+	}
+	// VerifyTimeout=0, RunTimeout=10m -> resolves to 10m (larger than floor).
+	if got := verifyTimeout(Config{}, 10*time.Minute); got != 10*time.Minute {
+		t.Errorf("VerifyTimeout=0, RunTimeout=10m: got %v, want 10m", got)
+	}
+	// VerifyTimeout=0, RunTimeout=0 (use defaultRunTimeout=30s) -> floor 5m.
+	if got := verifyTimeout(Config{}, 0); got != 5*time.Minute {
+		t.Errorf("VerifyTimeout=0, RunTimeout=0: got %v, want 5m", got)
 	}
 }

@@ -308,8 +308,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
 			// Re-verify the claimed state before accepting it (fence first, then VerifyCmd).
-			reason, baseRed := gs.verifyTermination(ctx, tr.lastRunFailed)
-			if reason != "" && cfg.VerifyContinue && i < maxIter && !baseRed {
+			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
 				// Continue-on-fail: re-ground with the real failing state (P4) and keep
 				// working rather than accept a premature finish. The assistant's
 				// tool-call-free turn must precede the feedback so the conversation stays
@@ -408,9 +408,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// (duet's `say`) verifyTermination is a no-op, so the conversational
 				// finish path is unchanged.
 				if !cfg.FinishToolTrustsCaller {
-					reason, baseRed := gs.verifyTermination(ctx, tr.lastRunFailed)
+					reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
 					if reason != "" {
-						if cfg.VerifyContinue && i < maxIter && !baseRed {
+						if cfg.VerifyContinue && i < maxIter && !noContinue {
 							cfg.Obs.Note("finish rejected (not verified) — continuing")
 							messages = append(messages, llm.User("OBSERVATION:\nNot finished — you called the finish tool, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
 							continue

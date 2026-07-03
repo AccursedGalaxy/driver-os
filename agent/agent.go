@@ -353,6 +353,14 @@ type Config struct {
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
 	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
 
+	// VerifyTimeout bounds the closing VerifyCmd executions (final gate,
+	// pre-flight baseline, kill/cap upgrade check) separately from the
+	// per-`run`-tool RunTimeout. 0 = max(resolved RunTimeout, 5 minutes):
+	// a verify suite is routinely slower than a single interactive command,
+	// and a too-short bound turns "couldn't finish checking" into a false
+	// "did not pass".
+	VerifyTimeout time.Duration
+
 	// ReasoningEffort rides on every model call of the run (llm.Request
 	// passthrough: "minimal".."xhigh", "" = provider default). It is a QUALITY
 	// knob, not a termination knob — reasoning tokens still bill against
@@ -841,8 +849,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
 			// terminal state before accepting it (fence first, then VerifyCmd).
-			reason, baseRed := gs.verifyTermination(ctx, tr.lastRunFailed)
-			if reason != "" && cfg.VerifyContinue && i < maxIter && !baseRed {
+			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
 				// Continue-on-fail: a premature finish becomes more work, not a stop.
 				// Feed the real failing state back (P4) and keep going.
 				cfg.Obs.Note("finish rejected (not verified) — continuing")
@@ -1114,6 +1122,22 @@ func diagnosticsMessage(cmd, report string) string {
 		"Fix these errors and continue. This is informational, not a stop.", cmd, report)
 }
 
+// verifyTimeout resolves the bound for closing VerifyCmd executions. When
+// Config.VerifyTimeout is explicitly set it wins; otherwise the bound is the
+// LARGER of the resolved per-`run`-tool RunTimeout and 5 minutes — a verify
+// suite is routinely slower than a single interactive command, and a too-short
+// bound turns "couldn't finish checking" into a false "did not pass".
+func verifyTimeout(cfg Config, runTimeout time.Duration) time.Duration {
+	if cfg.VerifyTimeout > 0 {
+		return cfg.VerifyTimeout
+	}
+	const floor = 5 * time.Minute
+	if runTimeout > floor {
+		return runTimeout
+	}
+	return floor
+}
+
 // verifyRun executes cfg.VerifyCmd under the ONE context policy every closing
 // verification gate shares — answer, FinishTool, kill, cap, and deadline paths
 // alike (review #3; the paths used to diverge, so a cancel at the instant the
@@ -1131,7 +1155,7 @@ func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out s
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "", true, nil
 	}
-	out, err = runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cfg.VerifyCmd, runTimeout)
+	out, err = runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cfg.VerifyCmd, verifyTimeout(cfg, runTimeout))
 	return out, false, err
 }
 
@@ -1188,6 +1212,10 @@ func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runT
 			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err), ""
 		}
 		if isRunFailure(out) {
+			if isRunTimeout(out) {
+				bound := verifyTimeout(cfg, runTimeout)
+				return fmt.Sprintf("verification command %q was INCONCLUSIVE (timed out after %s — raise -verify-timeout):\n%s", cfg.VerifyCmd, bound, out), out
+			}
 			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out), out
 		}
 		return "", ""

@@ -867,6 +867,15 @@ func isRunFailure(obs string) bool {
 	return strings.HasPrefix(obs, "exit ") && !strings.HasPrefix(obs, "exit 0 ")
 }
 
+// isRunTimeout reports whether a formatRun observation carries the "[timed out"
+// marker on its first line — the command was killed by the sandbox timeout, not
+// by a genuine non-zero exit. Used by the closing verification gate to
+// distinguish "did not pass" from "couldn't finish checking".
+func isRunTimeout(obs string) bool {
+	first, _, _ := strings.Cut(obs, "\n")
+	return strings.Contains(first, "[timed out")
+}
+
 // isRunSuccess reports whether a formatRun observation is a clean `exit 0` — the
 // "build/test green" half of HP-4's near-cap finisher signal. It is deliberately
 // NOT the negation of isRunFailure: a `run` the sandbox couldn't even start yields
