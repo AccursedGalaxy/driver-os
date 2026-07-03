@@ -54,14 +54,14 @@ The terminal event nests the D3 result object under a `result` key (not flattene
 into the event), so `type` never collides with a result field. It is the same
 object `-format json` emits.
 
-### D3 — The result object (schema_version 1)
+### D3 — The result object (schema_version 3)
 Reuses the persisted transcript summary (`agent.RecordFrom`). **Summary, not full
 trace** — the complete `Steps` trace is already written to `<id>.json`; we point
 at it rather than duplicate it on stdout.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "id": "20260603-201500-a1b2c3",
   "outcome": "answered",
   "exit_code": 0,
@@ -75,7 +75,13 @@ at it rather than duplicate it on stdout.
   "started_at": "2026-06-03T20:15:00Z",
   "ended_at":   "2026-06-03T20:15:07Z",
   "transcript_path": "/home/aki/.local/state/driver-os/runs/20260603-201500-a1b2c3.json",
-  "error": null
+  "error": null,
+  "review": null,
+  "plan": null,
+  "solver_cost_usd": 0.0003,
+  "reviewer_cost_usd": null,
+  "planner_cost_usd": null,
+  "total_cost_usd": 0.0003
 }
 ```
 
@@ -89,6 +95,14 @@ at it rather than duplicate it on stdout.
 - `error` — an object `{kind, message}` for `provider_error`, else `null`.
 - `transcript_path` — a string, or `null` if the transcript write failed
   (see below).
+- `review` — the review-gate report (rounds, findings, usage), or `null` when
+  the gate was off.
+- `plan` — the plan-stage report (plan, usage), or `null` when the stage was off.
+- `solver_cost_usd`, `reviewer_cost_usd`, `planner_cost_usd` — the USD cost for
+  each role's usage when the model is priced in `eval.Pricing`, else `null`.
+  Role fields are also `null` when that role was not configured.
+- `total_cost_usd` — the sum over the roles that RAN, but `null` if any role
+  that ran is unpriced (never conflate unknown with free).
 
 The object is emitted for **every** `RunResult`, including error outcomes (fixes
 today's bug where SUMMARY prints only on `err==nil`).
@@ -105,9 +119,11 @@ sandbox build failure) produce no `RunResult`, but once `-format` has resolved t
 unconditionally. Emit a CLI-error object instead of the result object:
 
 ```json
-{ "schema_version": 1, "outcome": "cli_error", "exit_code": 1,
+{ "schema_version": 3, "outcome": "cli_error", "exit_code": 1,
   "error": { "kind": "no_provider_key",
-             "message": "no provider key found; set OPENROUTER_API_KEY or X_AI_API_KEY" } }
+             "message": "no provider key found; set OPENROUTER_API_KEY or X_AI_API_KEY" },
+  "solver_cost_usd": null, "reviewer_cost_usd": null,
+  "planner_cost_usd": null, "total_cost_usd": null }
 ```
 
 The `cli_error` object is wrapped per format so each format stays internally

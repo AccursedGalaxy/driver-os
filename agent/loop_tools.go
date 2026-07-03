@@ -51,14 +51,19 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if refusal := checkIsolation(cfg); refusal != nil {
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
-	// (PROMPT-SKILLS slice 2) Resolve the base prompt BEFORE any paid call (the
-	// plan stage bills first) — an unknown profile must abort, not run mislabeled.
-	basePrompt, err := systemPromptFor(cfg.PromptProfile)
+	// (PROMPT-SKILLS slices 2+3) Resolve the base prompt BEFORE any paid call
+	// (the plan stage bills first) — an unknown profile must abort, not run
+	// mislabeled. The routing note (profile "auto") is surfaced once Obs exists:
+	// the family decision must be visible in every transcript, never silent.
+	basePrompt, promptNote, err := resolveSystemPrompt(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
+	}
+	if promptNote != "" {
+		cfg.Obs.Note(promptNote)
 	}
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
@@ -884,16 +889,6 @@ Working rules:
 When the TASK is complete and verified, reply with your final answer as plain text and DO NOT call a tool.`
 }
 
-// systemPromptFor maps Config.PromptProfile to the native loop's base prompt.
-// Unknown profiles are an ERROR, not a fallback: this knob exists to be A/B'd,
-// and a typo that silently ran "legacy" would corrupt a paid experiment's arm.
-func systemPromptFor(profile string) (string, error) {
-	switch profile {
-	case "", "legacy":
-		return nativeSystemPrompt(), nil
-	case "structured":
-		return structuredSystemPrompt(), nil
-	default:
-		return "", fmt.Errorf("unknown PromptProfile %q (valid: \"\", \"legacy\", \"structured\")", profile)
-	}
-}
+// Profile-to-prompt resolution lives in prompt_family.go (resolveSystemPrompt):
+// slice 2 added the fixed legacy/structured profiles, slice 3 the model-family
+// "auto" routing.

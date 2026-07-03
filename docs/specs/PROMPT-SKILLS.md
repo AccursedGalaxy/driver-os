@@ -84,8 +84,16 @@ calibrated forms):
 
 Also check token-cost delta, since the prompt is re-sent every turn.
 
-### Slice 3 — Per-model prompt variants
-opencode pattern: select prompt text by model family. Two variants + fallback,
+### Slice 3 — Per-model prompt variants — BUILT 2026-07-03 (unmeasured)
+Shipped as PromptProfile "auto" (agent/prompt_family.go): table-driven
+substring matcher over the full lowercased model id (absorbs provider
+prefixes, ':free'/':nitro' decorations, case); catalog tests assert all
+primary cheap targets route to persistence and unknown vendors hit the terse
+legacy fallback with a LOUD observer note. Persistence variant = structured
+base + anti-quitting block; scope (Claude) = structured as-is; fallback =
+legacy. Awaits its own A/B after slice 2's holdout verdict.
+
+Original design: select prompt text by model family. Two variants + fallback,
 not a matrix — and every primary target model routes intentionally:
 
 - **persistence variant** (anti-quitting pressure: "keep going until solved;

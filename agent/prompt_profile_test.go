@@ -14,20 +14,26 @@ import (
 // refuse to start — a typo that silently ran the wrong arm would corrupt a
 // paid A/B.
 
+// promptFor resolves a fixed profile the way RunNative does (no model routing).
+func promptFor(profile string) (string, error) {
+	s, _, err := resolveSystemPrompt(Config{PromptProfile: profile})
+	return s, err
+}
+
 func TestSystemPromptForProfiles(t *testing.T) {
-	legacy, err := systemPromptFor("")
+	legacy, err := promptFor("")
 	if err != nil {
 		t.Fatalf("empty profile: %v", err)
 	}
 	if legacy != nativeSystemPrompt() {
 		t.Errorf("empty profile is not the historical prompt")
 	}
-	named, err := systemPromptFor("legacy")
+	named, err := promptFor("legacy")
 	if err != nil || named != legacy {
 		t.Errorf("'legacy' should alias the empty profile (err=%v)", err)
 	}
 
-	structured, err := systemPromptFor("structured")
+	structured, err := promptFor("structured")
 	if err != nil {
 		t.Fatalf("structured profile: %v", err)
 	}
@@ -49,7 +55,7 @@ func TestSystemPromptForProfiles(t *testing.T) {
 		t.Errorf("structured prompt did not change from legacy")
 	}
 
-	if _, err := systemPromptFor("structrued"); err == nil {
+	if _, err := promptFor("structrued"); err == nil {
 		t.Fatalf("typo profile did not error")
 	} else if !strings.Contains(err.Error(), "structrued") {
 		t.Errorf("error should name the bad profile, got: %v", err)
