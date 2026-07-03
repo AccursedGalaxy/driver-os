@@ -55,3 +55,55 @@ func TestNewGateSkipVerifyBaseline(t *testing.T) {
 		t.Errorf("verifyBaselineRed is true, want false (skipped)")
 	}
 }
+
+func TestBaselinePreamble(t *testing.T) {
+	t.Run("green returns empty", func(t *testing.T) {
+		cfg := Config{
+			Sandbox:   sbWith(t, nil),
+			VerifyCmd: "true",
+		}
+		ctx := context.Background()
+		gs := newGates(ctx, cfg, defaultRunTimeout)
+		if pre := gs.baselinePreamble(); pre != "" {
+			t.Errorf("baselinePreamble() = %q, want empty on green", pre)
+		}
+	})
+
+	t.Run("red returns warning", func(t *testing.T) {
+		cfg := Config{
+			Sandbox:   sbWith(t, nil),
+			VerifyCmd: "false",
+		}
+		ctx := context.Background()
+		gs := newGates(ctx, cfg, defaultRunTimeout)
+		if !gs.verifyBaselineRed {
+			t.Fatal("verifyBaselineRed is false, test setup failed — 'false' should be red")
+		}
+		pre := gs.baselinePreamble()
+		if pre == "" {
+			t.Fatal("baselinePreamble() is empty, want warning on red")
+		}
+		if !strings.Contains(pre, "false") {
+			t.Errorf("preamble does not contain verify command 'false': %s", pre)
+		}
+		if !strings.Contains(pre, "exit 1") {
+			t.Errorf("preamble does not contain 'exit 1' output: %s", pre)
+		}
+		if !strings.Contains(pre, "PRE-FLIGHT VERIFY BASELINE") {
+			t.Errorf("preamble missing header: %s", pre)
+		}
+	})
+
+	t.Run("skipped returns empty", func(t *testing.T) {
+		cfg := Config{
+			Sandbox:            sbWith(t, nil),
+			VerifyCmd:          "false",
+			SkipVerifyBaseline: true,
+		}
+		ctx := context.Background()
+		gs := newGates(ctx, cfg, defaultRunTimeout)
+		if pre := gs.baselinePreamble(); pre != "" {
+			t.Errorf("baselinePreamble() = %q, want empty when skipped", pre)
+		}
+	})
+}

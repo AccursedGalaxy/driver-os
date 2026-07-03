@@ -118,3 +118,89 @@ func TestVerifyBaseline(t *testing.T) {
 		})
 	}
 }
+
+// TestAbortOnRedBaselineNative proves that with AbortOnRedBaseline=true and a
+// red baseline, RunNative returns Unverified with zero model calls.
+func TestAbortOnRedBaselineNative(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("should not be called")}}}
+	cfg := Config{
+		Model:              ns,
+		Sandbox:            sbWith(t, nil),
+		Task:               "unrelated task",
+		VerifyCmd:          "false",
+		AbortOnRedBaseline: true,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Unverified {
+		t.Errorf("Outcome = %s, want Unverified", res.Outcome)
+	}
+	if res.Iterations != 0 {
+		t.Errorf("Iterations = %d, want 0", res.Iterations)
+	}
+	if !res.VerifyBaselineRed {
+		t.Error("VerifyBaselineRed = false, want true")
+	}
+	if res.VerifyBaselineOut == "" {
+		t.Error("VerifyBaselineOut is empty, want the 'false' output")
+	}
+	if !strings.Contains(res.Reason, "unsatisfiable") {
+		t.Errorf("Reason = %q, want it to say 'unsatisfiable'", res.Reason)
+	}
+	if !strings.Contains(res.Reason, "false") {
+		t.Errorf("Reason = %q, should contain the verify command", res.Reason)
+	}
+	if len(ns.calls) != 0 {
+		t.Errorf("model called %d times, want 0", len(ns.calls))
+	}
+}
+
+// TestAbortOnRedBaselineText proves the same for the text loop.
+func TestAbortOnRedBaselineText(t *testing.T) {
+	sp := &scripted{replies: []string{"should not be called"}}
+	cfg := Config{
+		Model:              sp,
+		Sandbox:            sbWith(t, nil),
+		Task:               "unrelated task",
+		VerifyCmd:          "false",
+		AbortOnRedBaseline: true,
+	}
+	res, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Outcome != Unverified {
+		t.Errorf("Outcome = %s, want Unverified", res.Outcome)
+	}
+	if res.Iterations != 0 {
+		t.Errorf("Iterations = %d, want 0", res.Iterations)
+	}
+	if len(sp.calls) != 0 {
+		t.Errorf("model called %d times, want 0", len(sp.calls))
+	}
+}
+
+// TestBaselineWarningInSeedMessage proves that with the default mode (on/warn),
+// a red baseline injects the warning into the first user message.
+func TestBaselineWarningInSeedMessage(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}
+	cfg := Config{
+		Model:     ns,
+		Sandbox:   sbWith(t, nil),
+		Task:      "fix the build",
+		VerifyCmd: "false",
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("no messages in result")
+	}
+	first := res.Messages[0].Text()
+	if !strings.Contains(first, "PRE-FLIGHT VERIFY BASELINE") {
+		t.Errorf("first user message does not contain baseline warning: %s", first)
+	}
+}
