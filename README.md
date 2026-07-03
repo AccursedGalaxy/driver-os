@@ -71,7 +71,8 @@ go run ./cmd/agent -memory=false ...                            # disable memory
   just works.
 - **Exit codes carry the outcome**: `0` answered · `2` unverified · `3` resource
   cap (iterations/wall/context) · `4` stuck (a loop detector fired) · `5`
-  provider/transport error · `6` refused on policy · `1` setup error. Branch on
+  provider/transport error · `6` refused on policy · `7` canceled by caller
+  (SIGINT / ctx cancel) · `1` setup error. Branch on
   `$?` to retry, escalate, or give up.
 - **`-provider` / `-model`** — pick the backend and model on the command line
   instead of via env (the `*_MODEL` vars still work as defaults; the flag wins).

@@ -6,6 +6,7 @@ import (
 	"iter"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
@@ -409,5 +410,161 @@ func TestRunAccumulatesUsage(t *testing.T) {
 		if s.Usage.TotalTokens != 15 {
 			t.Errorf("step %d Usage.TotalTokens = %d, want 15 (per-turn usage lost)", s.Iter, s.Usage.TotalTokens)
 		}
+	}
+}
+
+// ---- cancel outcome tests ----
+
+// blockProvider blocks in Generate until ctx is done, then returns ctx.Err().
+// It signals when it entered Generate via the blocked channel (if non-nil).
+type blockProvider struct {
+	blocked chan struct{}
+}
+
+func (p *blockProvider) Name() string                   { return "block" }
+func (p *blockProvider) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (p *blockProvider) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("block")
+}
+func (p *blockProvider) Generate(ctx context.Context, _ llm.Request) (*llm.Response, error) {
+	if p.blocked != nil {
+		close(p.blocked)
+		p.blocked = nil
+	}
+	<-ctx.Done()
+	return nil, context.Cause(ctx)
+}
+
+func TestRunCanceledMidCall(t *testing.T) {
+	bp := &blockProvider{blocked: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	type runOut struct {
+		res *RunResult
+		err error
+	}
+	ch := make(chan runOut, 1)
+	go func() {
+		res, err := Run(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		ch <- runOut{res, err}
+	}()
+
+	// Wait for Generate to be entered, then cancel.
+	select {
+	case <-bp.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("provider never entered Generate")
+	}
+	cancel()
+
+	out := <-ch
+	if out.err != nil {
+		t.Fatalf("Run returned unexpected err: %v", out.err)
+	}
+	if out.res.Outcome != Canceled {
+		t.Fatalf("Outcome = %q, want Canceled", out.res.Outcome)
+	}
+	if out.res.ID == "" {
+		t.Error("ID should be non-empty on cancel")
+	}
+	if out.res.Err != nil {
+		t.Error("RunResult.Err should be nil for a clean cancel (not a provider fault)")
+	}
+}
+
+func TestRunCanceledAtAnswerTime(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before the run starts
+
+	sp := &scripted{replies: []string{"answer done"}}
+	exec := &countingExecSandbox{}
+	res, err := Run(ctx, Config{
+		Model:         sp,
+		Sandbox:       sbWith(t, nil),
+		Task:          "test",
+		VerifySandbox: exec,
+		VerifyCmd:     "go build ./...",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Outcome != Canceled {
+		t.Fatalf("Outcome = %q, want Canceled", res.Outcome)
+	}
+	if exec.execs != 0 {
+		t.Errorf("verify command should NOT have run on canceled ctx; got %d exec(s)", exec.execs)
+	}
+	if res.Err != nil {
+		t.Error("RunResult.Err should be nil for a clean cancel")
+	}
+}
+
+func TestRunNativeCanceledAtAnswerTime(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before the run starts
+
+	sp := &scripted{replies: []string{"answer done"}}
+	exec := &countingExecSandbox{}
+	res, err := RunNative(ctx, Config{
+		Model:         sp,
+		Sandbox:       sbWith(t, nil),
+		Task:          "test",
+		VerifySandbox: exec,
+		VerifyCmd:     "go build ./...",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Outcome != Canceled {
+		t.Fatalf("Outcome = %q, want Canceled", res.Outcome)
+	}
+	if exec.execs != 0 {
+		t.Errorf("verify command should NOT have run on canceled ctx; got %d exec(s)", exec.execs)
+	}
+}
+
+func TestRunMaxWallClockYieldsHitDeadlineNotCanceled(t *testing.T) {
+	// A blocking provider that only returns when the ctx is done.
+	// MaxWallClock creates a derived loopCtx with a deadline; when it expires,
+	// loopCtx.Err() is DeadlineExceeded, but the parent ctx is still alive.
+	// The loop must record HitDeadline, NOT Canceled.
+	bp := &blockProvider{}
+	ctx := context.Background() // parent is never canceled
+
+	shortBudget := 50 * time.Millisecond
+	res, err := Run(ctx, Config{
+		Model:        bp,
+		Sandbox:      sbWith(t, nil),
+		Task:         "test",
+		MaxWallClock: shortBudget,
+	})
+	// The wall-clock deadline fires mid-call, which is a typed stop (not an err).
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Outcome != HitDeadline {
+		t.Fatalf("Outcome = %q, want HitDeadline (MaxWallClock expiry must not be mislabeled Canceled)", res.Outcome)
+	}
+	if res.Err != nil {
+		t.Error("RunResult.Err should be nil for HitDeadline")
+	}
+}
+
+func TestRunNativeMaxWallClockYieldsHitDeadlineNotCanceled(t *testing.T) {
+	bp := &blockProvider{}
+	ctx := context.Background()
+
+	shortBudget := 50 * time.Millisecond
+	res, err := RunNative(ctx, Config{
+		Model:        bp,
+		Sandbox:      sbWith(t, nil),
+		Task:         "test",
+		MaxWallClock: shortBudget,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Outcome != HitDeadline {
+		t.Fatalf("Outcome = %q, want HitDeadline (MaxWallClock expiry must not be mislabeled Canceled)", res.Outcome)
 	}
 }

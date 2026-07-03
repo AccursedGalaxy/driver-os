@@ -230,6 +230,14 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Reason = "context window exceeded and could not be compacted further"
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
+			// A caller cancel is a normal typed stop, not an infrastructure error.
+			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
+			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
+			if errors.Is(context.Cause(ctx), context.Canceled) {
+				res.Outcome = Canceled
+				res.Reason = "run canceled by the caller (interrupt)"
+				return res, nil
+			}
 			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err
 			return res, err
 		}
@@ -309,6 +317,14 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
 			// Re-verify the claimed state before accepting it (fence first, then VerifyCmd).
 			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			// A caller cancel mid-answer stops the run cleanly as Canceled — the
+			// verify command was skipped (verifyRun refuses on a canceled ctx), and
+			// the run must not continue (the next model call would also fail).
+			if errors.Is(context.Cause(ctx), context.Canceled) {
+				res.Outcome = Canceled
+				res.Reason = "run canceled by the caller (interrupt)"
+				return res, nil
+			}
 			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
 				// Continue-on-fail: re-ground with the real failing state (P4) and keep
 				// working rather than accept a premature finish. The assistant's
@@ -409,6 +425,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// finish path is unchanged.
 				if !cfg.FinishToolTrustsCaller {
 					reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+					// A caller cancel mid-finish stops the run cleanly as Canceled.
+					if errors.Is(context.Cause(ctx), context.Canceled) {
+						res.Outcome = Canceled
+						res.Reason = "run canceled by the caller (interrupt)"
+						return res, nil
+					}
 					if reason != "" {
 						if cfg.VerifyContinue && i < maxIter && !noContinue {
 							cfg.Obs.Note("finish rejected (not verified) — continuing")

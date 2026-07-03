@@ -177,6 +177,7 @@ const (
 	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
 	HitContextLimit Outcome = "hit_context_limit" // (HP-1) the window overflowed AND reactive eviction couldn't compact it further — a graceful stop, not a crash.
 	RefusedUnsafe   Outcome = "refused_unsafe"    // the Sandbox's isolation is weaker than Config.MinIsolation requires — refused BEFORE the first model call (P2/§5). Never ran hostile code on a too-weak boundary.
+	Canceled        Outcome = "canceled"          // the caller canceled the run (SIGINT / ctx cancel) — not a provider fault (distinct from HitDeadline, which is the run's own wall-clock budget).
 )
 
 // Step is one think->act->observe iteration, captured as data. The trace of
@@ -811,6 +812,14 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Reason = "context window exceeded and could not be compacted further"
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
+			// A caller cancel is a normal typed stop, not an infrastructure error.
+			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
+			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
+			if errors.Is(context.Cause(ctx), context.Canceled) {
+				res.Outcome = Canceled
+				res.Reason = "run canceled by the caller (interrupt)"
+				return res, nil
+			}
 			// A transport/auth failure is a real stop (tool errors are not — see
 			// dispatch). Record it as a typed outcome AND return the error.
 			res.Outcome = ProviderErr
@@ -850,6 +859,14 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
 			// terminal state before accepting it (fence first, then VerifyCmd).
 			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			// A caller cancel mid-answer stops the run cleanly as Canceled — the
+			// verify command was skipped (verifyRun refuses on a canceled ctx), and
+			// the run must not continue (the next model call would also fail).
+			if errors.Is(context.Cause(ctx), context.Canceled) {
+				res.Outcome = Canceled
+				res.Reason = "run canceled by the caller (interrupt)"
+				return res, nil
+			}
 			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
 				// Continue-on-fail: a premature finish becomes more work, not a stop.
 				// Feed the real failing state back (P4) and keep going.

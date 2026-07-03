@@ -175,6 +175,7 @@ never produced a result" (1) from "the agent ran but did not answer" (2–6):
 | 4 | stuck — a loop detector killed it | `killed_repeat`, `killed_spiral`, `killed_stagnant` |
 | 5 | provider/transport error | `provider_error` |
 | 6 | refused on policy | `refused_unsafe` |
+| 7 | canceled by caller (SIGINT / ctx cancel) | `canceled` |
 
 Rationale for the classes: a script reacts *differently* to each — retry-with-
 bigger-budget on 3, backoff-and-retry on 5, never-retry on 6, swap-model on 4,
