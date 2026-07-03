@@ -354,18 +354,22 @@ func TestIsRunFailureAndFingerprint(t *testing.T) {
 	if isRunFailure("wrote 3 byte(s) to f.txt") {
 		t.Error("a non-run observation must not register as a run failure")
 	}
-	// runFingerprint strips the jittering duration so two identical failures match.
-	a := runFingerprint("exit 2 (131ms)\nstderr:\nundefined: foo")
-	b := runFingerprint("exit 2 (9ms)\nstderr:\nundefined: foo")
+	// runFingerprint strips the jittering duration and masks volatile numbers
+	// so two identical failures match.
+	a := runFingerprint("exit 2 (131ms)\nstderr:\nundefined: foo at line 12, addr 0xc000123456")
+	b := runFingerprint("exit 2 (9ms)\nstderr:\nundefined: foo at line 45, addr 0xc000987654")
 	if a != b {
-		t.Errorf("fingerprints differ only by duration but did not match:\n%q\n%q", a, b)
+		t.Errorf("fingerprints differ only by numbers but did not match:\n%q\n%q", a, b)
 	}
-	if strings.Contains(a, "ms)") {
-		t.Errorf("fingerprint still carries the duration: %q", a)
+	if strings.Contains(a, "ms)") || strings.Contains(a, "12") || strings.Contains(a, "0x") {
+		t.Errorf("fingerprint still carries volatile numbers: %q", a)
 	}
-	// A different exit code or body must NOT match.
-	if a == runFingerprint("exit 1 (9ms)\nstderr:\nundefined: foo") {
+	// A different exit code or body text must NOT match.
+	if a == runFingerprint("exit 1 (9ms)\nstderr:\nundefined: foo at line #, addr #xc#") {
 		t.Error("different exit codes should not share a fingerprint")
+	}
+	if a == runFingerprint("exit 2 (9ms)\nstderr:\nundefined: bar at line 12") {
+		t.Error("different failure messages should not share a fingerprint")
 	}
 }
 

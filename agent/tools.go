@@ -880,17 +880,36 @@ func isRunSuccess(obs string) bool {
 // across identical re-runs, for the stagnant-observation detector's equality
 // check. It drops the "(<dur>)" parenthetical from the leading "exit <code> (...)"
 // line — wall-clock duration jitters run-to-run and would defeat equality — while
-// keeping the exit code and the whole stdout/stderr body (the substantive, stable
-// signal of "the same failure again").
+// keeping the exit code. In the body, it masks all runs of digits with "#" to
+// ignore volatile numbers (durations, timestamps, port numbers, /tmp paths,
+// pointer addresses) that would otherwise make identical failures look unique.
 func runFingerprint(obs string) string {
 	first, rest, found := strings.Cut(obs, "\n")
 	if p := strings.IndexByte(first, '('); p >= 0 {
 		first = strings.TrimRight(first[:p], " ")
 	}
-	if found {
-		return first + "\n" + rest
+	if !found {
+		return first
 	}
-	return first
+	// Mask digits in the body to ignore volatile numbers.
+	var b strings.Builder
+	b.Grow(len(first) + 1 + len(rest))
+	b.WriteString(first)
+	b.WriteByte('\n')
+	inDigits := false
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c >= '0' && c <= '9' {
+			if !inDigits {
+				b.WriteByte('#')
+				inDigits = true
+			}
+			continue
+		}
+		b.WriteByte(c)
+		inDigits = false
+	}
+	return b.String()
 }
 
 // toolSearch is the text-loop entry: the WHOLE arg is the pattern (no folder knob

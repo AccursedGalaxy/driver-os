@@ -23,8 +23,8 @@ type turnTracker struct {
 
 	// (P5) Stagnant-observation detector state + the last-run flags the
 	// verification fallback (VerifyLastRun) and HP-4 finisher read. lastRunFP
-	// fingerprints the most recent failing `run` result (duration stripped —
-	// see runFingerprint); stagnant counts identical recurrences.
+	// fingerprints the most recent failing `run` result (duration and volatile
+	// numbers stripped — see runFingerprint); stagnant counts identical recurrences.
 	lastRunFP     string
 	stagnant      int
 	lastRunFailed bool
