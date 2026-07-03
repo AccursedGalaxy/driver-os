@@ -336,8 +336,7 @@ func TestProviderImplementsInterface(t *testing.T) {
 }
 
 func TestCapabilities(t *testing.T) {
-	// Cloud presets advertise native tools but NOT vision (vision isn't wired
-	// through the adapter yet — advertising it would be a lie the loop trusts).
+	// Cloud presets now advertise vision (ImagePart is wired through the adapter).
 	for _, p := range []*Provider{OpenAI("gpt-4o"), XAI("grok-4"), OpenRouter("x/y")} {
 		c := p.Capabilities()
 		if !c.Tools {
@@ -346,8 +345,8 @@ func TestCapabilities(t *testing.T) {
 		if !c.Streaming {
 			t.Errorf("%s: Streaming = false, want true (the adapter implements Stream)", p.Name())
 		}
-		if c.Vision {
-			t.Errorf("%s: Vision = true, but vision is not wired through the adapter", p.Name())
+		if !c.Vision {
+			t.Errorf("%s: Vision = false, want true (ImagePart is now wired)", p.Name())
 		}
 	}
 
@@ -627,5 +626,100 @@ func TestStreamErrorIsClassified(t *testing.T) {
 	var pe *llm.ProviderError
 	if !errors.As(err, &pe) || pe.Kind != llm.KindRateLimit {
 		t.Errorf("error = %v, want a ProviderError of kind rate_limit", err)
+	}
+}
+
+func TestImagePartsUserMessage(t *testing.T) {
+	// A user message with text + image parts must produce array content with
+	// the text part and an image_url data URL.
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'} // valid PNG header
+	req := llm.Request{
+		Messages: []llm.Message{
+			llm.UserParts(llm.Text("what is this?"), llm.ImageData("image/png", png)),
+		},
+	}
+	body := captureBody(t, false, req)
+	msgs := body["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	userMsg := msgs[0].(map[string]any)
+	content, ok := userMsg["content"].([]any)
+	if !ok {
+		t.Fatalf("content is not an array: %T %v", userMsg["content"], userMsg["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("content array length = %d, want 2 (text + image)", len(content))
+	}
+	// First part: text.
+	textPart := content[0].(map[string]any)
+	if textPart["type"] != "text" || textPart["text"] != "what is this?" {
+		t.Errorf("first part = %v, want type=text text='what is this?'", textPart)
+	}
+	// Second part: image_url with data URL.
+	imgPart := content[1].(map[string]any)
+	if imgPart["type"] != "image_url" {
+		t.Fatalf("second part type = %q, want image_url", imgPart["type"])
+	}
+	inner := imgPart["image_url"].(map[string]any)
+	url := inner["url"].(string)
+	if !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Errorf("image url = %q, want data:image/png;base64,...", url)
+	}
+}
+
+func TestImagePartsUserMessage_URL(t *testing.T) {
+	req := llm.Request{
+		Messages: []llm.Message{
+			llm.UserParts(llm.Text("describe this"), llm.ImageURL("https://example.com/img.png")),
+		},
+	}
+	body := captureBody(t, false, req)
+	msgs := body["messages"].([]any)
+	userMsg := msgs[0].(map[string]any)
+	content := userMsg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content array length = %d, want 2", len(content))
+	}
+	imgPart := content[1].(map[string]any)
+	inner := imgPart["image_url"].(map[string]any)
+	if inner["url"] != "https://example.com/img.png" {
+		t.Errorf("image url = %q, want https://example.com/img.png", inner["url"])
+	}
+}
+
+func TestPromptCacheBreakpointPreservesImageArray(t *testing.T) {
+	// When a user message already has array content (images), cache breakpoints
+	// must NOT rewrite the message to a one-text-part array that loses images.
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	req := llm.Request{
+		System: "SYSTEM",
+		Messages: []llm.Message{
+			llm.UserParts(llm.Text("look"), llm.ImageData("image/png", png)),
+		},
+	}
+	body := captureBody(t, true, req) // prompt cache ON
+	msgs := body["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2 (system + user)", len(msgs))
+	}
+	// The system message should be marked.
+	if !hasCacheControl(msgs[0]) {
+		t.Errorf("system message should carry a cache breakpoint")
+	}
+	// The user message with images must still have its image.
+	userMsg := msgs[1].(map[string]any)
+	content := userMsg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("user content array length = %d, want 2 (text + image) — images were dropped", len(content))
+	}
+	// The text part should carry the cache_control marker.
+	textPart := content[0].(map[string]any)
+	if _, ok := textPart["cache_control"]; !ok {
+		t.Errorf("text part missing cache_control marker")
+	}
+	// The image part should still be an image_url.
+	if content[1].(map[string]any)["type"] != "image_url" {
+		t.Errorf("image part type = %q, want image_url", content[1].(map[string]any)["type"])
 	}
 }

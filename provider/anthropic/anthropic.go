@@ -10,6 +10,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,8 +52,8 @@ type Config struct {
 	// HTTPClient optionally overrides the HTTP client (timeouts, proxies, ...).
 	HTTPClient *http.Client
 	// Capabilities optionally overrides what this provider advertises.
-	// nil = the default (tools + streaming, no vision — ImagePart isn't wired
-	// through the adapters yet, see llm/content.go).
+	// nil = the default (tools + streaming + vision — ImagePart is now wired
+	// through the adapter).
 	Capabilities *llm.Capabilities
 	// PromptCache marks cache_control breakpoints (system prefix + request
 	// tail) so the re-sent prefix of the loop is served from Anthropic's
@@ -87,7 +88,7 @@ func New(cfg Config) *Provider {
 	if cfg.HTTPClient != nil {
 		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
-	caps := llm.Capabilities{Tools: true, Streaming: true, Vision: false}
+	caps := llm.Capabilities{Tools: true, Streaming: true, Vision: true}
 	if cfg.Capabilities != nil {
 		caps = *cfg.Capabilities
 	}
@@ -355,8 +356,8 @@ func toMessages(msgs []llm.Message) []sdk.MessageParam {
 				out = append(out, sdk.NewUserMessage(blocks...))
 			}
 		default: // user, anything else
-			if txt := m.Text(); txt != "" {
-				out = append(out, sdk.NewUserMessage(sdk.NewTextBlock(txt)))
+			if blocks := userBlocks(m); len(blocks) > 0 {
+				out = append(out, sdk.NewUserMessage(blocks...))
 			}
 		}
 	}
@@ -384,6 +385,47 @@ func assistantBlocks(m llm.Message) []sdk.ContentBlockParamUnion {
 		blocks = append(blocks, sdk.NewTextBlock(txt))
 	}
 	return append(blocks, calls...)
+}
+
+// userBlocks builds content blocks for a user message from ordered parts.
+// Text-only messages produce a single text block; messages with images produce
+// text + image blocks in order. ImageURL parts are not supported on the
+// Anthropic wire (the SDK has no URLImageSourceParam constructor for base
+// messages), so they are silently skipped with a log note.
+func userBlocks(m llm.Message) []sdk.ContentBlockParamUnion {
+	hasImage := false
+	for _, p := range m.Parts {
+		if _, ok := p.(llm.ImagePart); ok {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		if txt := m.Text(); txt != "" {
+			return []sdk.ContentBlockParamUnion{sdk.NewTextBlock(txt)}
+		}
+		return nil
+	}
+
+	var blocks []sdk.ContentBlockParamUnion
+	for _, p := range m.Parts {
+		switch tp := p.(type) {
+		case llm.TextPart:
+			if tp.Text != "" {
+				blocks = append(blocks, sdk.NewTextBlock(tp.Text))
+			}
+		case llm.ImagePart:
+			if tp.URL != "" {
+				// Anthropic Messages API has no URL-based image source for
+				// base messages (only for PDFs/documents via beta). Skip
+				// with a diagnostic note rather than silently dropping.
+				fmt.Fprintf(os.Stderr, "anthropic: ImagePart URL not supported, skipping\n")
+				continue
+			}
+			blocks = append(blocks, sdk.NewImageBlockBase64(tp.MIME, base64.StdEncoding.EncodeToString(tp.Data)))
+		}
+	}
+	return blocks
 }
 
 // thinkingBlockFromRaw reconstructs a thinking / redacted_thinking param block

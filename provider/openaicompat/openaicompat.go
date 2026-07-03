@@ -7,6 +7,7 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,12 +115,10 @@ func New(cfg Config) *Provider {
 		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 	// Default to the truth for a CLOUD OpenAI-compatible endpoint: native
-	// tool-calling and streaming both work, vision does NOT yet (ImagePart isn't
-	// wired through the adapters — see llm/content.go). Advertising vision here was
-	// a flat lie; advertising tools for an arbitrary local model was optimism that
-	// defeats the text-loop fallback — so callers that know better (the Ollama
-	// preset, a custom vLLM box) override via Config.
-	caps := llm.Capabilities{Tools: true, Streaming: true, Vision: false}
+	// tool-calling and streaming both work, and vision is now wired through the
+	// adapter (ImagePart → data URL). Ollama and custom local presets override
+	// via Config because tool/vision support is per-model there.
+	caps := llm.Capabilities{Tools: true, Streaming: true, Vision: true}
 	if cfg.Capabilities != nil {
 		caps = *cfg.Capabilities
 	}
@@ -412,10 +411,59 @@ func toMessages(req llm.Request) []openai.ChatCompletionMessageParamUnion {
 				}
 			}
 		default: // user, anything else
-			out = append(out, openai.UserMessage(m.Text()))
+			out = append(out, userMessage(m))
 		}
 	}
 	return out
+}
+
+// userMessage builds a user message from ordered parts. A text-only message stays
+// as the simple string path; when images are present the content is built as an
+// array so the image parts are not silently dropped.
+func userMessage(m llm.Message) openai.ChatCompletionMessageParamUnion {
+	hasImage := false
+	for _, p := range m.Parts {
+		if _, ok := p.(llm.ImagePart); ok {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return openai.UserMessage(m.Text())
+	}
+
+	var parts []openai.ChatCompletionContentPartUnionParam
+	for _, p := range m.Parts {
+		switch tp := p.(type) {
+		case llm.TextPart:
+			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: tp.Text},
+			})
+		case llm.ImagePart:
+			if tp.URL != "" {
+				parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+					OfImageURL: &openai.ChatCompletionContentPartImageParam{
+						ImageURL: openai.ChatCompletionContentPartImageImageURLParam{URL: tp.URL},
+					},
+				})
+			} else {
+				parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+					OfImageURL: &openai.ChatCompletionContentPartImageParam{
+						ImageURL: openai.ChatCompletionContentPartImageImageURLParam{
+							URL: "data:" + tp.MIME + ";base64," + base64Encode(tp.Data),
+						},
+					},
+				})
+			}
+		}
+	}
+	return openai.ChatCompletionMessageParamUnion{
+		OfUser: &openai.ChatCompletionUserMessageParam{
+			Content: openai.ChatCompletionUserMessageParamContentUnion{
+				OfArrayOfContentParts: parts,
+			},
+		},
+	}
 }
 
 // assistantMessage builds an assistant message, attaching any tool-call parts and
@@ -526,6 +574,21 @@ func markCacheBreakpoint(msg *openai.ChatCompletionMessageParamUnion) {
 			},
 		}
 	case msg.OfUser != nil:
+		// If the user message is already array content (images present), find the
+		// first text part and add the marker to it; if there are no text parts,
+		// skip marking this message entirely — rewriting it to a one-text-part
+		// array would lose the images.
+		if msg.OfUser.Content.OfArrayOfContentParts != nil {
+			for i, part := range msg.OfUser.Content.OfArrayOfContentParts {
+				if part.OfText != nil {
+					marked := *part.OfText
+					marked.SetExtraFields(ephemeralCacheControl())
+					msg.OfUser.Content.OfArrayOfContentParts[i] = openai.ChatCompletionContentPartUnionParam{OfText: &marked}
+					return
+				}
+			}
+			return // no text part to mark; leave the message as-is.
+		}
 		part := textPart(msg.OfUser.Content.OfString.Or(""))
 		msg.OfUser.Content = openai.ChatCompletionUserMessageParamContentUnion{
 			OfArrayOfContentParts: []openai.ChatCompletionContentPartUnionParam{{OfText: &part}},
@@ -765,4 +828,9 @@ func (p *Provider) maybePin(providerField json.RawMessage, reasoningRaw json.Raw
 		p.pinnedProvider = slug
 	}
 	p.mu.Unlock()
+}
+
+// base64Encode encodes raw bytes as a base64 data-URL fragment (no padding).
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }

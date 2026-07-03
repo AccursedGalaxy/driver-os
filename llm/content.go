@@ -21,8 +21,7 @@ type TextPart struct{ Text string }
 
 func (TextPart) isContentPart() {}
 
-// ImagePart is image content for vision-capable models. Reserved now so the
-// content model is vision-ready; not yet wired through the adapters.
+// ImagePart is image content for vision-capable models.
 type ImagePart struct {
 	// URL is a remote image reference. Mutually exclusive with Data.
 	URL string
@@ -33,6 +32,16 @@ type ImagePart struct {
 }
 
 func (ImagePart) isContentPart() {}
+
+// ImageData is a convenience constructor for an ImagePart with raw bytes.
+func ImageData(mime string, data []byte) ImagePart {
+	return ImagePart{MIME: mime, Data: data}
+}
+
+// ImageURL is a convenience constructor for an ImagePart referencing a remote URL.
+func ImageURL(url string) ImagePart {
+	return ImagePart{URL: url}
+}
 
 // ToolCallPart is the model asking to invoke a tool: a provider-assigned call ID,
 // the tool Name, and the raw JSON Args object. It appears in an assistant message

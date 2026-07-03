@@ -458,3 +458,55 @@ func TestListModels(t *testing.T) {
 		t.Fatalf("models = %+v", ms)
 	}
 }
+
+func TestImagePartsUserMessage(t *testing.T) {
+	// A user message with text + image parts must emit Anthropic text and image
+	// blocks in order.
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	var gotBody map[string]any
+	p := newTestProvider(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg","type":"message","role":"assistant","model":"m",
+			"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+			"usage":{"input_tokens":10,"output_tokens":1}}`)
+	})
+	_, err := p.Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{
+			llm.UserParts(llm.Text("what is this?"), llm.ImageData("image/png", png)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	msgs := gotBody["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	userMsg := msgs[0].(map[string]any)
+	blocks := userMsg["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("content blocks = %d, want 2 (text + image)", len(blocks))
+	}
+	textBlock := blocks[0].(map[string]any)
+	if textBlock["type"] != "text" || textBlock["text"] != "what is this?" {
+		t.Errorf("first block = %v, want type=text text='what is this?'", textBlock)
+	}
+	imgBlock := blocks[1].(map[string]any)
+	if imgBlock["type"] != "image" {
+		t.Fatalf("second block type = %q, want image", imgBlock["type"])
+	}
+	src := imgBlock["source"].(map[string]any)
+	if src["type"] != "base64" || src["media_type"] != "image/png" || src["data"] == "" {
+		t.Errorf("image source = %v, want type=base64 media_type=image/png data=<base64>", src)
+	}
+}
+
+func TestCapabilities(t *testing.T) {
+	p := Claude("claude-opus-4-8")
+	c := p.Capabilities()
+	if !c.Tools || !c.Streaming || !c.Vision {
+		t.Errorf("Claude default Capabilities = %+v, want Tools,Streaming,Vision all true", c)
+	}
+}

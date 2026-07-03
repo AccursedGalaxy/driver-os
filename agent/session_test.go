@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -177,6 +178,45 @@ func TestSessionCancelledTurnDoesNotAdvanceHistory(t *testing.T) {
 	}
 	if got := s.Messages(); len(got) != len(committed) || got[len(got)-1].Text() != committed[len(committed)-1].Text() {
 		t.Errorf("cancelled turn advanced history: now %d messages, want the prior %d", len(got), len(committed))
+	}
+}
+
+// SendParts must attach this turn's images to the first user message the loop
+// sends to the model, preserving the existing text framing and ordering images
+// after the text part.
+func TestSessionSendPartsFlowsImagesToFirstUserMessage(t *testing.T) {
+	sp := &scripted{replies: []string{"answer saw it"}}
+	s := NewSession(Config{Model: sp}, Run)
+	img := llm.ImagePart{MIME: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}
+
+	res, err := s.SendParts(context.Background(), "describe this image", []llm.ImagePart{img})
+	if err != nil {
+		t.Fatalf("SendParts: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s, want %s (reason: %s)", res.Outcome, Answered, res.Reason)
+	}
+	if len(sp.calls) == 0 || len(sp.calls[0].Messages) == 0 {
+		t.Fatalf("provider saw no messages: %#v", sp.calls)
+	}
+
+	first := sp.calls[0].Messages[0]
+	if first.Role != llm.RoleUser {
+		t.Fatalf("first message role = %s, want %s", first.Role, llm.RoleUser)
+	}
+	if len(first.Parts) != 2 {
+		t.Fatalf("first user parts = %#v, want text + image", first.Parts)
+	}
+	text, ok := first.Parts[0].(llm.TextPart)
+	if !ok || text.Text != "TASK: describe this image" {
+		t.Fatalf("part 0 = %#v, want TASK text", first.Parts[0])
+	}
+	gotImg, ok := first.Parts[1].(llm.ImagePart)
+	if !ok {
+		t.Fatalf("part 1 = %#v, want image", first.Parts[1])
+	}
+	if gotImg.MIME != img.MIME || gotImg.URL != img.URL || !bytes.Equal(gotImg.Data, img.Data) {
+		t.Fatalf("image part = %#v, want %#v", gotImg, img)
 	}
 }
 

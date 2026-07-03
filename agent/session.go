@@ -50,8 +50,16 @@ func NewSession(cfg Config, loop LoopFunc) *Session {
 // the history advances; a pre-loop refusal or a result with no Messages leaves
 // the prior history intact, so a transient failure doesn't truncate the chat.
 func (s *Session) Send(ctx context.Context, input string) (*RunResult, error) {
+	return s.SendParts(ctx, input, nil)
+}
+
+// SendParts runs one user turn with explicit content parts: text plus optional
+// images. The text remains the task projection used by recall, memory, planning,
+// and RunResult; images are attached only to this turn's user message.
+func (s *Session) SendParts(ctx context.Context, text string, images []llm.ImagePart) (*RunResult, error) {
 	cfg := s.cfg
-	cfg.Task = input
+	cfg.Task = text
+	cfg.TaskImages = images
 	cfg.History = s.messages
 	res, err := s.loop(ctx, cfg)
 	// On cancellation (Ctrl-C interrupting a turn, or a deadline) the transcript may
