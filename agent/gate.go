@@ -240,8 +240,11 @@ func (rv *reviewState) captureDiff(ctx context.Context) (string, error) {
 //  2. severity: a "note" (or anything unrecognized) never blocks;
 //  3. executable escalation: a blocker carrying a repro command has it RUN on
 //     the verify sandbox — failing output CONFIRMS the finding (blocks
-//     regardless of confidence, the output travels in the feedback), passing
-//     REFUTES it (downgraded, fate refuted). Capped per round; a repro that
+//     regardless of confidence, the output travels in the feedback). A
+//     passing repro REFUTES a finding below reviewBlockConfidence
+//     (downgraded, fate refuted), but a high-confidence finding whose repro
+//     passes is only downgraded to ADVISORY (fate advised) — a clean run of
+//     a race reproducer is weak evidence. Capped per round; a repro that
 //     mutates fenced paths is rejected and its damage restored;
 //  4. the confidence ladder: an unconfirmed blocker below
 //     reviewBlockConfidence is ADVISORY (fed back, never blocks) down to
@@ -291,10 +294,10 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 
 // escalate runs a finding's repro command on the verify sandbox (same context
 // policy as verifyRun: detached from cancellation, bounded by the run
-// timeout). Returns true when execution SETTLED the finding — refuted (repro
-// passed) or fence-rejected; a CONFIRMED repro also settles it as blocking
-// with the evidence attached. False means execution gave no signal (the
-// command couldn't start) and the prose ladder continues.
+// timeout). Returns true when execution SETTLED the finding — confirmed
+// (repro failed), refuted (repro passed, low confidence), advised (repro
+// passed, high confidence), or fence-rejected. False means execution gave no
+// signal (the command couldn't start) and the prose ladder continues.
 func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) bool {
 	out, err := runOp(ctx, g.cfg.verifySandbox(), cmd, g.runTimeout)
 	// A repro must never mutate the fence (the reviewer's brief says new files
@@ -318,7 +321,11 @@ func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) b
 		rf.Confirmed = true // execution evidence beats prose — blocks regardless of confidence.
 		return true
 	}
-	rf.Fate = FateRefuted // the claim was refuted by execution: a note, recorded as such.
+	if rf.Confidence < reviewBlockConfidence {
+		rf.Fate = FateRefuted // the claim was refuted by execution: a note, recorded as such.
+	} else {
+		rf.Fate = FateAdvised // high-confidence clean run: inconclusive, downgraded to advisory.
+	}
 	return true
 }
 

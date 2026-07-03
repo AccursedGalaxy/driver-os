@@ -107,7 +107,7 @@ type Reviewer interface {
 // (FP rate = refuted+expired / total blockers).
 const (
 	FateRepaired = "repaired" // blocked a round, was fed back, and a later round no longer stood in the way.
-	FateRefuted  = "refuted"  // its repro command PASSED — the claim was refuted by execution; downgraded to a note.
+	FateRefuted  = "refuted"  // its repro command PASSED and confidence was low — the claim was refuted by execution; downgraded to a note.
 	FateExpired  = "expired"  // still blocking when the rounds (or the run) ran out.
 	FateAdvised  = "advised"  // an unconfirmed blocker under the confidence gate but at/above the advisory floor: fed back for repair, never blocked.
 	FateNote     = "note"     // never blocked or fed back: severity "note", or a blocker under the advisory floor.

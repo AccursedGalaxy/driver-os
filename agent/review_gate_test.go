@@ -518,10 +518,11 @@ func TestReproConfirmedBlocksAtLowConfidence(t *testing.T) {
 	}
 }
 
-// A repro that PASSES refutes the claim: the finding is downgraded (fate
-// refuted) and the run is Answered.
-func TestReproRefutedDowngrades(t *testing.T) {
+// A repro that PASSES refutes a LOW-confidence claim: the finding is
+// downgraded (fate refuted) and the run is Answered.
+func TestReproRefutedDowngradesLowConfidence(t *testing.T) {
 	f := blocker("calc.go", "package calc // patched")
+	f.Confidence = reviewBlockConfidence - 1
 	f.ReproCmd = "true"
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
 	res := reviewedRun(t, rv, Config{}, editThenAnswer())
@@ -530,6 +531,29 @@ func TestReproRefutedDowngrades(t *testing.T) {
 	}
 	if got := res.Review.Findings[0]; got.Fate != FateRefuted || got.Confirmed {
 		t.Fatalf("finding = %+v, want fate refuted", got)
+	}
+}
+
+// A repro that PASSES a HIGH-confidence claim is only downgraded to ADVISORY:
+// it is fed back for repair (if budget allows) but does not block.
+func TestReproAdvisedDowngradesHighConfidence(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.Confidence = reviewBlockConfidence
+	f.ReproCmd = "true"
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{
+		{f}, // round 1: high-confidence clean repro -> advised.
+		{},  // round 2: solver "repairs" it (clean).
+	}}
+	// Use 2 rounds so we can see it being fed back and then passing.
+	res := reviewedRun(t, rv, Config{ReviewRounds: 2}, editThenAnswer())
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered (advised finding does not block)", res.Outcome, res.Reason)
+	}
+	if got := res.Review.Findings[0]; got.Fate != FateAdvised || got.Confirmed {
+		t.Fatalf("finding = %+v, want fate advised", got)
+	}
+	if res.Review.Rounds != 2 {
+		t.Errorf("rounds = %d, want 2 (advised finding should trigger a repair round)", res.Review.Rounds)
 	}
 }
 
