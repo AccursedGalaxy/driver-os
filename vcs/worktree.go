@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
-// WorktreeAdd creates a throwaway detached worktree at exactly HEAD. It is used
-// by front-ends before the sandbox is built, so every downstream effect sees the
-// isolated checkout instead of the operator's main working tree.
+// WorktreeAdd creates a throwaway detached worktree. Clean checkouts are based
+// exactly on HEAD. Dirty checkouts are first snapshotted into an unreferenced
+// commit that includes tracked modifications and untracked, non-ignored files,
+// so delegated work sees the orchestrator's current tree while patches still
+// diff cleanly against the worktree's own HEAD.
 func WorktreeAdd(ctx context.Context, origCwd string) (string, error) {
 	inside, err := run(ctx, origCwd, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
@@ -20,11 +22,34 @@ func WorktreeAdd(ctx context.Context, origCwd string) (string, error) {
 		return "", fmt.Errorf("cwd is not inside a git work tree")
 	}
 
+	base := "HEAD"
+	headTree, err := run(ctx, origCwd, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", err
+	}
+	workTree, err := WriteTree(ctx, origCwd)
+	if err != nil {
+		return "", err
+	}
+	if workTree != strings.TrimSpace(headTree) {
+		env := []string{
+			"GIT_AUTHOR_NAME=driver-agent",
+			"GIT_AUTHOR_EMAIL=driver-agent@localhost",
+			"GIT_COMMITTER_NAME=driver-agent",
+			"GIT_COMMITTER_EMAIL=driver-agent@localhost",
+		}
+		commit, err := runEnv(ctx, origCwd, env, "commit-tree", workTree, "-p", "HEAD", "-m", "driver-agent: dirty-tree snapshot")
+		if err != nil {
+			return "", err
+		}
+		base = strings.TrimSpace(commit)
+	}
+
 	dir, err := os.MkdirTemp("", "driver-agent-wt-")
 	if err != nil {
 		return "", err
 	}
-	if _, err := run(ctx, origCwd, "worktree", "add", "--detach", dir, "HEAD"); err != nil {
+	if _, err := run(ctx, origCwd, "worktree", "add", "--detach", dir, base); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", err
 	}
@@ -36,6 +61,9 @@ func WorktreeAdd(ctx context.Context, origCwd string) (string, error) {
 // worktree is clean and no patch was written. When patchPath is empty it only
 // reports whether changes exist.
 func WorktreeCollect(ctx context.Context, dir, patchPath string) (bool, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return false, err
+	}
 	if _, err := run(ctx, dir, "add", "-A", "-N"); err != nil {
 		return false, err
 	}

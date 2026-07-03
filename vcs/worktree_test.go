@@ -9,10 +9,10 @@ import (
 	"testing"
 )
 
-func TestWorktreeAddDetachedAtHEADAndIgnoresMainUncommitted(t *testing.T) {
+func TestWorktreeAddSnapshotsMainDirtyTreeAndCollectedPatchAppliesBack(t *testing.T) {
 	repo := newGitRepo(t)
 
-	writeTestFile(t, filepath.Join(repo, "tracked.txt"), "uncommitted main edit\n")
+	writeTestFile(t, filepath.Join(repo, "initial.txt"), "main dirty edit\n")
 	writeTestFile(t, filepath.Join(repo, "untracked.txt"), "main-only\n")
 
 	wt, err := WorktreeAdd(context.Background(), repo)
@@ -24,11 +24,28 @@ func TestWorktreeAddDetachedAtHEADAndIgnoresMainUncommitted(t *testing.T) {
 	if got := strings.TrimSpace(string(git(t, wt, "rev-parse", "--abbrev-ref", "HEAD"))); got != "HEAD" {
 		t.Fatalf("worktree branch = %q, want detached HEAD", got)
 	}
-	if got := readTestFile(t, filepath.Join(wt, "initial.txt")); got != "initial\n" {
-		t.Fatalf("tracked file = %q, want committed HEAD contents", got)
+	if got := readTestFile(t, filepath.Join(wt, "initial.txt")); got != "main dirty edit\n" {
+		t.Fatalf("tracked file = %q, want main checkout dirty contents", got)
 	}
-	if _, err := os.Stat(filepath.Join(wt, "untracked.txt")); !os.IsNotExist(err) {
-		t.Fatalf("main checkout untracked file leaked into worktree: err=%v", err)
+	if got := readTestFile(t, filepath.Join(wt, "untracked.txt")); got != "main-only\n" {
+		t.Fatalf("untracked file = %q, want main checkout untracked contents", got)
+	}
+
+	writeTestFile(t, filepath.Join(wt, "initial.txt"), "agent edit\n")
+	patch := filepath.Join(t.TempDir(), "run.patch")
+	changed, err := WorktreeCollect(context.Background(), wt, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("WorktreeCollect changed=false, want true")
+	}
+	git(t, repo, "apply", "--", patch)
+	if got := readTestFile(t, filepath.Join(repo, "initial.txt")); got != "agent edit\n" {
+		t.Fatalf("applied patch initial.txt = %q, want agent edit", got)
+	}
+	if got := readTestFile(t, filepath.Join(repo, "untracked.txt")); got != "main-only\n" {
+		t.Fatalf("applied patch disturbed untracked file: %q", got)
 	}
 }
 
