@@ -959,6 +959,7 @@ func TestRunNativeVerifyContinueRecoversPrematureFinish(t *testing.T) {
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: box, Task: "t", MaxIterations: 10,
 		VerifyCmd: "test -f calc.go", VerifyContinue: true,
+		SkipVerifyBaseline: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -983,6 +984,7 @@ func TestRunNativeVerifyContinueStopsAtCap(t *testing.T) {
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 4,
 		VerifyCmd: "exit 1", VerifyContinue: true,
+		SkipVerifyBaseline: true,
 	})
 	if err != nil {
 		t.Fatal(err)

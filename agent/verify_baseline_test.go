@@ -204,3 +204,81 @@ func TestBaselineWarningInSeedMessage(t *testing.T) {
 		t.Errorf("first user message does not contain baseline warning: %s", first)
 	}
 }
+
+// TestVerifyContinueBaselineIdenticalFingerprint proves that when the finish-time
+// VerifyCmd failure is the SAME failure as the pre-existing red baseline (identical
+// fingerprint), VerifyContinue does NOT reject the finish into more work — the gate
+// is unsatisfiable and the run terminates immediately as Unverified with one iteration.
+func TestVerifyContinueBaselineIdenticalFingerprint(t *testing.T) {
+	// Use a verify command whose output is deterministic (no timestamps, no random
+	// values in the body). "false" produces "exit 1 (...) (no output)" which
+	// fingerprints identically run-to-run.
+	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("The task is unrelated — the verify command was already failing before any changes.")}}}
+	cfg := Config{
+		Model:          ns,
+		Sandbox:        sbWith(t, nil),
+		Task:           "unrelated task",
+		VerifyCmd:      "false",
+		VerifyContinue: true,
+		MaxIterations:  10,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Unverified {
+		t.Errorf("Outcome = %s, want Unverified", res.Outcome)
+	}
+	if res.Iterations != 1 {
+		t.Errorf("Iterations = %d, want 1 (finish was NOT rejected into more work)", res.Iterations)
+	}
+	if !strings.Contains(res.Reason, "note: the verify command was ALREADY failing") {
+		t.Errorf("Reason = %q, want it to mention the pre-existing red baseline", res.Reason)
+	}
+	if !res.VerifyBaselineRed {
+		t.Error("VerifyBaselineRed = false, want true")
+	}
+	if len(ns.calls) != 1 {
+		t.Errorf("model called %d times, want 1 (no continuation round-trip)", len(ns.calls))
+	}
+}
+
+// TestVerifyContinueBaselineDifferentFingerprint is the control: baseline red, but
+// the finish-time verify failure has a DIFFERENT fingerprint (the solver broke
+// something new). VerifyContinue=true still rejects the finish and loops — unchanged
+// behavior from before the baseline-identical guard.
+func TestVerifyContinueBaselineDifferentFingerprint(t *testing.T) {
+	// VerifyCmd checks for a marker file that does NOT exist at baseline.
+	// The solver writes it on turn 1 with content that changes the verify output,
+	// then finishes on turn 2. The fingerprint differs from baseline → continue.
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "marker.txt", "content": "hello"})},
+		{llm.Text("done — I wrote the marker file but the verify still fails")}, // first finish: different fingerprint
+		{llm.Text("done")}, // after continue feedback: second finish
+	}
+	ns := &nativeScript{turns: turns}
+	cfg := Config{
+		Model:          ns,
+		Sandbox:        sbWith(t, nil),
+		Task:           "fix the build",
+		VerifyCmd:      "sh -c 'cat marker.txt 2>&1; exit 1'",
+		VerifyContinue: true,
+		MaxIterations:  10,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	// The loop CONTINUES past the first finish because the fingerprint differs.
+	// Iterations > 2 proves the finish was rejected into more work.
+	if res.Iterations <= 2 {
+		t.Errorf("Iterations = %d, want > 2 (finish was rejected and loop continued)", res.Iterations)
+	}
+	if !res.VerifyBaselineRed {
+		t.Error("VerifyBaselineRed = false, want true")
+	}
+	// The model should have been called at least 3 times (write, finish, continue-feedback, finish).
+	if len(ns.calls) < 3 {
+		t.Errorf("model calls = %d, want >= 3", len(ns.calls))
+	}
+}

@@ -162,15 +162,21 @@ func (g *gates) fenceCheck(ctx context.Context) string {
 // FinishTool): fence first — a run that edited the tests is Unverified no
 // matter what the suite now says — then the caller-named VerifyCmd (or the
 // VerifyLastRun heuristic). Non-empty reason ⇒ the finish does not hold.
-func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) string {
+// baselineUnsatisfiable is true when the verify failure is the SAME failure
+// as the pre-existing red baseline — the solver didn't break anything new,
+// and a VerifyContinue loop would just grind against an unsatisfiable gate.
+func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (reason string, baselineUnsatisfiable bool) {
 	if reason := g.fenceCheck(ctx); reason != "" {
-		return reason
+		return reason, false
 	}
-	reason := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
+	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
 	if reason != "" && g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
 		reason += " note: the verify command was ALREADY failing before any changes were made (pre-existing red baseline — the gate may be unsatisfiable)"
+		if verifyOut != "" && runFingerprint(verifyOut) == runFingerprint(g.verifyBaselineOut) {
+			baselineUnsatisfiable = true
+		}
 	}
-	return reason
+	return reason, baselineUnsatisfiable
 }
 
 // upgradeIfVerified is the kill/cap/deadline/budget exit, gate-composed: the
@@ -569,7 +575,7 @@ func (t *Gate) Check(ctx context.Context) GateReport {
 	rep := GateReport{}
 	if rep.FenceViolation = t.g.fenceCheck(ctx); rep.FenceViolation != "" {
 		rep.Blocked = true
-	} else if rep.VerifyReason = verifyTermination(ctx, t.g.cfg, false, t.g.runTimeout); rep.VerifyReason != "" {
+	} else if rep.VerifyReason, _ = verifyTermination(ctx, t.g.cfg, false, t.g.runTimeout); rep.VerifyReason != "" {
 		rep.Blocked = true
 	} else if _, blockReason := t.g.reviewFinish(ctx, false); blockReason != "" {
 		rep.Blocked = true

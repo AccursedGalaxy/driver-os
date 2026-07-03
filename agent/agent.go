@@ -841,8 +841,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
 			// terminal state before accepting it (fence first, then VerifyCmd).
-			reason := gs.verifyTermination(ctx, tr.lastRunFailed)
-			if reason != "" && cfg.VerifyContinue && i < maxIter {
+			reason, baseRed := gs.verifyTermination(ctx, tr.lastRunFailed)
+			if reason != "" && cfg.VerifyContinue && i < maxIter && !baseRed {
 				// Continue-on-fail: a premature finish becomes more work, not a stop.
 				// Feed the real failing state back (P4) and keep going.
 				cfg.Obs.Note("finish rejected (not verified) — continuing")
@@ -1177,25 +1177,25 @@ func upgradeIfVerified(ctx context.Context, cfg Config, res *RunResult, runTimeo
 //     absence answer can follow a non-zero exit (grep-no-match) — hence opt-in.
 //
 // With neither configured it returns "" (the historical behavior: trust the answer).
-func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) string {
+func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) (reason, verifyOut string) {
 	if cfg.VerifyCmd != "" {
 		out, skipped, err := verifyRun(ctx, cfg, runTimeout)
 		if skipped { // user cancel — no check ran, so the claim stays unconfirmed (and no VerifyResult: nothing was measured).
-			return fmt.Sprintf("run canceled before verification command %q could confirm success", cfg.VerifyCmd)
+			return fmt.Sprintf("run canceled before verification command %q could confirm success", cfg.VerifyCmd), ""
 		}
 		notifyVerify(cfg.Obs, cfg.VerifyCmd, err == nil && !isRunFailure(out))
 		if err != nil { // couldn't even start it — we cannot confirm success.
-			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err)
+			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err), ""
 		}
 		if isRunFailure(out) {
-			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out)
+			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out), out
 		}
-		return ""
+		return "", ""
 	}
 	if cfg.VerifyLastRun && lastRunFailed {
-		return "the most recent command run was still failing and nothing succeeded after it — the task does not look complete"
+		return "the most recent command run was still failing and nothing succeeded after it — the task does not look complete", ""
 	}
-	return ""
+	return "", ""
 }
 
 // dispatch runs a tool and turns ANY failure into an observation string (P6).

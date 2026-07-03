@@ -36,7 +36,7 @@ func TestVerifyGatesSkipOnUserCancel(t *testing.T) {
 	if res.Outcome != HitCap {
 		t.Errorf("a user-canceled run must not be upgraded; got %q", res.Outcome)
 	}
-	if reason := verifyTermination(ctx, cfg, false, time.Second); reason == "" {
+	if reason, _ := verifyTermination(ctx, cfg, false, time.Second); reason == "" {
 		t.Error("a user-canceled answer must stay unverified (non-empty reason) — the check never ran")
 	}
 	if exec.execs != 0 {
@@ -54,7 +54,7 @@ func TestVerifyGatesRunDetachedPastDeadline(t *testing.T) {
 	if res.Outcome != Answered {
 		t.Errorf("HitDeadline on passing code must upgrade via the detached check; got %q (%s)", res.Outcome, res.Reason)
 	}
-	if reason := verifyTermination(ctx, cfg, false, time.Second); reason != "" {
+	if reason, _ := verifyTermination(ctx, cfg, false, time.Second); reason != "" {
 		t.Errorf("the answer path must reach the same verdict as the kill path past the deadline; got reason %q", reason)
 	}
 }
