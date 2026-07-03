@@ -40,6 +40,10 @@ func TestSelectBestStructuralRank(t *testing.T) {
 			[]Trial{tr(1, agent.Answered, false, true), tr(2, agent.HitCap, true, false)}, 1},
 		{"rank tie breaks to earliest index",
 			[]Trial{tr(2, agent.Answered, false, false), tr(1, agent.Answered, true, false)}, 1},
+		{"infra failure ranks below no-attempt",
+			[]Trial{tr(1, agent.Answered, false, true), {Index: 2, Err: "sandbox failed"}}, 0},
+		{"infra failure ranks below everything",
+			[]Trial{{Index: 1, Err: "provider down"}, tr(2, agent.KilledSpiral, true, false)}, 1},
 	}
 	for _, c := range cases {
 		if got := SelectBest(c.trials); got != c.want {

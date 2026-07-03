@@ -36,6 +36,12 @@ type Trial struct {
 	Cost   float64 // USD cost of this trial's Usage at the pinned Pricing (meaningless unless Priced).
 	Priced bool    // whether the model had a Pricing entry — false => render "—", not $0.
 
+	// Plan is the opening plan-stage report (nil when Config.Planner was unset).
+	// Persisted per trial so planner activity and cost are recorded facts.
+	Plan       *agent.PlanReport `json:"plan,omitempty"`
+	PlanCost   float64           // USD of Plan.Usage at the PLANNER model's pinned Pricing.
+	PlanPriced bool              // false when the planner model has no Pricing entry (or Plan is nil).
+
 	// Review is the closing review-gate report (nil when Config.Reviewer was
 	// unset). Persisted per trial so review activity is a recorded fact, not
 	// something to infer from outcome flips and billing deltas (the R4b gap).
@@ -139,6 +145,10 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		if res.Review != nil {
 			tr.ReviewCost, tr.ReviewPriced = CostOf(res.Review.ReviewerModel, res.Review.Usage)
 		}
+		tr.Plan = res.Plan
+		if res.Plan != nil {
+			tr.PlanCost, tr.PlanPriced = CostOf(res.Plan.Model, res.Plan.Usage)
+		}
 	}
 	tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)
 	if runErr != nil {
@@ -152,8 +162,6 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	g := c.Oracle.Grade(ctx, GradeInput{Root: dir, Sandbox: sb, Result: res})
 	tr.Pass = g.Pass
 	tr.NoAttempt = g.NoAttempt
-	if tr.Detail == "" {
-		tr.Detail = g.Detail
-	}
+	tr.Detail = g.Detail
 	return tr
 }

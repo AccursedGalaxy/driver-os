@@ -258,6 +258,41 @@ func TestRootForwards(t *testing.T) {
 	}
 }
 
+// fakeWorkdir is fakeInner plus the optional WorkdirReporter capability.
+type fakeWorkdir struct {
+	fakeInner
+	wd string
+}
+
+func (f *fakeWorkdir) Workdir() string { return f.wd }
+
+// fakeSessioner is fakeInner plus the optional Sessioner capability.
+type fakeSessioner struct {
+	fakeInner
+}
+
+func (f *fakeSessioner) NewSession(context.Context) (sandbox.Session, error) { return nil, nil }
+
+func TestWorkdirForwards(t *testing.T) {
+	g := New(&fakeWorkdir{wd: "/home/user"}, nil, nil)
+	var wr sandbox.WorkdirReporter = g // the capability must stay visible through the gate.
+	if got := wr.Workdir(); got != "/home/user" {
+		t.Errorf("Workdir() = %q, want the inner workdir forwarded", got)
+	}
+	if got := New(&fakeInner{}, nil, nil).Workdir(); got != "" {
+		t.Errorf("Workdir() on a workdir-less inner = %q, want \"\"", got)
+	}
+}
+
+func TestSessionerNotForwarded(t *testing.T) {
+	// SECURITY: the gate must NOT forward Sessioner even if the inner sandbox
+	// has it, because a raw inner session would bypass the exec gate.
+	g := New(&fakeSessioner{}, nil, nil)
+	if _, ok := any(g).(sandbox.Sessioner); ok {
+		t.Error("gated.Sandbox must NOT implement sandbox.Sessioner (gate bypass risk)")
+	}
+}
+
 func TestPassthroughMethods(t *testing.T) {
 	// Non-Exec methods must reach the inner sandbox untouched by the gate.
 	inner := &fakeInner{}

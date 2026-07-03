@@ -112,9 +112,15 @@ func (s *Sandbox) Exec(ctx context.Context, cmd sandbox.Command) (*sandbox.Resul
 // a wrapper that silently drops it would degrade agent.readBounded's memory
 // fence to whole-file reads under -review.
 var (
-	_ sandbox.LimitedReader = (*Sandbox)(nil)
-	_ sandbox.Appender      = (*Sandbox)(nil)
+	_ sandbox.LimitedReader   = (*Sandbox)(nil)
+	_ sandbox.Appender        = (*Sandbox)(nil)
+	_ sandbox.WorkdirReporter = (*Sandbox)(nil)
 )
+
+// Sessioner is deliberately NOT forwarded because a raw inner session would
+// bypass the exec gate (the inner backend's session Execs commands directly
+// on the inner sandbox). A future forwarding must wrap the session's Exec
+// in the same gate.
 
 // Capabilities, ReadFile, WriteFile, ListDir, Close all pass through unchanged.
 func (s *Sandbox) Capabilities() sandbox.Capabilities { return s.inner.Capabilities() }
@@ -169,6 +175,14 @@ func (s *Sandbox) Root() string {
 	return ""
 }
 
+// Workdir forwards the optional sandbox.WorkdirReporter capability.
+func (s *Sandbox) Workdir() string {
+	if wr, ok := s.inner.(sandbox.WorkdirReporter); ok {
+		return wr.Workdir()
+	}
+	return ""
+}
+
 // blocked is the observation a gated-off command yields: exit 126 (the shell's
 // "found but not executable/permitted" code — apt for "refused"), with the
 // reason on stderr where formatRun surfaces it to the model.
@@ -197,7 +211,8 @@ func Display(cmd sandbox.Command) string {
 // so a human's attention is spent on the rest. Tune it per project.
 var safePrefixes = []string{
 	"go test", "go build", "go vet", "go doc", "go list", "go env", "gofmt",
-	"ls", "cat", "head", "tail", "wc", "pwd", "echo", "find", "tree", "stat",
+	"ls", "cat", "head", "tail", "wc", "sha256sum", // harness-internal fence hashing
+	"pwd", "echo", "find", "tree", "stat",
 	"grep", "rg", "ag", "which", "file", "diff",
 	"git status", "git diff", "git log", "git show", "git branch", "git rev-parse",
 }

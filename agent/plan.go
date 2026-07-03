@@ -98,7 +98,9 @@ func runPlanStage(ctx context.Context, cfg Config) (string, *PlanReport) {
 		po.PlanStart()
 	}
 	cfg.Obs.Note("plan: preparing an implementation plan…")
-	pr, err := cfg.Planner.Plan(ctx, PlanInput{Task: cfg.Task, Root: cfg.Root, Continuing: len(cfg.History) > 0})
+	pctx, pcancel := gateContext(ctx, planTimeout)
+	defer pcancel()
+	pr, err := cfg.Planner.Plan(pctx, PlanInput{Task: cfg.Task, Root: cfg.Root, Continuing: len(cfg.History) > 0})
 	var plan string
 	if pr != nil {
 		rep.Model, rep.Usage, rep.PlannerRun = pr.Model, pr.Usage, pr.RunID

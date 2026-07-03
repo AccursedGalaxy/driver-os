@@ -144,6 +144,48 @@ func TestWilsonInterval(t *testing.T) {
 	}
 }
 
+func TestCellInfraTracking(t *testing.T) {
+	c := Cell{Case: "c", Model: "m", Trials: []Trial{
+		{Pass: true},
+		{Pass: false, Err: "provider down"},
+		{Pass: false},
+	}}
+	if c.Infra() != 1 {
+		t.Errorf("Infra() = %d, want 1", c.Infra())
+	}
+	if c.PassRate() != 1.0/3.0 {
+		t.Errorf("PassRate() = %v, want 1/3", c.PassRate())
+	}
+	if c.PassRateInfraExcluded() != 0.5 {
+		t.Errorf("PassRateInfraExcluded() = %v, want 0.5", c.PassRateInfraExcluded())
+	}
+
+	// FIX 2: trial with Err != "" AND Pass == true must not inflate the rate.
+	c2 := Cell{Case: "c", Model: "m", Trials: []Trial{
+		{Pass: true, Err: "infra error"}, // infra error but oracle says pass
+		{Pass: true, Err: ""},            // clean pass
+		{Pass: false, Err: ""},           // clean fail
+	}}
+	// N=3, Infra=1. Denominator = 3-1 = 2.
+	// Numerator should only count clean passes (Pass && Err == ""), so 1.
+	// Rate = 1/2 = 0.5.
+	// Old behavior would have counted both passes, Rate = 2/2 = 1.0.
+	if got := c2.PassRateInfraExcluded(); got != 0.5 {
+		t.Errorf("PassRateInfraExcluded with errored-but-passing trial = %v, want 0.5", got)
+	}
+}
+
+func TestCellPlanCostAggregation(t *testing.T) {
+	c := Cell{Case: "c", Model: "m", Trials: []Trial{
+		{Cost: 0.10, Priced: true, PlanCost: 0.05, PlanPriced: true},
+		{Cost: 0.20, Priced: true, ReviewCost: 0.02, ReviewPriced: true},
+	}}
+	// Total = (0.10 + 0.05) + (0.20 + 0.02) = 0.37
+	if total, ok := c.CostTotal(); !ok || math.Abs(total-0.37) > 1e-9 {
+		t.Errorf("CostTotal = %v (ok=%v), want 0.37", total, ok)
+	}
+}
+
 func TestPercentileInt(t *testing.T) {
 	xs := []int{20, 6, 8} // sorted: 6,8,20
 	if got := percentileInt(xs, 50); got != 8 {

@@ -95,12 +95,38 @@ func (c Cell) Passes() int {
 	return n
 }
 
+// Infra counts trials that failed with an infra error (Err != "").
+func (c Cell) Infra() int {
+	n := 0
+	for _, t := range c.Trials {
+		if t.Err != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // PassRate is Passes/N (0 when empty).
 func (c Cell) PassRate() float64 {
 	if c.N() == 0 {
 		return 0
 	}
 	return float64(c.Passes()) / float64(c.N())
+}
+
+// PassRateInfraExcluded is (Pass && Err == "") / (N - Infra). 0 when N == Infra.
+func (c Cell) PassRateInfraExcluded() float64 {
+	denom := c.N() - c.Infra()
+	if denom <= 0 {
+		return 0
+	}
+	passes := 0
+	for _, t := range c.Trials {
+		if t.Pass && t.Err == "" {
+			passes++
+		}
+	}
+	return float64(passes) / float64(denom)
 }
 
 // PassRateCI is the Wilson 95% interval for the pass-rate — honest about small
@@ -216,6 +242,10 @@ func (c Cell) CostTotal() (total float64, ok bool) {
 			total += t.Cost
 			ok = true
 		}
+		if t.PlanPriced {
+			total += t.PlanCost
+			ok = true
+		}
 		if t.ReviewPriced {
 			total += t.ReviewCost
 			ok = true
@@ -251,8 +281,8 @@ type Manifest struct {
 
 // ReportSchemaVersion is the current eval-report schema. v2 added LatencyMs on
 // Trial and the reason/latency columns; v3 added Trial.NoAttempt (Grade.
-// NoAttempt) and the best-of-N selection section. Bump on any further shape
-// change.
+// NoAttempt) and the best-of-N selection section; v4 added infra tracking
+// and plan-stage cost. Bump on any further shape change.
 const ReportSchemaVersion = "4"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
@@ -283,16 +313,20 @@ func (r *Report) Markdown() string {
 
 	for _, name := range order {
 		fmt.Fprintf(&b, "## %s\n\n", name)
-		b.WriteString("| model | pass-rate | 95% CI | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |\n")
-		b.WriteString("|-------|-----------|--------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|\n")
+		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |\n")
+		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|\n")
 		for _, c := range byCase[name] {
 			lo, hi := c.PassRateCI()
 			fp := ""
 			if c.FalsePositives() > 0 {
 				fp = " ⚠"
 			}
-			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | [%.2f, %.2f] | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |\n",
-				c.Model, c.Passes(), c.N(), c.PassRate(), lo, hi,
+			infra := ""
+			if c.Infra() > 0 {
+				infra = fmt.Sprintf("%d", c.Infra())
+			}
+			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | %.2f | [%.2f, %.2f] | %s | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |\n",
+				c.Model, c.Passes(), c.N(), c.PassRate(), c.PassRateInfraExcluded(), lo, hi, infra,
 				c.FalsePositives(), c.N(), fp,
 				renderOutcomes(c.Outcomes()),
 				c.ItersP(50, true), c.ItersP(90, true),

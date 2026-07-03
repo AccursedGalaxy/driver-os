@@ -24,6 +24,41 @@ import (
 	"github.com/AccursedGalaxy/driver-os/vcs"
 )
 
+// Gate-stage harness-side timeouts — the harness's own bounds on external
+// stages that the injected implementations may not self-bound. A stage whose
+// timeout fires fails open (the existing failOpen / skipped path).
+const (
+	reviewTimeout    = 10 * time.Minute
+	gateDiffTimeout  = 2 * time.Minute
+	fenceWalkTimeout = 2 * time.Minute
+	planTimeout      = 10 * time.Minute
+)
+
+// gateContext returns a context that:
+//   - ignores the parent DEADLINE (an expired budget must not cancel the final gate)
+//   - IS canceled when the parent is canceled explicitly (user Ctrl-C propagates)
+//   - always carries the given hard timeout
+//
+// It is the harness-side timeout for every closing-gate external stage
+// (review, diff, fence walk) and the opening plan stage.
+func gateContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	base := context.WithoutCancel(parent) // drops deadline and cancellation
+	ctx, cancelInner := context.WithTimeout(base, timeout)
+	// Propagate only explicit user cancellation, not deadline expiry.
+	stop := context.AfterFunc(parent, func() {
+		if errors.Is(context.Cause(parent), context.Canceled) {
+			cancelInner()
+		}
+	})
+	if errors.Is(context.Cause(parent), context.Canceled) {
+		cancelInner()
+	}
+	return ctx, func() {
+		stop()
+		cancelInner()
+	}
+}
+
 type gates struct {
 	cfg        Config
 	runTimeout time.Duration
@@ -85,7 +120,9 @@ func (g *gates) fenceCheck(ctx context.Context) string {
 	if g.fence == nil {
 		return ""
 	}
-	return g.fence.violation(context.WithoutCancel(ctx), g.cfg.Sandbox)
+	gctx, cancel := gateContext(ctx, fenceWalkTimeout)
+	defer cancel()
+	return g.fence.violation(gctx, g.cfg.Sandbox)
 }
 
 // verifyTermination is stages 0+1 for a model-initiated finish (answer /
@@ -160,7 +197,11 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "", ""
 	}
-	gctx := context.WithoutCancel(ctx) // a deadline expiry must not clip the final gate (review #3's policy).
+	// A deadline expiry must not clip the final gate (review #3's policy);
+	// gateContext preserves that AND adds a harness-side timeout while still
+	// propagating explicit user cancellation.
+	gctx, gcancel := gateContext(ctx, reviewTimeout)
+	defer gcancel()
 
 	diff, err := rv.captureDiff(gctx)
 	if err != nil {
@@ -257,14 +298,16 @@ func (g *gates) failOpen(msg string) {
 // diffs it against the run-start base — tracked and untracked files included,
 // .git and gitignored noise excluded, nothing about the user's index touched.
 func (rv *reviewState) captureDiff(ctx context.Context) (string, error) {
-	cur, err := vcs.WriteTree(ctx, rv.cfg.Root)
+	gctx, cancel := gateContext(ctx, gateDiffTimeout)
+	defer cancel()
+	cur, err := vcs.WriteTree(gctx, rv.cfg.Root)
 	if err != nil {
 		return "", err
 	}
 	if cur == rv.baseTree {
 		return "", nil
 	}
-	return vcs.DiffTrees(ctx, rv.cfg.Root, rv.baseTree, cur)
+	return vcs.DiffTrees(gctx, rv.cfg.Root, rv.baseTree, cur)
 }
 
 // classify runs the deterministic validation ladder on one finding (1c + slice

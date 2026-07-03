@@ -42,8 +42,10 @@ const fenceContentCap = maxFileBytes
 // fencedFile is one snapshot entry: the content hash that detects drift, and
 // the bytes that undo it (nil when the file was too large to keep).
 type fencedFile struct {
-	hash    [sha256.Size]byte
-	content []byte
+	hash     [sha256.Size]byte
+	content  []byte
+	fullHash string // sha256sum of the full file for over-cap files.
+	size     int64  // file size for over-cap files (fallback).
 }
 
 // fenceState is the run-scoped fence: the globs, the model-visible absolute
@@ -165,13 +167,36 @@ func walkFenced(ctx context.Context, sb sandbox.Sandbox, globs []string) (map[st
 			if !matchesFence(globs, p) {
 				continue
 			}
-			data, _, err := readBounded(ctx, sb, p)
+			data, overCap, err := readBounded(ctx, sb, p)
 			if err != nil {
 				return fmt.Errorf("read %q: %w", p, err)
 			}
 			ff := fencedFile{hash: sha256.Sum256(data)}
-			if len(data) <= fenceContentCap {
+			if !overCap {
 				ff.content = data
+			} else {
+				// For over-cap files, compute a full-file hash to detect mutations
+				// beyond the first MiB.
+				res, err := sb.Exec(ctx, sandbox.Command{Path: "sha256sum", Args: []string{"--", p}})
+				if err == nil && res.ExitCode == 0 {
+					fields := strings.Fields(string(res.Stdout))
+					if len(fields) > 0 {
+						ff.fullHash = fields[0]
+					} else {
+						// Fallback: record size if sha256sum output is empty.
+						res, err := sb.Exec(ctx, sandbox.Command{Path: "wc", Args: []string{"-c", "--", p}})
+						if err == nil && res.ExitCode == 0 {
+							fmt.Sscanf(string(res.Stdout), "%d", &ff.size)
+						}
+					}
+				} else {
+					// Fallback: record size if sha256sum fails. Middle mutations
+					// are undetectable in this degraded mode.
+					res, err := sb.Exec(ctx, sandbox.Command{Path: "wc", Args: []string{"-c", "--", p}})
+					if err == nil && res.ExitCode == 0 {
+						fmt.Sscanf(string(res.Stdout), "%d", &ff.size)
+					}
+				}
 			}
 			out[p] = ff
 		}
@@ -201,7 +226,7 @@ func (f *fenceState) drift(ctx context.Context, sb sandbox.Sandbox) []string {
 	var out []string
 	for p, ff := range cur {
 		base, ok := f.base[p]
-		if !ok || base.hash != ff.hash {
+		if !ok || base.hash != ff.hash || base.fullHash != ff.fullHash || base.size != ff.size {
 			out = append(out, p)
 		}
 	}

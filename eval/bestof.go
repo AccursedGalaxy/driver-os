@@ -20,10 +20,14 @@ import (
 
 // structuralRank orders terminal states by how much finished work they imply:
 // a verified answer beats running out of iterations with work on disk, which
-// beats a detector kill / infra failure; a run that left nothing gradable
-// (Grade.NoAttempt) ranks below everything — an `answered` with an empty diff
-// is a confident no-op, not an attempt (the measured sympy-18698 case).
+// beats a detector kill; a run that left nothing gradable (Grade.NoAttempt)
+// ranks below everything — an `answered` with an empty diff is a confident
+// no-op, not an attempt (the measured sympy-18698 case). Infra failures
+// (Trial.Err) rank absolute last.
 func structuralRank(t Trial) int {
+	if t.Err != "" {
+		return 4
+	}
 	if t.NoAttempt {
 		return 3
 	}
