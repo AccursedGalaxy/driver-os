@@ -77,7 +77,8 @@ func TestVerifyTerminationTimeoutAndBaselineGrace(t *testing.T) {
 	// The package-level verifyTermination returns an INCONCLUSIVE reason
 	// because isRunTimeout(verifyOut) is true. The method-level timeout
 	// early-return fires: noContinue=true, baselineGraceUsed untouched.
-	reason, noContinue := g.verifyTermination(context.Background(), false)
+	outcome, reason, noContinue := g.verifyTermination(context.Background(), false)
+	_ = outcome
 	if reason == "" {
 		t.Error("call 1 (timeout): reason is empty, want non-empty")
 	}
@@ -98,7 +99,8 @@ func TestVerifyTerminationTimeoutAndBaselineGrace(t *testing.T) {
 	// Package-level returns "did not pass:". The method-level baseline block
 	// fires: the reason gets the "ALREADY failing" note, fingerprint matches
 	// baseline → grace is granted (noContinue stays false).
-	reason, noContinue = g.verifyTermination(context.Background(), false)
+	outcome, reason, noContinue = g.verifyTermination(context.Background(), false)
+	_ = outcome
 	if reason == "" {
 		t.Error("call 2 (identical): reason is empty, want non-empty")
 	}
@@ -113,7 +115,8 @@ func TestVerifyTerminationTimeoutAndBaselineGrace(t *testing.T) {
 	}
 
 	// --- Call 3: second identical failure (grace spent → terminal) ---
-	reason, noContinue = g.verifyTermination(context.Background(), false)
+	outcome, reason, noContinue = g.verifyTermination(context.Background(), false)
+	_ = outcome
 	if reason == "" {
 		t.Error("call 3 (identical): reason is empty, want non-empty")
 	}

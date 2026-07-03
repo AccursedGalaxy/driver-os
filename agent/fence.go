@@ -1,23 +1,49 @@
 package agent
 
-// The TEST FENCE (docs/specs/REVIEW-GATE.md stage 0, slice 0): a configured glob list of
-// paths that are READ-ONLY to the solver — canonically `*_test.go,testdata/**`.
-// The probe task text only ASKED models not to modify tests; research says that
-// hole must be closed by the HARNESS, not the prompt (typia incident: an agent
-// deleted 70% of a suite and "CI was green"; anti-hack prompting alone leaves
-// 70–95% of hacks standing). Enforcement is layered:
+// FENCING — the harness-level enforcement that certain workspace paths are
+// immutable (test fence) or the only allowed targets (diff scope). Both
+// directions use the same layered design:
 //
-//  1. Tool-layer refusal: write_file/edit_file (and the append path) REFUSE a
-//     fenced path with a recovery-shaped error (P3) — the cheap, immediate fence.
-//  2. Closing-gate re-hash: at run start every fenced file is snapshotted
-//     (path, sha256 — content kept when small enough to restore); at every
-//     closing gate the fence is re-hashed, so a mutation that went AROUND the
-//     tools (`run` with a shell redirect, sed -i, git checkout of a test file)
-//     still downgrades the run to Unverified with a named reason. The walk goes
-//     through the SANDBOX, not the host, so a docker backend fences the same
-//     files the model sees.
+//   TEST FENCE (docs/specs/REVIEW-GATE.md stage 0, slice 0): a configured glob
+//   list of paths that are READ-ONLY to the solver — canonically
+//   `*_test.go,testdata/**`. The probe task text only ASKED models not to
+//   modify tests; research says that hole must be closed by the HARNESS,
+//   not the prompt (typia incident: an agent deleted 70% of a suite and "CI
+//   was green"; anti-hack prompting alone leaves 70–95% of hacks standing).
 //
-// Empty Config.TestFence = fence off = today's behavior byte-for-byte.
+//   DIFF SCOPE (the inverse fence): a configured glob list of paths the
+//   solver's changes MAY touch; any change outside it is a first-class
+//   failure (ScopeViolation), not a pass. It covers tasks where the TEST is
+//   the deliverable and PRODUCTION must be frozen. A solver asked to add a
+//   guard test that reordered production code to make its own test pass —
+//   reward-hacking the verify gate — motivated it.
+//
+//   Unlike the test fence (denylist), scope patterns are anchored at the REPO
+//   ROOT: `dir/**` is a prefix, not a substring (does NOT match
+//   `pkg/dir/evil.go`), and a bare glob without a slash matches only
+//   root-level files (does NOT match `pkg/x.go`). See matchesScope.
+//
+//   Enforcement is layered for BOTH directions:
+//
+//    1. Tool-layer refusal: write_file/edit_file (and the append path) REFUSE
+//       a fenced path / a path outside the scope with a recovery-shaped error
+//       (P3) — the cheap, immediate fence.
+//    2. Closing gate: for the test fence, every fenced file is snapshotted
+//       (path, sha256) at run start and re-hashed at every closing gate, so a
+//       mutation that went AROUND the tools (`run` with a shell redirect,
+//       sed -i, git checkout of a test file) still downgrades the run. For the
+//       diff scope, a git-tree snapshot pair (run-start WriteTree vs gate-time
+//       WriteTree) catches any changed/added/deleted path outside the scope.
+//    3. Degrade loudly: if the run-start snapshot fails (non-git workspace for
+//       the tree, unreadable workspace for the fence walk), a Note is recorded
+//       and tool-layer enforcement alone is active — a violation is never
+//       fabricated from an infrastructure fault (P6).
+//
+//   When BOTH are set: the fence WINS for fenced paths (they are read-only
+//   even when in scope); a refusal message names whichever mechanism refused.
+//
+//   Empty Config.TestFence / Config.DiffScope = off = today's behavior
+//   byte-for-byte.
 
 import (
 	"context"
@@ -128,6 +154,50 @@ func matchesFence(globs []string, rel string) bool {
 			}
 			continue
 		}
+		if ok, _ := path.Match(g, p); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesScope reports whether the (already normalized) relative path is inside
+// the diff-scope allowlist. Unlike matchesFence — whose breadth is intentional
+// for a denylist — scope patterns are anchored at the REPO ROOT:
+//
+//   - `dir/**`: prefix match anchored at root — matches only paths that start
+//     with `dir/`. DOES NOT match `pkg/dir/evil.go` (the fence matcher's
+//     `strings.Contains(p, "/dir/")` fallback is deliberately absent here —
+//     a scope of `internal/**` must not admit any `*/internal/*` rando).
+//   - bare glob, no slash (`*.go`): matched against the full root-relative
+//     path — the path must have no `/` (root-level only). `x.go` matches
+//     `x.go` but NOT `pkg/x.go`.
+//   - a slashed glob (`ci/build.sh`, `.github/*`): path.Match on the full
+//     path, same as matchesFence.
+func matchesScope(globs []string, rel string) bool {
+	p := strings.TrimPrefix(path.Clean(filepath.ToSlash(rel)), "./")
+	for _, g := range globs {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if dir, ok := strings.CutSuffix(g, "/**"); ok {
+			// Anchor at root: only match paths that start with dir/
+			if strings.HasPrefix(p, dir+"/") {
+				return true
+			}
+			continue
+		}
+		if !strings.Contains(g, "/") {
+			// Bare glob: match only root-level files (no / in the path).
+			if !strings.Contains(p, "/") {
+				if ok, _ := path.Match(g, p); ok {
+					return true
+				}
+			}
+			continue
+		}
+		// Slashed glob: full-path match.
 		if ok, _ := path.Match(g, p); ok {
 			return true
 		}
@@ -371,6 +441,63 @@ func substanceSignals(diff string) []string {
 	}
 	for _, f := range order {
 		out = append(out, fmt.Sprintf("deleted %d assertion line(s) from %s", deletedAsserts[f], f))
+	}
+	return out
+}
+
+// scopeRefusal is the tool-layer error for a write/edit aimed at a path outside
+// the diff scope (P3: name the allowed globs and the recovery — choose an
+// in-scope path).
+func scopeRefusal(p string, globs []string) error {
+	return fmt.Errorf("refused: %q is outside the diff scope (allowed: %s) — only edit files declared in this task's scope; choose an in-scope path or explain why the scope must be changed", p, strings.Join(globs, ","))
+}
+
+// applyDiffScope wraps the mutation tools (write_file/edit_file — the append
+// path included, since it flows through the same handlers) so a path outside
+// the configured scope is refused at the tool layer. It returns a NEW map (the
+// caller's toolset is never mutated) and is a no-op for an empty scope,
+// keeping the scope-off behavior byte-identical. Only the two known mutation
+// tools are wrapped — `run`-mediated writes are the closing gate's job.
+func applyDiffScope(tools map[string]Tool, globs []string, sb sandbox.Sandbox) map[string]Tool {
+	if len(globs) == 0 || tools == nil {
+		return tools
+	}
+	alias := sandboxAlias(sb)
+	out := make(map[string]Tool, len(tools))
+	for k, v := range tools {
+		out[k] = v
+	}
+	for _, name := range []string{"write_file", "edit_file"} {
+		t, ok := out[name]
+		if !ok {
+			continue
+		}
+		run, runJSON := t.Run, t.RunJSON
+		if run != nil {
+			t.Run = func(ctx context.Context, arg string) (string, error) {
+				p := arg
+				if i := strings.IndexAny(arg, " \t"); i >= 0 {
+					p = arg[:i]
+				}
+				if !matchesScope(globs, fenceRelPath(alias, p)) {
+					return "", scopeRefusal(p, globs)
+				}
+				return run(ctx, arg)
+			}
+		}
+		if runJSON != nil {
+			t.RunJSON = func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					Path string `json:"path"`
+				}
+				if json.Unmarshal(raw, &a) == nil && a.Path != "" &&
+					!matchesScope(globs, fenceRelPath(alias, a.Path)) {
+					return "", scopeRefusal(a.Path, globs)
+				}
+				return runJSON(ctx, raw)
+			}
+		}
+		out[name] = t
 	}
 	return out
 }

@@ -184,6 +184,7 @@ const (
 	ProviderErr     Outcome = "provider_error"    // a transport/auth failure talking to the model.
 	HitContextLimit Outcome = "hit_context_limit" // (HP-1) the window overflowed AND reactive eviction couldn't compact it further — a graceful stop, not a crash.
 	RefusedUnsafe   Outcome = "refused_unsafe"    // the Sandbox's isolation is weaker than Config.MinIsolation requires — refused BEFORE the first model call (P2/§5). Never ran hostile code on a too-weak boundary.
+	ScopeViolation  Outcome = "scope_violation"   // the run's diff escaped the configured writable globs (Config.DiffScope) — a changed file was outside the declared task scope, e.g. rewriting production code to fit a guard test.
 	Canceled        Outcome = "canceled"          // the caller canceled the run (SIGINT / ctx cancel) — not a provider fault (distinct from HitDeadline, which is the run's own wall-clock budget).
 )
 
@@ -476,6 +477,38 @@ type Config struct {
 	// runs set it.
 	TestFence []string
 
+	// DiffScope is the WRITABLE allowlist for the run (the inverse of TestFence):
+	// a list of path globs the solver's changes MAY touch; any change outside it
+	// is a first-class failure (ScopeViolation), not a pass.
+	//
+	// Scope globs are anchored at the repository ROOT:
+	//   - `dir/**`  matches paths that start with `dir/` (and `dir` itself).
+	//     It does NOT match `pkg/dir/evil.go` — the scope is a prefix, not a
+	//     substring.
+	//   - `*.go`    (bare, no slash) matches only root-level files whose name
+	//     matches the pattern.  It does NOT match `pkg/x.go`.
+	//   - `ci/build.sh`, `.github/*` (slash present) — exact path.Match on the
+	//     full root-relative path.
+	//
+	// Enforcement is layered, mirroring the test fence:
+	//   1. Tool layer: write_file/edit_file (and append) REFUSE a path outside
+	//      the scope with a recovery-shaped error — the cheap, immediate fence.
+	//   2. Closing gate: a git-tree snapshot pair (run-start → gate-time) catches
+	//      changes that went AROUND the tools (shell redirects, sed -i, git
+	//      checkout, build artifacts); the run terminates ScopeViolation.
+	//   3. Degrade loudly: if the run-start snapshot fails (non-git workspace),
+	//      a Note is recorded and the tool-layer enforcement alone is active —
+	//      a violation is never fabricated from an infrastructure fault.
+	//
+	// When BOTH TestFence and DiffScope are set: the fence WINS for fenced
+	// paths (they are read-only even when in scope); a refusal message names
+	// whichever mechanism refused.
+	//
+	// Empty = off (today's behavior byte-for-byte). Motivation: a solver asked
+	// to add a guard test reordered production code the test was meant to pin,
+	// to make its own test pass — reward-hacking the gate.
+	DiffScope []string
+
 	// Reviewer arms the REVIEW GATE (REVIEW-GATE slice 1): an injected,
 	// independent model reviewer run at every path that can end Answered, ONLY
 	// after the fence and VerifyCmd pass (execution-first). Blocking findings —
@@ -699,6 +732,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// system prompt is built from them, and the closing gates snapshot their
 	// run-start state (fence hashes + the review diff base). Empty fence + nil
 	// Reviewer ⇒ both are inert and behavior is byte-identical.
+	// Diff-scope wraps FIRST, test-fence LAST, so the fence wins for fenced
+	// in-scope paths (the refusal names whichever mechanism refused).
+	cfg.Tools = applyDiffScope(cfg.Tools, cfg.DiffScope, cfg.Sandbox)
 	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
 	gs := newGates(ctx, cfg, runTimeout)
 
@@ -882,8 +918,14 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			step.Grounded = grounded
 			res.Steps = append(res.Steps, step)
 			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
-			// terminal state before accepting it (fence first, then VerifyCmd).
-			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			// terminal state before accepting it (fence first, then scope, then VerifyCmd).
+			outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			// ScopeViolation is terminal — never continue, regardless of VerifyContinue.
+			if outcome == ScopeViolation {
+				res.Outcome = ScopeViolation
+				res.Reason = reason
+				return res, nil
+			}
 			// A caller cancel mid-answer stops the run cleanly as Canceled — the
 			// verify command was skipped (verifyRun refuses on a canceled ctx), and
 			// the run must not continue (the next model call would also fail).
@@ -904,7 +946,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 			if reason != "" {
 				// No budget left (or not in continue-mode): an honest non-pass, not a stored fact.
-				res.Outcome = Unverified
+				res.Outcome = outcome
 				res.Answer = arg
 				res.Reason = reason
 				cfg.Obs.Note("answer not verified — " + reason)

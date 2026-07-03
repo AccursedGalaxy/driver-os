@@ -87,6 +87,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (REVIEW-GATE slice 0) Fence the mutation tools BEFORE their schemas are
 	// advertised, and snapshot the closing gates' run-start state (fence hashes
 	// + the review diff base). Inert when unconfigured — see Run's twin.
+	// Diff-scope wraps FIRST, test-fence LAST, so the fence wins for fenced
+	// in-scope paths.
+	cfg.Tools = applyDiffScope(cfg.Tools, cfg.DiffScope, cfg.Sandbox)
 	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
 	gs := newGates(ctx, cfg, runTimeout)
 
@@ -319,7 +322,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// when the model narrated intent, acknowledged failure, or hallucinated
 			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
 			// Re-verify the claimed state before accepting it (fence first, then VerifyCmd).
-			reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+			// ScopeViolation is terminal — never continue, regardless of VerifyContinue.
+			if outcome == ScopeViolation {
+				res.Outcome = ScopeViolation
+				res.Reason = reason
+				return res, nil
+			}
 			// A caller cancel mid-answer stops the run cleanly as Canceled — the
 			// verify command was skipped (verifyRun refuses on a canceled ctx), and
 			// the run must not continue (the next model call would also fail).
@@ -343,7 +352,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				continue
 			}
 			if reason != "" {
-				res.Outcome, res.Answer, res.Reason = Unverified, answer, reason
+				res.Outcome, res.Answer, res.Reason = outcome, answer, reason
 				cfg.Obs.Note("answer not verified — " + reason)
 				return res, nil
 			}
@@ -430,7 +439,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// (duet's `say`) verifyTermination is a no-op, so the conversational
 				// finish path is unchanged.
 				if !cfg.FinishToolTrustsCaller {
-					reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+					outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
+					// ScopeViolation is terminal — never continue.
+					if outcome == ScopeViolation {
+						res.Outcome = ScopeViolation
+						res.Reason = reason
+						return res, nil
+					}
 					// A caller cancel mid-finish stops the run cleanly as Canceled.
 					// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
 					// a custom signalError cause, and Err() is cause-agnostic while still
@@ -446,7 +461,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 							messages = append(messages, llm.User("OBSERVATION:\nNot finished — you called the finish tool, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
 							continue
 						}
-						res.Outcome, res.Answer, res.Reason = Unverified, msg, reason
+						res.Outcome, res.Answer, res.Reason = outcome, msg, reason
 						cfg.Obs.Note("finish not verified — " + reason)
 						return res, nil
 					}
