@@ -15,10 +15,13 @@ func TestWorktreeAddSnapshotsMainDirtyTreeAndCollectedPatchAppliesBack(t *testin
 	writeTestFile(t, filepath.Join(repo, "initial.txt"), "main dirty edit\n")
 	writeTestFile(t, filepath.Join(repo, "untracked.txt"), "main-only\n")
 
-	wt, err := WorktreeAdd(context.Background(), repo)
+	headSHA := strings.TrimSpace(string(git(t, repo, "rev-parse", "HEAD")))
+
+	wi, err := WorktreeAdd(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
+	wt := wi.Dir
 	defer func() { _ = WorktreeRemove(context.Background(), wt) }()
 
 	if got := strings.TrimSpace(string(git(t, wt, "rev-parse", "--abbrev-ref", "HEAD"))); got != "HEAD" {
@@ -29,6 +32,30 @@ func TestWorktreeAddSnapshotsMainDirtyTreeAndCollectedPatchAppliesBack(t *testin
 	}
 	if got := readTestFile(t, filepath.Join(wt, "untracked.txt")); got != "main-only\n" {
 		t.Fatalf("untracked file = %q, want main checkout untracked contents", got)
+	}
+
+	// Baseline provenance: dirty tree → snapshot commit ≠ HEAD.
+	if wi.BaseCommit == headSHA {
+		t.Fatalf("BaseCommit = HEAD %s, want dirty-tree snapshot commit", headSHA)
+	}
+	refName := "refs/driver-agent/baselines/" + filepath.Base(wt)
+	refSHA := strings.TrimSpace(string(git(t, repo, "rev-parse", refName)))
+	if refSHA != wi.BaseCommit {
+		t.Fatalf("ref %s resolves to %s, want %s (BaseCommit)", refName, refSHA, wi.BaseCommit)
+	}
+	// DirtyFiles must name the paths that differ from HEAD.
+	foundInit := false
+	foundUntracked := false
+	for _, f := range wi.DirtyFiles {
+		if f == "initial.txt" {
+			foundInit = true
+		}
+		if f == "untracked.txt" {
+			foundUntracked = true
+		}
+	}
+	if !foundInit || !foundUntracked || len(wi.DirtyFiles) != 2 {
+		t.Fatalf("DirtyFiles = %v, want [initial.txt, untracked.txt]", wi.DirtyFiles)
 	}
 
 	writeTestFile(t, filepath.Join(wt, "initial.txt"), "agent edit\n")
@@ -51,10 +78,11 @@ func TestWorktreeAddSnapshotsMainDirtyTreeAndCollectedPatchAppliesBack(t *testin
 
 func TestWorktreeCollectIncludesEditAndUntrackedFile(t *testing.T) {
 	repo := newGitRepo(t)
-	wt, err := WorktreeAdd(context.Background(), repo)
+	wi, err := WorktreeAdd(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
+	wt := wi.Dir
 	defer func() { _ = WorktreeRemove(context.Background(), wt) }()
 
 	writeTestFile(t, filepath.Join(wt, "initial.txt"), "after\n")
@@ -77,9 +105,24 @@ func TestWorktreeCollectIncludesEditAndUntrackedFile(t *testing.T) {
 
 func TestWorktreeCollectCleanThenRemove(t *testing.T) {
 	repo := newGitRepo(t)
-	wt, err := WorktreeAdd(context.Background(), repo)
+	headSHA := strings.TrimSpace(string(git(t, repo, "rev-parse", "HEAD")))
+
+	wi, err := WorktreeAdd(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
+	}
+	wt := wi.Dir
+
+	// Clean checkout: BaseCommit must equal HEAD, no dirty files, no baseline ref.
+	if wi.BaseCommit != headSHA {
+		t.Fatalf("clean checkout BaseCommit = %s, want HEAD %s", wi.BaseCommit, headSHA)
+	}
+	if len(wi.DirtyFiles) != 0 {
+		t.Fatalf("clean checkout DirtyFiles = %v, want empty", wi.DirtyFiles)
+	}
+	refName := "refs/driver-agent/baselines/" + filepath.Base(wt)
+	if _, err := run(context.Background(), repo, "rev-parse", refName); err == nil {
+		t.Fatalf("clean checkout created unexpected ref %s", refName)
 	}
 
 	patch := filepath.Join(t.TempDir(), "run.patch")
