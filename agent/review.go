@@ -87,6 +87,7 @@ type ReviewVerdict struct {
 	Findings []ReviewFinding
 	Usage    llm.Usage
 	Model    string
+	Summary  string // reviewer free-prose preamble before the findings array, when present.
 	// RunID/TranscriptPath identify the reviewer's own persisted sub-run (a
 	// reviewer that runs a real agent loop records it like any other run —
 	// diagnosing a misbehaving reviewer must not require a temp dump). Empty
@@ -133,6 +134,7 @@ type ReviewReport struct {
 	Skipped       string            `json:"skipped,omitempty"`        // why the gate never ran (not a git workspace, reviewer error, …).
 	ReviewerModel string            `json:"reviewer_model,omitempty"` // from ReviewVerdict.Model — the per-reviewer calibration axis.
 	ReviewerRuns  []string          `json:"reviewer_runs,omitempty"`  // per-round ReviewVerdict.RunID — links this transcript to the reviewer's own.
+	Summaries     []string          `json:"summaries,omitempty"`      // per-round free-prose preambles; "" when absent.
 	Findings      []ReviewedFinding `json:"findings,omitempty"`
 	Usage         llm.Usage         `json:"usage"`
 }
@@ -144,7 +146,7 @@ type ReviewReport struct {
 type ReviewObserver interface {
 	ReviewStart(round int)
 	ReviewFinding(f ReviewFinding)
-	ReviewVerdict(blocking int, round int)
+	ReviewVerdict(blocking int, round int, summary string)
 }
 
 // reviewState is the run-scoped review gate: the git base tree captured at run
@@ -158,6 +160,7 @@ type reviewState struct {
 	rounds     int
 	blocked    bool
 	model      string   // reviewer model id, from the first verdict that names one.
+	summaries  []string // one entry per round, blank when the reviewer emitted bare JSON.
 	runIDs     []string // reviewer sub-run IDs, one per verdict that carried one.
 	sessionKey string   // run-scoped continuation handle handed to every round (ReviewInput.SessionKey).
 	findings   []ReviewedFinding
@@ -213,6 +216,7 @@ func (rv *reviewState) report() *ReviewReport {
 		Skipped:       rv.skip,
 		ReviewerModel: rv.model,
 		ReviewerRuns:  rv.runIDs,
+		Summaries:     rv.summaries,
 		Findings:      rv.findings,
 		Usage:         rv.usage,
 	}

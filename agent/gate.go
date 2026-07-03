@@ -155,6 +155,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		if rv.model == "" {
 			rv.model = verdict.Model
 		}
+		rv.summaries = append(rv.summaries, verdict.Summary)
 		if verdict.RunID != "" {
 			rv.runIDs = append(rv.runIDs, verdict.RunID)
 		}
@@ -188,7 +189,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	}
 	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 	if ro := reviewObserver(g.cfg.Obs); ro != nil {
-		ro.ReviewVerdict(blocking, rv.rounds)
+		ro.ReviewVerdict(blocking, rv.rounds, verdict.Summary)
 	}
 
 	if blocking == 0 && len(advisories) == 0 {

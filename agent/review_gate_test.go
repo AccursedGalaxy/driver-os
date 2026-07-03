@@ -26,10 +26,11 @@ import (
 // fakeReviewer returns the i-th verdict per Review call (clamping to the
 // last), recording every input so tests can assert what the gate fed it.
 type fakeReviewer struct {
-	verdicts [][]ReviewFinding
-	inputs   []ReviewInput
-	err      error
-	runID    string // stamped on every verdict when set (per-call suffix), like a persisting reviewer would.
+	verdicts  [][]ReviewFinding
+	summaries []string
+	inputs    []ReviewInput
+	err       error
+	runID     string // stamped on every verdict when set (per-call suffix), like a persisting reviewer would.
 }
 
 func (f *fakeReviewer) Review(_ context.Context, in ReviewInput) (*ReviewVerdict, error) {
@@ -38,14 +39,22 @@ func (f *fakeReviewer) Review(_ context.Context, in ReviewInput) (*ReviewVerdict
 		return nil, f.err
 	}
 	i := len(f.inputs) - 1
-	if i >= len(f.verdicts) {
-		i = len(f.verdicts) - 1
-	}
 	var fs []ReviewFinding
 	if len(f.verdicts) > 0 {
-		fs = f.verdicts[i]
+		idx := i
+		if idx >= len(f.verdicts) {
+			idx = len(f.verdicts) - 1
+		}
+		fs = f.verdicts[idx]
 	}
 	v := &ReviewVerdict{Findings: fs, Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}}
+	if len(f.summaries) > 0 {
+		idx := i
+		if idx >= len(f.summaries) {
+			idx = len(f.summaries) - 1
+		}
+		v.Summary = f.summaries[idx]
+	}
 	if f.runID != "" {
 		v.RunID = fmt.Sprintf("%s-%d", f.runID, len(f.inputs))
 	}
@@ -125,8 +134,29 @@ func TestReviewGatePassAndInputs(t *testing.T) {
 	if !strings.Contains(in.Diff, "+package calc // patched") || !strings.Contains(in.Diff, "calc.go") {
 		t.Errorf("reviewer diff missing the solver's change:\n%s", in.Diff)
 	}
-	if res.Review == nil || res.Review.Rounds != 1 || res.Review.Blocked || res.Review.Usage.TotalTokens != 120 {
-		t.Fatalf("report = %+v", res.Review)
+	// 4. Reviewer summary flows through to observer and report
+	rv.summaries = []string{"Found a blocker."}
+	ro := &recordingReviewObs{Observer: nopObserver{}}
+	res = reviewedRun(t, rv, Config{Obs: ro}, editThenAnswerWithBlocker())
+	if res.Review == nil || len(res.Review.Summaries) != 1 || res.Review.Summaries[0] != "Found a blocker." {
+		t.Fatalf("summary not in report: %+v", res.Review)
+	}
+	found := false
+	for _, v := range ro.events {
+		if strings.HasPrefix(v, "verdict:") && strings.HasSuffix(v, ":Found a blocker.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("summary not in observer events: %v", ro.events)
+	}
+}
+
+func editThenAnswerWithBlocker() [][]llm.ContentPart {
+	return [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},
 	}
 }
 
@@ -424,8 +454,8 @@ func (r *recordingReviewObs) ReviewStart(round int) {
 func (r *recordingReviewObs) ReviewFinding(f ReviewFinding) {
 	r.events = append(r.events, "finding:"+f.File)
 }
-func (r *recordingReviewObs) ReviewVerdict(blocking, round int) {
-	r.events = append(r.events, fmt.Sprintf("verdict:%d:%d", blocking, round))
+func (r *recordingReviewObs) ReviewVerdict(blocking, round int, summary string) {
+	r.events = append(r.events, fmt.Sprintf("verdict:%d:%d:%s", blocking, round, summary))
 }
 
 func TestReviewObserverEvents(t *testing.T) {
@@ -435,7 +465,7 @@ func TestReviewObserverEvents(t *testing.T) {
 	if res.Outcome != Unverified {
 		t.Fatalf("outcome = %s, want unverified (1 round, blocker)", res.Outcome)
 	}
-	want := []string{"start:1", "finding:calc.go", "verdict:1:1"}
+	want := []string{"start:1", "finding:calc.go", "verdict:1:1:"}
 	if strings.Join(obs.events, ",") != strings.Join(want, ",") {
 		t.Fatalf("events = %v, want %v", obs.events, want)
 	}
