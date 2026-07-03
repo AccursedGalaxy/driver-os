@@ -244,3 +244,21 @@ verification mandate needs the finish nudge as its termination valve.
 Default flip deferred to the combined gate (all slices on vs off), per plan.
 Slice-3 A/B launched next over the same sealed protocol: BASE=structured
 CAND=auto, NUDGE=3.
+
+## Holdout round 3 — slice 3 ACCEPT (2026-07-03)
+
+BASE=structured CAND=auto, NUDGE=3 (eval/runs/ps2-holdout-20260703T124402Z):
+structured 13/18 vs auto 14/18, 0 hard / 0 soft regressions, 1 soft gain.
+Outcomes: structured answered=15/hit_cap=3; auto answered=14/hit_cap=3/
+killed_repeat=1. Prompt tokens: auto 3.28M vs structured 4.04M (−19% despite
+the added persistence block — the pushed model apparently converges in fewer/
+shorter exchanges). Verdict: **slice 3 ACCEPTED** — the persistence variant
+holds pass-rate at lower total cost on the primary cheap target. No
+pass-rate improvement claim (0 consistent flips). Caveat: this measures the
+persistence family only (gemini); the scope/Claude routing and the fallback
+path are covered by unit tests, not this A/B. The one killed_repeat in auto
+is a watch item for the post-freeze post-mortem.
+
+Remaining: slice 4 (discipline skills, eval-first — needs designed gap
+scenarios; tune set is ceilinged), then the combined all-on gate, then the
+default-flip decision.
