@@ -207,13 +207,19 @@ func TestBaselineWarningInSeedMessage(t *testing.T) {
 
 // TestVerifyContinueBaselineIdenticalFingerprint proves that when the finish-time
 // VerifyCmd failure is the SAME failure as the pre-existing red baseline (identical
-// fingerprint), VerifyContinue does NOT reject the finish into more work — the gate
-// is unsatisfiable and the run terminates immediately as Unverified with one iteration.
+// fingerprint), VerifyContinue grants exactly ONE rescue round: the first identical
+// failure is still rejected into more work, and only a SECOND identical failure
+// — after a full repair round — goes terminal as Unverified.
 func TestVerifyContinueBaselineIdenticalFingerprint(t *testing.T) {
 	// Use a verify command whose output is deterministic (no timestamps, no random
 	// values in the body). "false" produces "exit 1 (...) (no output)" which
 	// fingerprints identically run-to-run.
-	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("The task is unrelated — the verify command was already failing before any changes.")}}}
+	// The model produces two no-tool-call finish turns: the first is rejected via
+	// VerifyContinue (grace round), the second is terminal.
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("The task is unrelated — the verify command was already failing before any changes.")},
+		{llm.Text("Still failing — nothing I can do.")},
+	}}
 	cfg := Config{
 		Model:          ns,
 		Sandbox:        sbWith(t, nil),
@@ -229,8 +235,8 @@ func TestVerifyContinueBaselineIdenticalFingerprint(t *testing.T) {
 	if res.Outcome != Unverified {
 		t.Errorf("Outcome = %s, want Unverified", res.Outcome)
 	}
-	if res.Iterations != 1 {
-		t.Errorf("Iterations = %d, want 1 (finish was NOT rejected into more work)", res.Iterations)
+	if res.Iterations != 2 {
+		t.Errorf("Iterations = %d, want 2 (first finish was rejected, second was terminal)", res.Iterations)
 	}
 	if !strings.Contains(res.Reason, "note: the verify command was ALREADY failing") {
 		t.Errorf("Reason = %q, want it to mention the pre-existing red baseline", res.Reason)
@@ -238,8 +244,8 @@ func TestVerifyContinueBaselineIdenticalFingerprint(t *testing.T) {
 	if !res.VerifyBaselineRed {
 		t.Error("VerifyBaselineRed = false, want true")
 	}
-	if len(ns.calls) != 1 {
-		t.Errorf("model called %d times, want 1 (no continuation round-trip)", len(ns.calls))
+	if len(ns.calls) != 2 {
+		t.Errorf("model called %d times, want 2 (first rejected into grace round, second terminal)", len(ns.calls))
 	}
 }
 
@@ -280,5 +286,48 @@ func TestVerifyContinueBaselineDifferentFingerprint(t *testing.T) {
 	// The model should have been called at least 3 times (write, finish, continue-feedback, finish).
 	if len(ns.calls) < 3 {
 		t.Errorf("model calls = %d, want >= 3", len(ns.calls))
+	}
+}
+
+// TestVerifyContinueBaselineRescuePreserved proves that the single grace round
+// rescues a fix-the-red-test task: the baseline is red because the verify
+// command fails (here, `test -f calc.go` when calc.go does not exist), and a
+// premature no-tool-call finish fingerprints identically to the baseline. With
+// the grace round, the first identical failure is rejected via VerifyContinue
+// (not terminal), the model gets the real red output, writes the missing file,
+// and the verify passes on the second finish — the run is Answered.
+func TestVerifyContinueBaselineRescuePreserved(t *testing.T) {
+	// VerifyCmd checks for calc.go — missing at baseline, so the baseline is red.
+	// Turn 1: premature finish (no tool calls), fingerprint identical to baseline
+	//         → grace round: rejected via VerifyContinue, model sees red output.
+	// Turn 2: write_file calc.go (actual fix work).
+	// Turn 3: finish — verify now passes because calc.go exists → Answered.
+	ns := &nativeScript{turns: [][]llm.ContentPart{
+		{llm.Text("done")},
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc"})},
+		{llm.Text("done — I created calc.go")},
+	}}
+	cfg := Config{
+		Model:          ns,
+		Sandbox:        sbWith(t, nil),
+		Task:           "fix the build",
+		VerifyCmd:      "test -f calc.go",
+		VerifyContinue: true,
+		MaxIterations:  10,
+	}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunNative: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Errorf("Outcome = %s, want Answered (grace round rescued the premature finish)", res.Outcome)
+	}
+	if !res.VerifyBaselineRed {
+		t.Error("VerifyBaselineRed = false, want true (baseline was red because calc.go was missing)")
+	}
+	// The model should be called 3 times: premature finish (grace rejection),
+	// write_file turn, then successful finish.
+	if len(ns.calls) != 3 {
+		t.Errorf("model calls = %d, want 3 (premature finish, write_file, successful finish)", len(ns.calls))
 	}
 }

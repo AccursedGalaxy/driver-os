@@ -67,6 +67,15 @@ type gates struct {
 
 	verifyBaselineRed bool
 	verifyBaselineOut string
+
+	// baselineGraceUsed tracks whether the single rescue round has been
+	// granted for a baseline-identical verify failure. On the FIRST
+	// identical failure the gate still rejects via VerifyContinue so the
+	// model sees the real red output (rescue for a fix-the-red-test task
+	// where a premature "done" fingerprints identically to the baseline).
+	// Only a SECOND identical failure — after a full repair round —
+	// proves the gate is unsatisfiable and goes terminal.
+	baselineGraceUsed bool
 }
 
 // newGates snapshots the run-start state both closing gates need: the fence
@@ -173,7 +182,16 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (reas
 	if reason != "" && g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
 		reason += " note: the verify command was ALREADY failing before any changes were made (pre-existing red baseline — the gate may be unsatisfiable)"
 		if verifyOut != "" && runFingerprint(verifyOut) == runFingerprint(g.verifyBaselineOut) {
-			baselineUnsatisfiable = true
+			if !g.baselineGraceUsed {
+				g.baselineGraceUsed = true
+				// Grant one rescue round: the first identical failure still
+				// goes through VerifyContinue rejection so the model sees the
+				// real red output and can do actual work. Only a second
+				// identical failure — after a full round — proves the gate
+				// is unsatisfiable and goes terminal.
+			} else {
+				baselineUnsatisfiable = true
+			}
 		}
 	}
 	return reason, baselineUnsatisfiable
