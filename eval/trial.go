@@ -181,6 +181,16 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	}
 	defer sb.Close()
 
+	var setupLadderVerify *string
+	if customRun != nil && c.Setup != nil {
+		res, err := c.Setup(ctx, dir, sb)
+		if err != nil {
+			tr.Err = "setup: " + err.Error()
+			return tr
+		}
+		setupLadderVerify = res.LadderVerify
+	}
+
 	cfg := c.Config // copy the knob template; fill the per-trial fields.
 	cfg.Model = m.Provider
 	cfg.Sandbox = sb
@@ -192,8 +202,16 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	// that the custom runner (ladder) receives.  This is independent of the
 	// CLI -verify-cmd flag — the case constructor is the authority on what a
 	// meaningful in-run red/green signal looks like for this task.
-	if customRun != nil && c.LadderVerify != "" {
-		cfg.VerifyCmd = c.LadderVerify
+	ladderVerify := c.LadderVerify
+	if setupLadderVerify != nil {
+		ladderVerify = *setupLadderVerify
+	}
+	if customRun != nil {
+		if ladderVerify == "" {
+			tr.Err = fmt.Sprintf("ladder: case %q has no validated LadderVerify signal", c.Name)
+			return tr
+		}
+		cfg.VerifyCmd = ladderVerify
 		// Abort immediately if the verify baseline is red — a permanently-red
 		// gate (e.g. test ids that don't exist on the base checkout) would burn
 		// every ladder attempt to hit_cap for no gain.

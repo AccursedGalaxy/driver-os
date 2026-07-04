@@ -61,6 +61,14 @@ type Case struct {
 	// sandbox's lifetime (Close). nil => the default host-local sandbox.
 	Sandbox func(ctx context.Context, dir string) (sandbox.Sandbox, error)
 
+	// Setup, when non-nil, runs after the fixture is materialized and the
+	// per-trial sandbox exists, but before the agent/runner starts. It can do
+	// case-specific in-sandbox measurement and return a per-trial LadderVerify
+	// command. The returned command overrides LadderVerify for this trial,
+	// including the empty string (used to refuse ladder runs whose signal could
+	// not be validated).
+	Setup func(ctx context.Context, root string, sb sandbox.Sandbox) (SetupResult, error)
+
 	// Tools, when non-nil, builds the agent's toolset from the per-trial sandbox.
 	// It is the seam for replaying a case under the PRODUCTION toolset of the binary
 	// it mirrors: commit-msg and issue-bot run ReadOnlyTools (no write/edit), not the
@@ -84,6 +92,12 @@ type Case struct {
 	// self-check for the single-model path and is not a substitute for a
 	// case-declared ladder signal.
 	LadderVerify string
+}
+
+type SetupResult struct {
+	// LadderVerify, when non-nil, overrides Case.LadderVerify for this trial.
+	// A pointer distinguishes "no override" from "measured empty; refuse".
+	LadderVerify *string
 }
 
 // TrialRunFunc is an optional custom trial runner. When set on a Model, RunTrial

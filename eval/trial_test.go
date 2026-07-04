@@ -262,6 +262,7 @@ func TestRunTrial_ExplicitTextRuns(t *testing.T) {
 func TestRunTrial_LadderSeam(t *testing.T) {
 	c := markerCase()
 	c.VCSWorkspace = true // required by ladder runner; will auto-init git in temp dir.
+	c.LadderVerify = "true"
 
 	// Stub model with a custom runner that simulates a ladder: 2 attempts,
 	// winner at rung 2 -> escalated.
