@@ -256,7 +256,7 @@ func (g *gates) fenceCheck(ctx context.Context) string {
 
 func (g *gates) verifySafety(ctx context.Context) (outcome Outcome, reason string, noContinue bool) {
 	if reason := g.fenceCheck(ctx); reason != "" {
-		return Unverified, reason, false
+		return Unverified, reason, true
 	}
 	if sReason := g.scopeCheck(ctx); sReason != "" {
 		return ScopeViolation, sReason, false

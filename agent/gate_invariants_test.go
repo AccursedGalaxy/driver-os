@@ -295,7 +295,6 @@ func TestGateInvariants_ReviewerVerifyContinueStopsAtReviewRounds(t *testing.T) 
 }
 
 func TestGateInvariants_FenceViolationDoesNotGrindWithVerifyContinue(t *testing.T) {
-	t.Skip("known bug: fence violation returns noContinue=false; fix queued — backlog 2026-07-04 review pass 2 item 2")
 	for _, loop := range conformanceLoops(
 		[]string{"run printf changed > x_test.go", "answer done"},
 		[][]llm.ContentPart{
