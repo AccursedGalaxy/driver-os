@@ -1,10 +1,14 @@
 # driver-os
 
-A small Go library for experimenting with LLM **model behavior** across
-providers behind one uniform interface — swap providers freely, or run several
-at once to compare/race them. Modeled on the `database/sql` driver pattern.
+An agent-harness research platform, built on a small Go library for driving LLM
+**model behavior** across providers behind one uniform interface — swap
+providers freely, or run several at once to compare/race them. The library core
+(`llm/`) is modeled on the `database/sql` driver pattern; on top of it sit a
+think→act→observe agent loop, sandbox isolation tiers, an eval/dogfood harness,
+and an adversarial council review system (see the **Status** section below for
+the full surface).
 
-See [DESIGN.md](DESIGN.md) for the full spec and the reasoning behind each
+See [DESIGN.md](DESIGN.md) for the library spec and the reasoning behind each
 decision.
 
 ## Supported providers
@@ -15,12 +19,12 @@ decision.
 | OpenRouter        | `openaicompat`  | `OPENROUTER_API_KEY` | `openrouter`      | ✅ |
 | X.AI (Grok)       | `openaicompat`  | `X_AI_API_KEY`       | `xai`             | ✅ |
 | Local (Ollama, …) | `openaicompat`  | — (keyless)          | `ollama`          | ✅ |
-| Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | —                 | 🚧 not yet wired |
+| Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | `anthropic`       | ✅ |
 
 The first four speak the OpenAI Chat Completions wire format, so a single adapter
-covers them, and `cmd/agent` can select any of them with `-provider`. Claude is
-designed to use its native API (DESIGN.md, decision 3) but the `anthropic` adapter
-is **not built yet** — the CLI cannot target it.
+covers them. Claude uses its own **native** Messages API via the `anthropic`
+adapter (DESIGN.md, decision 3) — signed-thinking replay, the 5-family effort
+knob, and prompt caching. `cmd/agent` can select any of the five with `-provider`.
 
 ## Quick start
 
