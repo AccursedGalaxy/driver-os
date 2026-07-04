@@ -314,78 +314,30 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason})
 			// (P1/continuation seam) The model's final tool-call-free turn is part of the
 			// conversation a Session carries forward — append it before any terminal
-			// return so RunResult.Messages ends with the answer the model gave. Covers all
-			// three exits below (Unverified-on-fail, empty-answer, Answered); the
-			// VerifyContinue branch relied on its own append before this existed.
+			// return so RunResult.Messages ends with the answer the model gave.
 			messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
-			// (P5/HP-5) A tool-call-free turn is the done-signal — but it fires even
-			// when the model narrated intent, acknowledged failure, or hallucinated
-			// success (DOGFOOD R9/R10, the most common false-positive in the bake-offs).
-			// Re-verify the claimed state before accepting it (fence first, then VerifyCmd).
-			outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
-			// ScopeViolation is terminal — never continue, regardless of VerifyContinue.
-			if outcome == ScopeViolation {
-				res.Outcome = ScopeViolation
-				res.Reason = reason
-				return res, nil
-			}
-			// A caller cancel mid-answer stops the run cleanly as Canceled — the
-			// verify command was skipped (verifyRun refuses on a canceled ctx), and
-			// the run must not continue (the next model call would also fail).
-			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
-			// a custom signalError cause, and Err() is cause-agnostic while still
-			// distinguishing deadline expiry.
-			if errors.Is(ctx.Err(), context.Canceled) {
-				res.Outcome = Canceled
-				res.Reason = "run canceled by the caller (interrupt)"
-				return res, nil
-			}
-			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
-				// Continue-on-fail: re-ground with the real failing state (P4) and keep
-				// working rather than accept a premature finish. The assistant's
-				// tool-call-free turn must precede the feedback so the conversation stays
-				// well-formed.
-				cfg.Obs.Note("finish rejected (not verified) — continuing")
-				// (the assistant's tool-call-free turn was appended above, before the
-				// res.Steps record — the conversation stays well-formed for the feedback.)
-				messages = append(messages, llm.User("OBSERVATION:\nNot finished — you stopped calling tools, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
+			dec := gs.finish(ctx, finishInput{
+				answer:               answer,
+				lastRunFailed:        tr.lastRunFailed,
+				canContinue:          i < maxIter,
+				verifyContinuePhrase: "you stopped calling tools",
+				grounded:             grounded,
+				memoryScope:          scope,
+				unverifiedNotePrefix: "answer not verified",
+				reviewBlockedPrefix:  "answer blocked by review",
+			})
+			switch dec.kind {
+			case finishContinue:
+				messages = append(messages, llm.User(dec.feedback))
 				continue
-			}
-			if reason != "" {
-				res.Outcome, res.Answer, res.Reason = outcome, answer, reason
-				cfg.Obs.Note("answer not verified — " + reason)
+			case finishStop:
+				res.Outcome, res.Answer, res.Reason = dec.outcome, dec.answer, dec.reason
+				return res, nil
+			case finishAnswered:
+				res.Outcome, res.Answer = Answered, dec.answer
+				res.memDone = dec.memDone
 				return res, nil
 			}
-			// (Empty-answer guard) The model ended its turn with no tool call AND no
-			// prose. Verification may have passed (or none was configured), but a
-			// content-free finish is the model going silent, not a delivered answer —
-			// recording it as Answered/exit-0 lets an empty string read as a clean pass.
-			// Flag it as a non-pass instead; the defer still salvages any earlier prose
-			// into Answer for a relaying caller, but the Outcome stays Unverified.
-			if answer == "" {
-				res.Outcome, res.Reason = Unverified, "empty final answer — the model stopped without producing an answer"
-				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
-				return res, nil
-			}
-			// (REVIEW-GATE slice 1) Stage 2, only now that fence + VerifyCmd are
-			// green (execution-first) — see Run's twin for the contract.
-			if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
-				cfg.Obs.Note("finish rejected (review blockers) — continuing")
-				messages = append(messages, llm.User("OBSERVATION:\n"+fb))
-				continue
-			} else if blockReason != "" {
-				res.Outcome, res.Answer, res.Reason = Unverified, answer, blockReason
-				cfg.Obs.Note("answer blocked by review — " + blockReason)
-				return res, nil
-			}
-			res.Outcome, res.Answer = Answered, answer
-			cfg.Obs.Done(answer)
-			if grounded {
-				res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, answer)
-			} else if cfg.Memory != nil {
-				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
-			}
-			return res, nil
 		}
 
 		cfg.Obs.Model(callsSummary(calls, cfg.Tools))
@@ -432,60 +384,29 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// an unanswered tool call.
 				messages = append(messages, llm.ToolResultMsg(fin.ID, msg, false))
 				res.Steps = append(res.Steps, Step{Iter: i, Reply: msg, Verb: fin.Name, Arg: msg, Grounded: grounded, Usage: usageForFinish, ModelMs: modelMsForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason})
-				// (FinishTool verification, finding #3) An explicit finish is NOT ground
-				// truth that the task is done: unless the caller vouches for it
-				// (FinishToolTrustsCaller), route it through the SAME authoritative gate
-				// as prose termination. For a caller with no VerifyCmd/VerifyLastRun
-				// (duet's `say`) verifyTermination is a no-op, so the conversational
-				// finish path is unchanged.
-				if !cfg.FinishToolTrustsCaller {
-					outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
-					// ScopeViolation is terminal — never continue.
-					if outcome == ScopeViolation {
-						res.Outcome = ScopeViolation
-						res.Reason = reason
-						return res, nil
-					}
-					// A caller cancel mid-finish stops the run cleanly as Canceled.
-					// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
-					// a custom signalError cause, and Err() is cause-agnostic while still
-					// distinguishing deadline expiry.
-					if errors.Is(ctx.Err(), context.Canceled) {
-						res.Outcome = Canceled
-						res.Reason = "run canceled by the caller (interrupt)"
-						return res, nil
-					}
-					if reason != "" {
-						if cfg.VerifyContinue && i < maxIter && !noContinue {
-							cfg.Obs.Note("finish rejected (not verified) — continuing")
-							messages = append(messages, llm.User("OBSERVATION:\nNot finished — you called the finish tool, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
-							continue
-						}
-						res.Outcome, res.Answer, res.Reason = outcome, msg, reason
-						cfg.Obs.Note("finish not verified — " + reason)
-						return res, nil
-					}
-					// (REVIEW-GATE slice 1) Stage 2 gates the explicit finish exactly
-					// like prose termination. A trusted-caller finish (duet's `say`)
-					// skips it with the rest of the gate, above.
-					if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
-						cfg.Obs.Note("finish rejected (review blockers) — continuing")
-						messages = append(messages, llm.User("OBSERVATION:\n"+fb))
-						continue
-					} else if blockReason != "" {
-						res.Outcome, res.Answer, res.Reason = Unverified, msg, blockReason
-						cfg.Obs.Note("finish blocked by review — " + blockReason)
-						return res, nil
-					}
+				dec := gs.finish(ctx, finishInput{
+					answer:               msg,
+					lastRunFailed:        tr.lastRunFailed,
+					canContinue:          i < maxIter,
+					trusted:              cfg.FinishToolTrustsCaller,
+					verifyContinuePhrase: "you called the finish tool",
+					grounded:             grounded,
+					memoryScope:          scope,
+					unverifiedNotePrefix: "finish not verified",
+					reviewBlockedPrefix:  "finish blocked by review",
+				})
+				switch dec.kind {
+				case finishContinue:
+					messages = append(messages, llm.User(dec.feedback))
+					continue
+				case finishStop:
+					res.Outcome, res.Answer, res.Reason = dec.outcome, dec.answer, dec.reason
+					return res, nil
+				case finishAnswered:
+					res.Outcome, res.Answer = Answered, dec.answer
+					res.memDone = dec.memDone
+					return res, nil
 				}
-				res.Outcome, res.Answer = Answered, msg
-				cfg.Obs.Done(msg)
-				if grounded {
-					res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, msg)
-				} else if cfg.Memory != nil {
-					cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
-				}
-				return res, nil
 			}
 		}
 

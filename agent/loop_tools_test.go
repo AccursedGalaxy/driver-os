@@ -1507,7 +1507,7 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 	// The FinishTool bug: an explicit finish must NOT be recorded as Answered when
 	// the caller's authoritative VerifyCmd fails — an explicit finish is not ground
 	// truth that the task is done. It routes through the same gate as prose
-	// termination unless the caller opts out with FinishToolTrustsCaller.
+	// termination unless the caller vouches for completion with FinishToolTrustsCaller.
 	mk := func() (*nativeScript, map[string]Tool, sandbox.Sandbox) {
 		sb := sbWith(t, nil)
 		tools := DefaultTools(sb, 0)
@@ -1532,7 +1532,8 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 		t.Errorf("Answer = %q, want the finish message preserved on the unverified finish", res.Answer)
 	}
 
-	// Opt-out: a caller that vouches for its finish keeps the old skip-verification behavior.
+	// Trusted completion: a caller that vouches for its finish skips VerifyCmd,
+	// while safety/cancel/empty-answer gates still run elsewhere.
 	ns, tools, sb = mk()
 	res, err = RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", VerifyCmd: "exit 1",
@@ -1542,6 +1543,6 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 		t.Fatalf("RunNative (trusted): %v", err)
 	}
 	if res.Outcome != Answered {
-		t.Fatalf("Outcome = %q (%s), want Answered — FinishToolTrustsCaller skips the gate", res.Outcome, res.Reason)
+		t.Fatalf("Outcome = %q (%s), want Answered — FinishToolTrustsCaller skips completion verification", res.Outcome, res.Reason)
 	}
 }

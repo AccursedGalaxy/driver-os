@@ -300,10 +300,9 @@ func TestConformance_NativeFinishToolAnswered(t *testing.T) {
 	}
 }
 
-func TestConformance_CurrentBug_EmptyFinishToolAnswered(t *testing.T) {
-	// Documents the current bug: an explicit FinishTool call with no message and no
-	// bridge arg bypasses the empty-answer guard and is accepted as Answered with an
-	// empty Answer. The planned Slice-1 extraction flips this to Unverified.
+func TestConformance_EmptyFinishToolUnverified(t *testing.T) {
+	// Fixed by the Slice-1 extraction: an explicit FinishTool call with no message
+	// and no bridge arg now flows through the shared empty-answer guard.
 	cfg := conformanceBaseConfig(t)
 	cfg.Tools = finishTools(t)
 	cfg.FinishTool = "say"
@@ -312,30 +311,73 @@ func TestConformance_CurrentBug_EmptyFinishToolAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertOutcome(t, res, Answered, "")
+	assertOutcome(t, res, Unverified, "empty final answer")
 	if res.Answer != "" {
 		t.Fatalf("Answer = %q, want empty", res.Answer)
 	}
 }
 
-func TestConformance_CurrentBehavior_TrustedBypassesVerify(t *testing.T) {
-	// Current behavior: FinishToolTrustsCaller bypasses verifyTermination entirely,
-	// so even a red VerifyCmd does not downgrade the finish. Slice 1 narrows this;
-	// fence/scope+cancel will still run.
-	cfg := conformanceBaseConfig(t)
-	cfg.Tools = finishTools(t)
-	cfg.FinishTool = "say"
-	cfg.FinishToolTrustsCaller = true
-	cfg.VerifyCmd = "false"
-	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
-	res, err := RunNative(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertOutcome(t, res, Answered, "")
-	if res.Answer != "done" {
-		t.Fatalf("Answer = %q, want done", res.Answer)
-	}
+func TestConformance_TrustedFinishBypassesCompletionOnly(t *testing.T) {
+	// Fixed by the Slice-1 extraction: FinishToolTrustsCaller may vouch for task
+	// completion (VerifyCmd/VerifyLastRun and review), but not for safety boundaries,
+	// caller cancellation, or the empty-answer guard.
+	t.Run("bypasses red VerifyCmd", func(t *testing.T) {
+		cfg := conformanceBaseConfig(t)
+		cfg.Tools = finishTools(t)
+		cfg.FinishTool = "say"
+		cfg.FinishToolTrustsCaller = true
+		cfg.VerifyCmd = "false"
+		cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
+		res, err := RunNative(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertOutcome(t, res, Answered, "")
+		if res.Answer != "done" {
+			t.Fatalf("Answer = %q, want done", res.Answer)
+		}
+	})
+
+	t.Run("honors caller cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cfg := conformanceBaseConfig(t)
+		cfg.Tools = finishTools(t)
+		cfg.FinishTool = "say"
+		cfg.FinishToolTrustsCaller = true
+		cfg.Model = &cancelAfterGenerate{cancel: cancel, parts: []llm.ContentPart{finishCall("f1", map[string]any{"message": "done"})}}
+		res, err := RunNative(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertOutcome(t, res, Canceled, "canceled")
+	})
+
+	t.Run("honors test fence", func(t *testing.T) {
+		sb := sbWith(t, map[string]string{"x_test.go": "original\n"})
+		cfg := conformanceBaseConfig(t)
+		cfg.Sandbox = sb
+		cfg.Tools = DefaultTools(sb, time.Second)
+		cfg.Tools["say"] = Tool{
+			Name:       "say",
+			Desc:       "say the final message",
+			NativeDesc: "send the final message",
+			Run: func(context.Context, string) (string, error) {
+				return "", nil
+			},
+		}
+		cfg.FinishTool = "say"
+		cfg.FinishToolTrustsCaller = true
+		cfg.TestFence = []string{"*_test.go"}
+		cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{
+			structuredCall("c1", "run", map[string]any{"command": "printf changed > x_test.go"}),
+			finishCall("f1", map[string]any{"message": "done"}),
+		}}}
+		res, err := RunNative(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertOutcome(t, res, Unverified, "test fence violated")
+	})
 }
 
 type cancelAfterGenerate struct {

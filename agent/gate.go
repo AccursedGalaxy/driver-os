@@ -254,22 +254,17 @@ func (g *gates) fenceCheck(ctx context.Context) string {
 	return g.fence.violation(gctx, g.cfg.Sandbox)
 }
 
-// verifyTermination is stages 0+1 for a model-initiated finish (answer /
-// FinishTool): fence first — a run that edited the tests is Unverified no
-// matter what the suite now says — then scope check (any changed path outside
-// the configured scope is ScopeViolation, terminal), then the caller-named
-// VerifyCmd (or the VerifyLastRun heuristic).
-//
-// It returns (outcome, reason, noContinue). When outcome is "" and reason is ""
-// the gate is clean. A non-empty outcome MUST be used by the caller as
-// res.Outcome — ScopeViolation is terminal regardless of VerifyContinue.
-func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
+func (g *gates) verifySafety(ctx context.Context) (outcome Outcome, reason string, noContinue bool) {
 	if reason := g.fenceCheck(ctx); reason != "" {
 		return Unverified, reason, false
 	}
 	if sReason := g.scopeCheck(ctx); sReason != "" {
 		return ScopeViolation, sReason, false
 	}
+	return "", "", false
+}
+
+func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
 	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
 	if reason == "" {
 		return "", "", false
@@ -297,6 +292,27 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (outc
 		}
 	}
 	return Unverified, reason, noContinue
+}
+
+func (g *gates) verifyFinish(ctx context.Context, lastRunFailed bool, trusted bool) (outcome Outcome, reason string, noContinue bool) {
+	outcome, reason, noContinue = g.verifySafety(ctx)
+	if reason != "" || trusted {
+		return outcome, reason, noContinue
+	}
+	return g.verifyCompletion(ctx, lastRunFailed)
+}
+
+// verifyTermination is stages 0+1 for a model-initiated finish (answer /
+// FinishTool): fence first — a run that edited the tests is Unverified no
+// matter what the suite now says — then scope check (any changed path outside
+// the configured scope is ScopeViolation, terminal), then the caller-named
+// VerifyCmd (or the VerifyLastRun heuristic).
+//
+// It returns (outcome, reason, noContinue). When outcome is "" and reason is ""
+// the gate is clean. A non-empty outcome MUST be used by the caller as
+// res.Outcome — ScopeViolation is terminal regardless of VerifyContinue.
+func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
+	return g.verifyFinish(ctx, lastRunFailed, false)
 }
 
 // upgradeIfVerified is the kill/cap/deadline/budget exit, gate-composed: the

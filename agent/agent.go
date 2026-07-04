@@ -616,15 +616,16 @@ type Config struct {
 	// must still be present in Tools so it's advertised to the model.
 	FinishTool string
 
-	// FinishToolTrustsCaller opts a FinishTool call OUT of the closing verification
-	// gate. By default a finish is NOT ground truth that the task is done: when the
-	// caller configured VerifyCmd/VerifyLastRun, an explicit finish routes through
-	// the SAME verifyTermination gate as prose termination (a finish while the build
-	// is red is Unverified, not a false Answered — the harness review's FinishTool
-	// hole). Set this true when the finish IS the deliverable and there is nothing to
-	// re-verify — a conversational caller whose whole turn is "send a message"
-	// (duet's `say`) that sets no VerifyCmd is unaffected either way, since
-	// verifyTermination is a no-op without a configured check. Default false.
+	// FinishToolTrustsCaller lets a FinishTool call vouch for task completion while
+	// still enforcing safety boundaries. By default a finish is NOT ground truth
+	// that the task is done: when the caller configured VerifyCmd/VerifyLastRun, an
+	// explicit finish routes through the SAME completion gate as prose termination
+	// (a finish while the build is red is Unverified, not a false Answered — the
+	// harness review's FinishTool hole). Set this true when the finish IS the
+	// deliverable and there is nothing to re-verify — a conversational caller whose
+	// whole turn is "send a message". Even then, the test fence, diff scope,
+	// caller-cancel check, empty-answer guard, and grounded-memory policy still run.
+	// Default false.
 	FinishToolTrustsCaller bool
 }
 
@@ -917,79 +918,31 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if verb == "answer" {
 			step.Grounded = grounded
 			res.Steps = append(res.Steps, step)
-			// (P5/HP-5) Don't trust the done-signal blindly: re-verify the claimed
-			// terminal state before accepting it (fence first, then scope, then VerifyCmd).
-			outcome, reason, noContinue := gs.verifyTermination(ctx, tr.lastRunFailed)
-			// ScopeViolation is terminal — never continue, regardless of VerifyContinue.
-			if outcome == ScopeViolation {
-				res.Outcome = ScopeViolation
-				res.Reason = reason
-				return res, nil
-			}
-			// A caller cancel mid-answer stops the run cleanly as Canceled — the
-			// verify command was skipped (verifyRun refuses on a canceled ctx), and
-			// the run must not continue (the next model call would also fail).
-			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
-			// a custom signalError cause, and Err() is cause-agnostic while still
-			// distinguishing deadline expiry.
-			if errors.Is(ctx.Err(), context.Canceled) {
-				res.Outcome = Canceled
-				res.Reason = "run canceled by the caller (interrupt)"
-				return res, nil
-			}
-			if reason != "" && cfg.VerifyContinue && i < maxIter && !noContinue {
-				// Continue-on-fail: a premature finish becomes more work, not a stop.
-				// Feed the real failing state back (P4) and keep going.
-				cfg.Obs.Note("finish rejected (not verified) — continuing")
-				messages = append(messages, llm.User("OBSERVATION:\nNot finished — you answered, but the task is not verified:\n"+reason+"\nKeep working: fix the code and re-run until it passes."))
+			dec := gs.finish(ctx, finishInput{
+				answer:               arg,
+				lastRunFailed:        tr.lastRunFailed,
+				canContinue:          i < maxIter,
+				verifyContinuePhrase: "you answered",
+				grounded:             grounded,
+				memoryScope:          scope,
+				unverifiedNotePrefix: "answer not verified",
+				reviewBlockedPrefix:  "answer blocked by review",
+			})
+			switch dec.kind {
+			case finishContinue:
+				messages = append(messages, llm.User(dec.feedback))
 				continue
-			}
-			if reason != "" {
-				// No budget left (or not in continue-mode): an honest non-pass, not a stored fact.
-				res.Outcome = outcome
-				res.Answer = arg
-				res.Reason = reason
-				cfg.Obs.Note("answer not verified — " + reason)
+			case finishStop:
+				res.Outcome = dec.outcome
+				res.Reason = dec.reason
+				res.Answer = dec.answer
+				return res, nil
+			case finishAnswered:
+				res.Outcome = Answered
+				res.Answer = dec.answer
+				res.memDone = dec.memDone
 				return res, nil
 			}
-			// (Empty-answer guard) An `answer` with no content is the model emitting the
-			// done-signal without actually answering. Even when verification passed, an
-			// empty final answer is not a clean pass — flag it so an empty string can't be
-			// recorded as Answered/exit-0.
-			if strings.TrimSpace(arg) == "" {
-				res.Outcome = Unverified
-				res.Reason = "empty final answer — the model stopped without producing an answer"
-				cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
-				return res, nil
-			}
-			// (REVIEW-GATE slice 1) Stage 2, only now that fence + VerifyCmd are
-			// green (execution-first): blocking findings with repair budget left
-			// become an observation and more work (the VerifyContinue pattern);
-			// with the rounds exhausted they are an honest non-pass.
-			if fb, blockReason := gs.reviewFinish(ctx, i < maxIter); fb != "" {
-				cfg.Obs.Note("finish rejected (review blockers) — continuing")
-				messages = append(messages, llm.User("OBSERVATION:\n"+fb))
-				continue
-			} else if blockReason != "" {
-				res.Outcome = Unverified
-				res.Answer = arg
-				res.Reason = blockReason
-				cfg.Obs.Note("answer blocked by review — " + blockReason)
-				return res, nil
-			}
-			res.Outcome = Answered
-			res.Answer = arg
-			cfg.Obs.Done(arg)
-			// ---- Principles 1 & 3: persist what we concluded BEYOND this run, so
-			// the next invocation starts smarter. But ONLY if the answer was
-			// tool-verified this run (P4) — otherwise we risk amplifying a guess or
-			// a stale recalled fact into a permanent one. ----
-			if grounded {
-				res.memDone = rememberAsync(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task, arg)
-			} else if cfg.Memory != nil {
-				cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
-			}
-			return res, nil
 		}
 
 		// ---- Principle 5: TWO no-progress detectors. ----
