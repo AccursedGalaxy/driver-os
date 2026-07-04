@@ -314,6 +314,53 @@ func (c Cell) LadderMeanAttempts() float64 {
 	return float64(sum) / float64(ln)
 }
 
+// LadderCostByModel aggregates CostByModel across all ladder trials in this
+// cell. Unpriced models are absent from the map. Returns nil when there are no
+// ladder trials or no per-model data.
+func (c Cell) LadderCostByModel() map[string]float64 {
+	m := make(map[string]float64)
+	for _, t := range c.Trials {
+		if t.Ladder == nil {
+			continue
+		}
+		for model, cost := range t.Ladder.CostByModel {
+			m[model] += cost
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// LadderTouchRateByModel returns, for each model, the fraction of ladder trials
+// in this cell where that model had nonzero cost.  Returns nil when there are
+// no ladder trials.
+func (c Cell) LadderTouchRateByModel() map[string]float64 {
+	ln := c.LadderN()
+	if ln == 0 {
+		return nil
+	}
+	m := make(map[string]float64)
+	for _, t := range c.Trials {
+		if t.Ladder == nil {
+			continue
+		}
+		for model, cost := range t.Ladder.CostByModel {
+			if cost > 0 {
+				m[model]++
+			}
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	for model := range m {
+		m[model] /= float64(ln)
+	}
+	return m
+}
+
 // Manifest is the reproducibility record — pinned ids and settings so a report
 // is a comparable artifact, not a one-off. The CLI fills it (it owns time, git,
 // and the env), keeping this package pure and testable.
@@ -376,14 +423,14 @@ func (r *Report) Markdown() string {
 		// Header.
 		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |")
 		if hasLadder {
-			b.WriteString(" escalation | attempts mean |")
+			b.WriteString(" escalation | $ by model | attempts mean |")
 		}
 		b.WriteByte('\n')
 
 		// Separator.
 		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|")
 		if hasLadder {
-			b.WriteString("------------|---------------|")
+			b.WriteString("------------|------------|---------------|")
 		}
 		b.WriteByte('\n')
 
@@ -408,6 +455,7 @@ func (r *Report) Markdown() string {
 				renderCostP(c))
 			if hasLadder {
 				b.WriteString(renderLadderEscalation(c))
+				b.WriteString(renderLadderCostByModel(c))
 				fmt.Fprintf(&b, " %.2f |", c.LadderMeanAttempts())
 			}
 			b.WriteByte('\n')
@@ -619,6 +667,54 @@ func renderLadderEscalation(c Cell) string {
 		return " — |"
 	}
 	return fmt.Sprintf(" %d/%d (%.2f) |", c.LadderEscalations(), ln, c.LadderEscalationRate())
+}
+
+// renderLadderCostByModel renders the "$ by model" column for ladder cells:
+// " model $cost (share% · touch%) · …" for ladder cells, " — |" for non-ladder.
+// Models are sorted by total cost descending so the dominant model is first.
+func renderLadderCostByModel(c Cell) string {
+	byModel := c.LadderCostByModel()
+	if byModel == nil || len(byModel) == 0 {
+		return " — |"
+	}
+	touch := c.LadderTouchRateByModel()
+
+	// Sort models by cost descending for stable, readable output.
+	type kv struct {
+		m string
+		c float64
+	}
+	pairs := make([]kv, 0, len(byModel))
+	for m, cost := range byModel {
+		pairs = append(pairs, kv{m, cost})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].c != pairs[j].c {
+			return pairs[i].c > pairs[j].c
+		}
+		return pairs[i].m < pairs[j].m
+	})
+
+	// Compute total for share percentages.
+	var total float64
+	for _, p := range pairs {
+		total += p.c
+	}
+
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		share := 0.0
+		if total > 0 {
+			share = p.c / total * 100
+		}
+		touchPct := 0.0
+		if touch != nil {
+			touchPct = touch[p.m] * 100
+		}
+		parts[i] = fmt.Sprintf("%s %s (%.0f%% · %.0f%%)",
+			p.m, humanUSD(p.c), share, touchPct)
+	}
+	return " " + strings.Join(parts, " · ") + " |"
 }
 
 // humanUSD formats a dollar amount with enough precision to be useful at eval

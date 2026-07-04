@@ -346,3 +346,99 @@ func TestMarkdownRendersLadderMetrics(t *testing.T) {
 		t.Error("markdown must NOT render escalation column when no ladder data")
 	}
 }
+
+func TestCellLadderCostByModel(t *testing.T) {
+	// Two ladder trials: the reviewer model (gpt-5.5) appears on both trials,
+	// the cheap rung-1 model (deepseek-v4-flash) appears on both, and the
+	// expensive rung-2 model (claude-opus-4.8) only on the escalated one.
+	cell := Cell{
+		Case:  "selfhist",
+		Model: "ladder:abc123",
+		Trials: []Trial{
+			{
+				Outcome: agent.Answered,
+				Pass:    true,
+				Ladder: &TrialLadder{
+					Attempts:   1,
+					WinnerRung: 1,
+					Escalated:  false,
+					Cost:       1.15,
+					Priced:     true,
+					CostByModel: map[string]float64{
+						"deepseek/deepseek-v4-flash": 0.61,
+						"openai/gpt-5.5":            0.54,
+					},
+				},
+			},
+			{
+				Outcome: agent.Answered,
+				Pass:    true,
+				Ladder: &TrialLadder{
+					Attempts:   2,
+					WinnerRung: 2,
+					Escalated:  true,
+					Cost:       3.32,
+					Priced:     true,
+					CostByModel: map[string]float64{
+						"deepseek/deepseek-v4-flash":     0.61,
+						"anthropic/claude-opus-4.8":      1.50,
+						"openai/gpt-5.5":                 1.21,
+					},
+				},
+			},
+		},
+	}
+
+	// Per-model totals.
+	byModel := cell.LadderCostByModel()
+	if byModel == nil {
+		t.Fatal("LadderCostByModel returned nil")
+	}
+	if math.Abs(byModel["deepseek/deepseek-v4-flash"]-1.22) > 1e-4 {
+		t.Errorf("deepseek total = %v, want 1.22", byModel["deepseek/deepseek-v4-flash"])
+	}
+	if math.Abs(byModel["anthropic/claude-opus-4.8"]-1.50) > 1e-4 {
+		t.Errorf("claude total = %v, want 1.50", byModel["anthropic/claude-opus-4.8"])
+	}
+	if math.Abs(byModel["openai/gpt-5.5"]-1.75) > 1e-4 {
+		t.Errorf("gpt-5.5 total = %v, want 1.75", byModel["openai/gpt-5.5"])
+	}
+
+	// Touch rates: deepseek and gpt-5.5 on 2/2 = 100%, claude on 1/2 = 50%.
+	touch := cell.LadderTouchRateByModel()
+	if touch == nil {
+		t.Fatal("LadderTouchRateByModel returned nil")
+	}
+	if math.Abs(touch["deepseek/deepseek-v4-flash"]-1.0) > 1e-4 {
+		t.Errorf("deepseek touch = %v, want 1.0", touch["deepseek/deepseek-v4-flash"])
+	}
+	if math.Abs(touch["openai/gpt-5.5"]-1.0) > 1e-4 {
+		t.Errorf("gpt-5.5 touch = %v, want 1.0", touch["openai/gpt-5.5"])
+	}
+	if math.Abs(touch["anthropic/claude-opus-4.8"]-0.50) > 1e-4 {
+		t.Errorf("claude touch = %v, want 0.50", touch["anthropic/claude-opus-4.8"])
+	}
+
+	// Markdown must contain "$ by model" column header.
+	rep := &Report{Manifest: Manifest{TrialsPer: 2}, Cells: []Cell{cell}}
+	md := rep.Markdown()
+	if !strings.Contains(md, "$ by model") {
+		t.Fatalf("markdown missing $ by model column:\n%s", md)
+	}
+	// Check the breakdown line: it should mention all three models with
+	// costs, shares, and touch rates.
+	if !strings.Contains(md, "deepseek/deepseek-v4-flash") {
+		t.Errorf("markdown missing deepseek model in $ by model:\n%s", md)
+	}
+	if !strings.Contains(md, "claude-opus-4.8") {
+		t.Errorf("markdown missing claude model in $ by model:\n%s", md)
+	}
+	if !strings.Contains(md, "openai/gpt-5.5") {
+		t.Errorf("markdown missing gpt-5.5 model in $ by model:\n%s", md)
+	}
+	// Total cost across models: 1.22+1.50+1.75 = 4.47.
+	// Claude share: 1.50/4.47 ≈ 34%, gpt-5.5 share: 1.75/4.47 ≈ 39%.
+	if !strings.Contains(md, "34%") && !strings.Contains(md, "39%") {
+		t.Errorf("markdown should contain share percentages; got:\n%s", md)
+	}
+}

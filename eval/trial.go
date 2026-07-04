@@ -88,6 +88,12 @@ type TrialLadder struct {
 	Escalated  bool    // true when any attempt went past rung 1 (the NORTH-STAR guard).
 	Cost       float64 // USD cost of all ladder attempts summed; valid only when Priced is true.
 	Priced     bool    // whether at least one attempt had a cost known to the price table.
+
+	// CostByModel is the per-model dollar attribution: solver cost under its rung
+	// model id, reviewer cost under the reviewer model id, planner under the
+	// planner model id. The sum across entries equals Cost (modulo pricing
+	// gaps). nil for non-ladder trials (omitempty keeps JSON compact).
+	CostByModel map[string]float64 `json:"cost_by_model,omitempty"`
 }
 
 // RunTrial executes one trial: materialize a PRISTINE fixture into a fresh temp
