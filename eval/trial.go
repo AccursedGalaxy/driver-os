@@ -119,7 +119,7 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	// 2. Normal single-model path: protocol/capability mismatch must not
 	//    materialise the fixture (the original HP-11 guard).
 	var run func(context.Context, agent.Config) (*agent.RunResult, error)
-	var customRun func(context.Context, agent.Config) (*agent.RunResult, *TrialLadder, error)
+	var customRun func(context.Context, agent.Config, string) (*agent.RunResult, *TrialLadder, error)
 
 	if m.Run != nil {
 		customRun = m.Run
@@ -206,7 +206,7 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	var ladder *TrialLadder
 
 	if customRun != nil {
-		res, ladder, runErr = customRun(ctx, cfg)
+		res, ladder, runErr = customRun(ctx, cfg, c.Name)
 	} else {
 		res, runErr = run(ctx, cfg)
 	}

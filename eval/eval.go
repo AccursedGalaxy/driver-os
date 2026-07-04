@@ -89,9 +89,9 @@ type Case struct {
 // TrialRunFunc is an optional custom trial runner. When set on a Model, RunTrial
 // delegates the solve to this function instead of the normal single-model
 // provider path. The runner receives the per-trial agent.Config (already
-// populated with sandbox, root, task, tools) and must return a RunResult plus,
-// optionally, ladder metadata. nil ladder => no ladder info.
-type TrialRunFunc func(context.Context, agent.Config) (*agent.RunResult, *TrialLadder, error)
+// populated with sandbox, root, task, tools) and the case name, and must return a
+// RunResult plus, optionally, ladder metadata. nil ladder => no ladder info.
+type TrialRunFunc func(context.Context, agent.Config, string) (*agent.RunResult, *TrialLadder, error)
 
 // Model pairs a provider with the human-facing id used in the report. The
 // provider's Name() is its registered identity ("openrouter"), not the model

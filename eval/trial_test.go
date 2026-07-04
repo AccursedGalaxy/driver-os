@@ -268,7 +268,7 @@ func TestRunTrial_LadderSeam(t *testing.T) {
 	m := Model{
 		Label:       "ladder:stub",
 		RequiresVCS: true,
-		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+		Run: func(ctx context.Context, acfg agent.Config, _ string) (*agent.RunResult, *TrialLadder, error) {
 			// Write the marker so the oracle passes.
 			if err := os.WriteFile(acfg.Root+"/result.txt", []byte("DONE"), 0644); err != nil {
 				return nil, nil, err
@@ -328,7 +328,7 @@ func TestRunTrial_LadderRejectsNonVCS(t *testing.T) {
 	m := Model{
 		Label:       "ladder:stub",
 		RequiresVCS: true,
-		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+		Run: func(ctx context.Context, acfg agent.Config, _ string) (*agent.RunResult, *TrialLadder, error) {
 			return nil, nil, nil // never called
 		},
 	}
@@ -358,7 +358,7 @@ func TestRunTrial_VerifyCmdPropagatesToRunner(t *testing.T) {
 	m := Model{
 		Label:       "ladder:stub",
 		RequiresVCS: true,
-		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+		Run: func(ctx context.Context, acfg agent.Config, _ string) (*agent.RunResult, *TrialLadder, error) {
 			capturedCfg = acfg
 			// Write the marker so the oracle passes.
 			if err := os.WriteFile(acfg.Root+"/result.txt", []byte("DONE"), 0644); err != nil {
