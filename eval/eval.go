@@ -43,7 +43,9 @@ import (
 // pristine starting state (Fixture), the independent grader (Oracle), and the
 // agent knobs to run it under (Config — minus the per-trial fields the runner
 // fills: Model, Sandbox, Root, Obs, Task). Protocol picks the loop, mirroring
-// cmd/agent: "tools" (native function-calling, the production path) or "text".
+// cmd/agent: "tools" (default, native function-calling) or "text". A "tools"
+// case refuses to run (infra failure) on a model that lacks tool support,
+// instead of falling back to the text loop, to avoid measurement confounds.
 type Case struct {
 	Name     string
 	Task     string       // the goal handed to the agent.

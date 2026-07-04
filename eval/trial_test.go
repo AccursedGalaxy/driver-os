@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"iter"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,3 +207,51 @@ func TestRunTrialCarriesReview(t *testing.T) {
 		t.Fatal("Trial.Review = nil; a run with the gate configured must carry its ReviewReport")
 	}
 }
+
+type noToolProvider struct {
+	scriptProvider
+	called bool
+}
+
+func (p *noToolProvider) Capabilities() llm.Capabilities { return llm.Capabilities{Tools: false} }
+func (p *noToolProvider) Generate(ctx context.Context, req llm.Request) (*llm.Response, error) {
+	p.called = true
+	return p.scriptProvider.Generate(ctx, req)
+}
+
+func TestRunTrial_RefusesTextFallback(t *testing.T) {
+	p := &noToolProvider{scriptProvider: scriptProvider{name: "no-tools"}}
+	c := markerCase() // Protocol: "tools" (default)
+	tr := RunTrial(context.Background(), c, Model{Label: "no-tools", Provider: p}, 1)
+
+	if tr.Protocol != "refused" {
+		t.Errorf("Protocol = %q, want refused", tr.Protocol)
+	}
+	if tr.Err == "" || !strings.Contains(tr.Err, "refusing text fallback") {
+		t.Errorf("Err = %q, want it to contain 'refusing text fallback'", tr.Err)
+	}
+	if tr.Outcome != "" {
+		t.Errorf("Outcome = %q, want empty (never ran)", tr.Outcome)
+	}
+	if p.called {
+		t.Errorf("provider Generate was called despite refusal")
+	}
+}
+
+func TestRunTrial_ExplicitTextRuns(t *testing.T) {
+	p := &noToolProvider{scriptProvider: scriptProvider{name: "text-only"}}
+	c := markerCase()
+	c.Protocol = "text"
+	tr := RunTrial(context.Background(), c, Model{Label: "text-only", Provider: p}, 1)
+
+	if tr.Protocol != "text" {
+		t.Errorf("Protocol = %q, want text", tr.Protocol)
+	}
+	if tr.Err != "" {
+		t.Errorf("unexpected Err: %s", tr.Err)
+	}
+	if !p.called {
+		t.Errorf("provider Generate was NOT called for explicit text protocol")
+	}
+}
+

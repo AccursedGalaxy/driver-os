@@ -54,6 +54,10 @@ type Trial struct {
 	// trace is dropped — lets the report separate slow runs from token-heavy ones.
 	LatencyMs int64
 
+	// Protocol is the loop actually used: "tools", "text", or "refused" (infra
+	// failure when a tools case met a no-tools model).
+	Protocol string `json:"protocol"`
+
 	// Steps is the full think->act->observe trace, kept for per-trial archival but
 	// EXCLUDED from report.json (json:"-") so the aggregate report stays compact —
 	// WriteFiles writes each trace to its own file under traces/ instead.
@@ -77,6 +81,24 @@ func (t Trial) FalsePositive() bool {
 // suite sweep; the trial just counts as a non-pass.
 func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	tr := Trial{Case: c.Name, Model: m.Label, Index: index}
+
+	// Pick the loop the same way cmd/agent does: native tool-calling when the
+	// provider supports it, else the text loop (if the case allows it).
+	// Check this BEFORE materializing the fixture or opening the sandbox:
+	// a protocol mismatch is a static infra failure of the (Case, Model) pair.
+	var run func(context.Context, agent.Config) (*agent.RunResult, error)
+	switch {
+	case c.Protocol == "text":
+		tr.Protocol = "text"
+		run = agent.Run
+	case m.Provider.Capabilities().Tools:
+		tr.Protocol = "tools"
+		run = agent.RunNative
+	default:
+		tr.Protocol = "refused"
+		tr.Err = "protocol: case requires native tools but model lacks tool support (refusing text fallback)"
+		return tr
+	}
 
 	dir, err := os.MkdirTemp("", "eval-"+c.Name+"-")
 	if err != nil {
@@ -121,13 +143,6 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 			rt = 60 * time.Second
 		}
 		cfg.Tools = c.Tools(sb, rt)
-	}
-
-	// Pick the loop the same way cmd/agent does: native tool-calling when the
-	// provider supports it and the case didn't force text, else the text loop.
-	run := agent.RunNative
-	if c.Protocol == "text" || !m.Provider.Capabilities().Tools {
-		run = agent.Run
 	}
 
 	res, runErr := run(ctx, cfg)
