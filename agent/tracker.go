@@ -45,13 +45,20 @@ type turnTracker struct {
 	lastEditIter int
 	finishNudged bool
 
+	// Observation-repeat detector: tracks a fully observed action fingerprint
+	// (tool call signature + the observation text the model would read) across
+	// consecutive turns. This is the hard backstop for reasoning providers whose
+	// opaque trace moves while the outside world does not.
+	lastToolObsFP string
+	toolObsRepeat int
+
 	// Green-repeat detector: tracks the runFingerprint of the last PASSING run
 	// and how many times the SAME green result recurred with no file mutation
 	// between. A model that keeps re-running the same passing command without
 	// changing anything is spinning — it needs a nudge, not a kill.
-	lastGreenFP  string
-	greenRepeat  int
-	greenNudged  bool
+	lastGreenFP string
+	greenRepeat int
+	greenNudged bool
 }
 
 func newTurnTracker(cfg Config, maxIter int) *turnTracker {
@@ -98,6 +105,26 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 	}
 
 	return t.stagnant >= maxStagnant, t.stagnant
+}
+
+// observeToolObservation ingests a complete action+observation fingerprint for a
+// committed tool turn. Reasoning-only movement is deliberately NOT part of this
+// key: if the same call produces the same observation maxReasoningRepeats times in
+// a row, the outside world is not changing, so kill even for a thinking model.
+// The count is occurrences (not repeats-after-first), matching the backlog's
+// "N consecutive times" wording and giving a max-iteration run set to the hard
+// ceiling a chance to terminate as killed_repeat instead of hit_cap.
+func (t *turnTracker) observeToolObservation(fp string) (kill bool, count int) {
+	if fp == "" {
+		t.lastToolObsFP, t.toolObsRepeat = "", 0
+		return false, 0
+	}
+	if fp == t.lastToolObsFP {
+		t.toolObsRepeat++
+	} else {
+		t.lastToolObsFP, t.toolObsRepeat = fp, 1
+	}
+	return t.toolObsRepeat >= maxReasoningRepeats, t.toolObsRepeat
 }
 
 // observeAction records a dispatched action's mutation/churn signals at

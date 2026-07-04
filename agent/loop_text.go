@@ -310,6 +310,20 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 		}
 
+		// Observation-repeat hard stop: if the SAME tool call keeps producing the
+		// SAME observation, reasoning-token churn is not progress. This runs after
+		// observation augmentation so it keys on exactly what the next turn would read;
+		// the action-only detector above still owns the earlier no-reasoning kill and
+		// its message shape.
+		if kill, count := tr.observeToolObservation(verb + " " + arg + "\nOBSERVATION:\n" + observation); kill {
+			res.Outcome = KilledRepeat
+			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", verb+" "+arg, count)
+			step.Observation = observation
+			res.Steps = append(res.Steps, step)
+			cfg.Obs.Observation(observation)
+			return gs.upgradeIfVerified(ctx, res), nil
+		}
+
 		// Record the step with the FINAL observation — after every augmentation —
 		// so RunResult.Steps and the persisted transcript carry exactly the text
 		// the model read, not a pre-nudge draft (review #5).

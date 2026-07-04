@@ -528,6 +528,49 @@ func TestConformance_KilledRepeat(t *testing.T) {
 	}
 }
 
+func TestConformance_KilledRepeatIgnoresReasoningWhenObservationStagnates(t *testing.T) {
+	// A moving reasoning trace can defer action-only repeat kills, but it is not
+	// progress when the world returns the exact same observation for the exact same
+	// tool call. The hard observation-keyed ceiling is maxReasoningRepeats
+	// occurrences, so a maxIter at that ceiling must kill instead of hitting cap.
+	textModel := &scriptedRz{replies: []string{"read_file x"}, advancing: true}
+	nativeTurns := make([][]llm.ContentPart, maxReasoningRepeats)
+	for i := range nativeTurns {
+		nativeTurns[i] = []llm.ContentPart{
+			structuredCall("r", "read_file", map[string]any{"path": "x"}),
+			llm.ReasoningPart{Raw: []byte(`"thought-` + strings.Repeat("x", i+1) + `"`)},
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, Config) (*RunResult, error)
+	}{
+		{name: "Run", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
+			cfg.Model = textModel
+			return Run(ctx, cfg)
+		}},
+		{name: "RunNative", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
+			cfg.Model = &nativeScript{turns: nativeTurns}
+			return RunNative(ctx, cfg)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.Sandbox = sbWith(t, map[string]string{"x": "same observation\n"})
+			cfg.MaxIterations = maxReasoningRepeats
+			res, err := tc.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, KilledRepeat, "repeated")
+			if res.Iterations > maxReasoningRepeats {
+				t.Fatalf("Iterations = %d, want <= %d", res.Iterations, maxReasoningRepeats)
+			}
+		})
+	}
+}
+
 func TestConformance_KilledSpiral(t *testing.T) {
 	// noProgressWindow=4 discovery calls with DIFFERENT args.
 	text := []string{"list_dir a", "list_dir b", "list_dir c", "list_dir d"}

@@ -435,6 +435,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		usageForTurn := resp.Usage // attribute the turn's usage to its first step only.
 		modelMsForTurn := modelMs  // likewise the model-call latency: a per-turn cost.
 		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
+		turnObservationFPs := make([]string, 0, len(calls))
 		for idx, c := range calls {
 			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 			if idx == 0 {
@@ -474,6 +475,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				obs += greenRepeatNudgeText
 			}
 
+			turnObservationFPs = append(turnObservationFPs, c.Name+" "+signatureArg(c, cfg.Tools)+"\nOBSERVATION:\n"+obs)
 			step.Grounded = grounded
 			step.Observation = obs
 			res.Steps = append(res.Steps, step)
@@ -494,6 +496,18 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnantCount)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
+		}
+
+		// Observation-repeat hard stop: if the same fully observed turn (tool call
+		// signature plus the observation text returned to the model) recurs at the
+		// hard reasoning ceiling, reasoning-signature movement alone is not progress.
+		// This is after all tool results were appended, so returned native transcripts
+		// stay well-formed; the pre-dispatch action-only detector still owns the
+		// earlier no-reasoning KilledRepeat path and message shape.
+		if kill, count := tr.observeToolObservation(strings.Join(turnObservationFPs, "\n---CALL---\n")); kill {
+			res.Outcome = KilledRepeat
+			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, count)
+			return gs.upgradeIfVerified(ctx, res), nil
 		}
 
 		// (code-intel slice 1) Diagnostics feed (shared tracker), once per turn
