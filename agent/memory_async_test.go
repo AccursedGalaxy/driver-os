@@ -2,11 +2,15 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/mneme/provider/fake"
+	"github.com/AccursedGalaxy/mneme/store/sqlite"
 )
 
 // Review #4: the post-answer store must neither be dropped by a Ctrl-C at the
@@ -97,5 +101,86 @@ func TestRunGroundedAnswerStoreIsAwaitable(t *testing.T) {
 	}
 	if !sawStore {
 		t.Errorf("after AwaitMemory the store must have completed and reported; notes=%v", obs.notes)
+	}
+}
+
+// TestConcurrentAddSearchWithRealStore proves that concurrent Add (a background
+// rememberAsync goroutine from the previous turn) and Search (the next turn's
+// recall) on the same mneme Memory backed by a real SQLite store is safe.
+//
+// Safety guarantee: store/sqlite.Open documents "The returned *Store is safe for
+// concurrent use by multiple goroutines" (WAL mode + busy_timeout). The mneme
+// Memory interface states it is "safe for concurrent use to the extent its
+// underlying store, LLM and embedder are" — and both the LLM and embedder used
+// here are stateless HTTP clients. The store itself has TestConcurrentReadsAndWrites
+// in the mneme sqlite package exercising concurrent Search+Insert under -race.
+//
+// This test runs with -race, so any data race in the pipeline (Add's store.Search
+// → LLM → store.Insert racing with Search's embed → store.Search) is caught
+// here. It is the agent-level regression pin for backlog A4.
+func TestConcurrentAddSearchWithRealStore(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	st, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	llm := &fake.LLM{Responses: []string{
+		fake.JSON("Alice adopted a beagle named Max"),
+		fake.JSON("Alice works at Shopify"),
+	}}
+	mem, err := mneme.New(
+		mneme.WithStore(st),
+		mneme.WithLLM(llm),
+		mneme.WithEmbedder(&fake.Embedder{D: 128}),
+		mneme.WithStrategy(mneme.Additive), // one LLM call per Add; simpler for the race test
+	)
+	if err != nil {
+		t.Fatalf("mneme.New: %v", err)
+	}
+
+	scope := mneme.Scope{UserID: "test-user"}
+
+	// Seed one fact so Search always has at least one hit — we exercise the
+	// store.Search code path in BOTH goroutines with real I/O.
+	if _, err := mem.Add(context.Background(), []mneme.Message{
+		{Role: "user", Content: "I work at Shopify"},
+	}, scope); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errc := make(chan error, 2)
+
+	// Simulate rememberAsync: fire Add in the background.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := mem.Add(context.Background(), []mneme.Message{
+			{Role: "user", Content: "I adopted a beagle named Max"},
+		}, scope); err != nil {
+			errc <- fmt.Errorf("background Add: %w", err)
+		}
+	}()
+
+	// Simulate next-turn recall: Search concurrently with the Add.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hits, err := mem.Search(context.Background(), "where does Alice work", scope, 5)
+		if err != nil {
+			errc <- fmt.Errorf("concurrent Search: %w", err)
+			return
+		}
+		if len(hits) == 0 {
+			errc <- fmt.Errorf("Search returned no hits for seeded fact")
+		}
+	}()
+
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatal(err)
 	}
 }

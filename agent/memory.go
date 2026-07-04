@@ -176,6 +176,15 @@ func remember(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.S
 // nil memory returns nil (nothing to await). This is what lets the loop return
 // the result the moment the answer is accepted instead of blocking the caller's
 // emission on an LLM round-trip (review #4).
+//
+// CONCURRENT SAFETY (backlog A4): The goroutine this fires calls mem.Add while
+// the next turn's recall calls mem.Search on the same store concurrently.
+// This is safe: store/sqlite.Open documents the returned Store as "safe for
+// concurrent use by multiple goroutines" (WAL mode + busy_timeout(5000)), and
+// the mneme Memory interface states it is "safe for concurrent use to the
+// extent its underlying store, LLM and embedder are" — the store guarantees
+// it, and the LLM/embedder providers are stateless HTTP clients.
+// TestConcurrentAddSearchWithRealStore exercises this under -race.
 func rememberAsync(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.Scope, task, answer string) <-chan struct{} {
 	if mem == nil {
 		return nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -502,6 +503,7 @@ func TestRunAccumulatesUsage(t *testing.T) {
 // blockProvider blocks in Generate until ctx is done, then returns ctx.Err().
 // It signals when it entered Generate via the blocked channel (if non-nil).
 type blockProvider struct {
+	once    sync.Once
 	blocked chan struct{}
 }
 
@@ -512,8 +514,7 @@ func (p *blockProvider) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk
 }
 func (p *blockProvider) Generate(ctx context.Context, _ llm.Request) (*llm.Response, error) {
 	if p.blocked != nil {
-		close(p.blocked)
-		p.blocked = nil
+		p.once.Do(func() { close(p.blocked) })
 	}
 	<-ctx.Done()
 	return nil, ctx.Err()
