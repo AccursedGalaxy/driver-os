@@ -20,8 +20,6 @@ __debug_bin*
 /counciltest
 /commit-msg
 /driver
-/gameserver
-/jarvis-probe
 /synthbank
 # council scratch artifacts (real runs persist under $XDG_DATA_HOME/driver-os/council/)
 /_council_*
@@ -46,16 +44,3 @@ _deps/
 
 # Eval harness generated reports (HP-11)
 eval/runs/
-
-# Duet Lab frontend: node deps + Vite build output. The build output is embedded
-# at compile time (experiments/lab/embed.go), but it's a generated artifact — keep only the
-# committed placeholder so `go build ./...` works before `make lab-build`.
-experiments/lab/web/node_modules/
-experiments/lab/web/dist/*
-!experiments/lab/web/dist/.gitkeep
-
-# Vault PWA: same deal — embedded at compile time (experiments/vault/embed.go), generated
-# artifact, keep only the committed placeholder.
-experiments/vault/web/node_modules/
-experiments/vault/web/dist/*
-!experiments/vault/web/dist/.gitkeep
