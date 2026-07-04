@@ -510,6 +510,75 @@ func TestConformance_GroundedMemoryPolicy(t *testing.T) {
 	}
 }
 
+func TestConformance_KilledRepeat(t *testing.T) {
+	// maxRepeats=2 kills on the 3rd occurrence.
+	text := []string{"read_file x", "read_file x", "read_file x"}
+	call := structuredCall("c1", "read_file", map[string]any{"path": "x"})
+	native := [][]llm.ContentPart{{call}, {call}, {call}}
+
+	for _, loop := range conformanceLoops(text, native) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, KilledRepeat, "repeated")
+		})
+	}
+}
+
+func TestConformance_KilledSpiral(t *testing.T) {
+	// noProgressWindow=4 discovery calls with DIFFERENT args.
+	text := []string{"list_dir a", "list_dir b", "list_dir c", "list_dir d"}
+	native := [][]llm.ContentPart{
+		{structuredCall("c1", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c2", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("c3", "list_dir", map[string]any{"path": "c"})},
+		{structuredCall("c4", "list_dir", map[string]any{"path": "d"})},
+	}
+
+	for _, loop := range conformanceLoops(text, native) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, KilledSpiral, "discovery")
+		})
+	}
+}
+
+func TestConformance_KilledStagnant(t *testing.T) {
+	// maxStagnant=3 identical failing run fingerprints.
+	// Interleave with read_file to avoid KilledRepeat.
+	text := []string{
+		"run exit 1", "read_file a",
+		"run exit 1", "read_file b",
+		"run exit 1",
+	}
+	native := [][]llm.ContentPart{
+		{structuredCall("r1", "run", map[string]any{"command": "exit 1"})},
+		{structuredCall("a", "read_file", map[string]any{"path": "a"})},
+		{structuredCall("r2", "run", map[string]any{"command": "exit 1"})},
+		{structuredCall("b", "read_file", map[string]any{"path": "b"})},
+		{structuredCall("r3", "run", map[string]any{"command": "exit 1"})},
+	}
+
+	for _, loop := range conformanceLoops(text, native) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.Sandbox = sbWith(t, map[string]string{"a": "1", "b": "2"})
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, KilledStagnant, "stuck")
+		})
+	}
+}
+
 var errConformanceCanceled = errors.New("interrupt signal received")
 
 func TestConformance_CallerCancelWithCause(t *testing.T) {

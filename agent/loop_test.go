@@ -315,6 +315,90 @@ func TestRunStagnantObservationKilled(t *testing.T) {
 	}
 }
 
+func TestRunChurnNudgeFiresOnce(t *testing.T) {
+	// Port of TestRunNativeChurnNudgeFiresOnce to the text loop.
+	// After ChurnNudgeRuns failing test-runs, a one-time rewrite hint is appended to
+	// the run observation the model reads.
+	files := map[string]string{"a.txt": "x\n"}
+	replies := []string{
+		"run exit 1",
+		"read_file a.txt", // break the run streak (no stagnant kill)
+		"run exit 1",      // 2nd failure -> nudge
+		"answer done",
+	}
+	sp := &scripted{replies: replies}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, files), Task: "t",
+		MaxIterations: 20, ChurnNudgeRuns: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Text loop appends the nudge to the observation.
+	nudges := 0
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "rewrite the whole file") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("churn nudge appeared %d times in Steps, want exactly 1", nudges)
+	}
+
+	// Assert the hint was actually sent to the model in the next request.
+	hintSent := false
+	for _, req := range sp.calls {
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Text(), "rewrite the whole file") {
+				hintSent = true
+			}
+		}
+	}
+	if !hintSent {
+		t.Error("churn nudge hint was never sent to the model in a request")
+	}
+}
+
+func TestRunChurnNudgeFiresOnEdits(t *testing.T) {
+	// Port of TestRunNativeChurnNudgeFiresOnEdits to the text loop.
+	// The nudge fires on edit-churn even when the model barely runs the tests.
+	replies := []string{
+		"edit_file f.txt x A",
+		"edit_file f.txt A B",
+		"edit_file f.txt B C",
+		"answer done",
+	}
+	sp := &scripted{replies: replies}
+	res, err := Run(context.Background(), Config{
+		Model: sp, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t",
+		MaxIterations: 20, ChurnNudgeRuns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nudges := 0
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "rewrite the whole file") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("churn nudge on edits appeared %d times in Steps, want exactly 1", nudges)
+	}
+
+	hintSent := false
+	for _, req := range sp.calls {
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Text(), "rewrite the whole file") {
+				hintSent = true
+			}
+		}
+	}
+	if !hintSent {
+		t.Error("churn nudge hint on edits was never sent to the model in a request")
+	}
+}
+
 func TestRunProviderError(t *testing.T) {
 	boom := errors.New("transport exploded")
 	sp := &scripted{err: boom}

@@ -12,12 +12,20 @@ import (
 // a recorded request proves HP-4's near-cap finisher injected the hint.
 const nudgeHint = "the task may already be complete"
 
-// nudgeInjected reports whether any recorded request carried the finish-nudge hint.
+// nudgeInjected reports whether any recorded request carried the hint.
+// It checks both plain text messages and tool result content.
 func nudgeInjected(reqs []llm.Request, hint string) bool {
 	for _, r := range reqs {
 		for _, m := range r.Messages {
 			if strings.Contains(m.Text(), hint) {
 				return true
+			}
+			for _, p := range m.Parts {
+				if tr, ok := p.(llm.ToolResultPart); ok {
+					if strings.Contains(tr.Content, hint) {
+						return true
+					}
+				}
 			}
 		}
 	}
@@ -263,6 +271,7 @@ func TestRunNativeGreenRepeatNudgeFiresAfterThreeIdenticalGreens(t *testing.T) {
 		{structuredCall("c2", "run", map[string]any{"command": "echo hi"})}, // green 2
 		{structuredCall("r2", "read_file", map[string]any{"path": "b"})},    // break repeat
 		{structuredCall("c3", "run", map[string]any{"command": "echo hi"})}, // green 3 -> nudge
+		{structuredCall("r3", "read_file", map[string]any{"path": "a"})},    // one more turn to see the nudge
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
@@ -275,14 +284,28 @@ func TestRunNativeGreenRepeatNudgeFiresAfterThreeIdenticalGreens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	// Check res.Steps first to see if it's there
+	foundInSteps := false
 	for _, s := range res.Steps {
 		if strings.Contains(s.Observation, greenRepeatHint) {
-			found = true
+			foundInSteps = true
 			break
 		}
 	}
-	if !found {
+	if !foundInSteps {
+		t.Errorf("green-repeat nudge not found in res.Steps")
+		for i, s := range res.Steps {
+			t.Errorf("Step %d verb: %q, observation: %q", i, s.Verb, s.Observation)
+		}
+	}
+
+	if !nudgeInjected(ns.calls, greenRepeatHint) {
+		t.Errorf("green-repeat nudge not found in ns.calls")
+		for i, req := range ns.calls {
+			for j, msg := range req.Messages {
+				t.Errorf("Call %d, Message %d: %q", i, j, msg.Text())
+			}
+		}
 		t.Fatalf("expected the native green-repeat nudge to fire after 3 identical green runs; outcome=%q reason=%q", res.Outcome, res.Reason)
 	}
 	if res.Outcome != Answered {
@@ -309,10 +332,8 @@ func TestRunNativeGreenRepeatNudgeStaysOutOnDifferentGreens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range res.Steps {
-		if strings.Contains(s.Observation, greenRepeatHint) {
-			t.Fatalf("native green-repeat nudge fired despite different green commands; outcome=%q reason=%q", res.Outcome, res.Reason)
-		}
+	if nudgeInjected(ns.calls, greenRepeatHint) {
+		t.Fatalf("native green-repeat nudge fired despite different green commands; outcome=%q reason=%q", res.Outcome, res.Reason)
 	}
 }
 
@@ -339,9 +360,39 @@ func TestRunNativeGreenRepeatNudgeStaysOutWithFileMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range res.Steps {
-		if strings.Contains(s.Observation, greenRepeatHint) {
-			t.Fatalf("native green-repeat nudge fired despite a file mutation between greens; outcome=%q reason=%q", res.Outcome, res.Reason)
-		}
+	if nudgeInjected(ns.calls, greenRepeatHint) {
+		t.Fatalf("native green-repeat nudge fired despite a file mutation between greens; outcome=%q reason=%q", res.Outcome, res.Reason)
+	}
+}
+
+func TestRunNativeGreenRepeatNudgeStaysOutOnFailingRun(t *testing.T) {
+	// Native loop: a failing run resets the counter.
+	// Pattern: green, read, green, read, FAILING run (reset), read, green, read, green.
+	// Counter reaches 2 post-reset, so no nudge.
+	green := structuredCall("c", "run", map[string]any{"command": "echo hi"})
+	fail := structuredCall("f", "run", map[string]any{"command": "exit 1"})
+	readA := structuredCall("ra", "read_file", map[string]any{"path": "a"})
+	readB := structuredCall("rb", "read_file", map[string]any{"path": "b"})
+	readC := structuredCall("rc", "read_file", map[string]any{"path": "c"})
+	readD := structuredCall("rd", "read_file", map[string]any{"path": "d"})
+
+	turns := [][]llm.ContentPart{
+		{green}, {readA}, {green}, {readB},
+		{fail}, // reset
+		{readC}, {green}, {readD}, {green},
+		{llm.Text("done")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model:         ns,
+		Sandbox:       sbWith(t, map[string]string{"a": "x", "b": "y", "c": "z", "d": "w"}),
+		Task:          "t",
+		MaxIterations: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nudgeInjected(ns.calls, greenRepeatHint) {
+		t.Fatalf("native green-repeat nudge fired despite a failing run reset; outcome=%q reason=%q", res.Outcome, res.Reason)
 	}
 }
