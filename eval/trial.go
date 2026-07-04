@@ -188,6 +188,10 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	// meaningful in-run red/green signal looks like for this task.
 	if customRun != nil && c.LadderVerify != "" {
 		cfg.VerifyCmd = c.LadderVerify
+		// Abort immediately if the verify baseline is red — a permanently-red
+		// gate (e.g. test ids that don't exist on the base checkout) would burn
+		// every ladder attempt to hit_cap for no gain.
+		cfg.AbortOnRedBaseline = true
 	}
 
 	// Production-faithful toolset, when the case declares one — otherwise the loop
