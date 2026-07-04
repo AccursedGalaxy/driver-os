@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -63,8 +65,25 @@ func TestVerifyObserverSeesFinishGateResult(t *testing.T) {
 
 func TestVerifyObserverSeesUpgradeCheck(t *testing.T) {
 	spy := &verifySpy{}
-	cfg := Config{Sandbox: sbWith(t, nil), VerifyCmd: "true", Obs: spy}
-	res := upgradeIfVerified(context.Background(), cfg, &RunResult{Outcome: HitCap}, time.Second)
+	sb, root := setupGitRepo(t, map[string]string{
+		"go.mod": "module x\n",
+	})
+	cfg := Config{
+		Sandbox:   sb,
+		Root:      root,
+		VerifyCmd: "true",
+		Obs:       spy,
+	}
+	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	if gs.runBaseTree == "" {
+		t.Fatal("runBaseTree is empty — baseline tree was not captured")
+	}
+	// Modify the tree so the diff is non-empty — the gates method refuses
+	// upgrade on an unchanged tree.
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x // patched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := gs.upgradeIfVerified(context.Background(), &RunResult{Outcome: HitCap})
 	if res.Outcome != Answered {
 		t.Fatalf("upgrade did not happen: %s", res.Outcome)
 	}
@@ -78,7 +97,8 @@ func TestVerifyObserverSilentOnUserCancel(t *testing.T) {
 	cancel() // user cancel — the check never runs, so nothing must be reported.
 	spy := &verifySpy{}
 	cfg := Config{Sandbox: sbWith(t, nil), VerifyCmd: "true", Obs: spy}
-	upgradeIfVerified(ctx, cfg, &RunResult{Outcome: HitCap}, time.Second)
+	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs.upgradeIfVerified(ctx, &RunResult{Outcome: HitCap})
 	verifyTermination(ctx, cfg, false, time.Second)
 	if len(spy.oks) != 0 {
 		t.Fatalf("observer saw %v on user cancel; a skipped check must emit nothing", spy.oks)

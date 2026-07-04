@@ -99,34 +99,6 @@ func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out s
 	return out, false, err
 }
 
-// upgradeIfVerified flips a non-Answered terminal outcome (a kill or the iteration
-// cap) to Answered when VerifyCmd actually passes (P5/HP-5). The verify command is
-// the source of truth for "is the task done", so a run whose code is already correct
-// must not be reported as a failure just because the loop bailed — the live runs
-// showed gpt-5-nano flail on a malformed `bash -lc go test` side-command (tripping
-// the stagnant detector) while its real calc.go passed. This is the dual of
-// verify-continue: that downgrades a false success, this upgrades a false failure.
-// No-op without VerifyCmd, on a user cancel (verifyRun's skip), or when the
-// command still fails (a genuine non-pass).
-func upgradeIfVerified(ctx context.Context, cfg Config, res *RunResult, runTimeout time.Duration) *RunResult {
-	if cfg.VerifyCmd == "" {
-		return res
-	}
-	out, skipped, err := verifyRun(ctx, cfg, runTimeout)
-	if !skipped {
-		notifyVerify(cfg.Obs, cfg.VerifyCmd, err == nil && !isRunFailure(out))
-	}
-	if skipped || err != nil || isRunFailure(out) {
-		return res
-	}
-	res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, cfg.VerifyCmd)
-	res.Outcome = Answered
-	if res.Answer == "" {
-		res.Answer = fmt.Sprintf("task verified complete (%q passed)", cfg.VerifyCmd)
-	}
-	return res
-}
-
 // verifyTermination decides whether a model's done-signal actually holds (P5/HP-5)
 // and returns a non-empty reason when it does NOT (so the caller records Unverified
 // instead of Answered). Two checks, in precedence order:
