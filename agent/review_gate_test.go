@@ -460,8 +460,50 @@ func TestReviewerErrorFailsOpen(t *testing.T) {
 	if res.Outcome != Answered {
 		t.Fatalf("outcome = %s, want answered (fail open)", res.Outcome)
 	}
-	if res.Review == nil || !strings.Contains(res.Review.Skipped, "provider melted") {
-		t.Fatalf("report = %+v, want the failure recorded", res.Review)
+	if res.Review == nil || res.Review.Status != ReviewUnavailable || !strings.Contains(res.Review.Skipped, "provider melted") {
+		t.Fatalf("report = %+v, want unavailable status and failure recorded", res.Review)
+	}
+}
+
+func TestReviewRequiredUnavailableDowngradesToUnverified(t *testing.T) {
+	rv := &fakeReviewer{err: errors.New("reviewer down")}
+	res := reviewedRun(t, rv, Config{ReviewRequired: true}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if !strings.Contains(res.Reason, "review status is unavailable") {
+		t.Fatalf("reason = %q, want unavailable review-required reason", res.Reason)
+	}
+	if res.Answer != "done" {
+		t.Fatalf("answer = %q, want attempted answer preserved for unverified", res.Answer)
+	}
+	if res.Review == nil || res.Review.Status != ReviewUnavailable {
+		t.Fatalf("review report = %+v, want unavailable", res.Review)
+	}
+}
+
+func TestReviewRequiredParseErrorDowngradesToUnverified(t *testing.T) {
+	rv := &fakeReviewer{err: fmt.Errorf("%w: bad json", ErrReviewParse)}
+	res := reviewedRun(t, rv, Config{ReviewRequired: true}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if !strings.Contains(res.Reason, "parse_error") {
+		t.Fatalf("reason = %q, want parse_error", res.Reason)
+	}
+	if res.Review == nil || res.Review.Status != ReviewParseError {
+		t.Fatalf("review report = %+v, want parse_error", res.Review)
+	}
+}
+
+func TestReviewErrorTimeoutClassification(t *testing.T) {
+	rv := &fakeReviewer{err: context.DeadlineExceeded}
+	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s, want fail-open answered", res.Outcome)
+	}
+	if res.Review == nil || res.Review.Status != ReviewTimeout {
+		t.Fatalf("review report = %+v, want timeout", res.Review)
 	}
 }
 

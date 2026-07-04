@@ -75,6 +75,14 @@ type gates struct {
 	verifyBaselineRed bool
 	verifyBaselineOut string
 
+	// runBaseTree is the git tree hash of the workspace at run start,
+	// captured for the upgradeIfVerified empty-diff guard: a killed run
+	// whose verify command passes but changed nothing (baseline was already
+	// green) must not be upgraded to Answered. Empty when not captured
+	// (no VerifyCmd, not a git repo, or snapshot failed — the gate
+	// degrades to the historical behavior).
+	runBaseTree string
+
 	// baselineGraceUsed tracks whether the single rescue round has been
 	// granted for a baseline-identical verify failure. On the FIRST
 	// identical failure the gate still rejects via VerifyContinue so the
@@ -88,7 +96,8 @@ type gates struct {
 // newGates snapshots the run-start state both closing gates need: the fence
 // hashes (slice 0) and, when a Reviewer is injected, the git base tree the
 // solver's diff will be taken against (slice 1a). It also measures the
-// VerifyCmd baseline (pre-flight) when configured.
+// VerifyCmd baseline (pre-flight) when configured, and captures the run-start
+// git tree for the upgradeIfVerified empty-diff guard.
 func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
@@ -101,7 +110,26 @@ func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates 
 		review:     newReviewState(ctx, cfg),
 	}
 	g.measureVerifyBaseline(ctx)
+	g.captureRunBaseTree(ctx)
 	return g
+}
+
+// captureRunBaseTree snapshots the run-start git tree for the
+// upgradeIfVerified empty-diff guard. It only runs when VerifyCmd is
+// configured (the only path the guard affects). A failed snapshot leaves
+// runBaseTree empty — the upgrade path degrades to the historical behavior.
+func (g *gates) captureRunBaseTree(ctx context.Context) {
+	if g.cfg.VerifyCmd == "" || g.cfg.Root == "" {
+		return
+	}
+	gctx, cancel := gateContext(ctx, gateDiffTimeout)
+	tree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	cancel()
+	if err != nil {
+		g.cfg.Obs.Note("upgrade guard: baseline tree snapshot failed (" + err.Error() + ") — upgrade will not check diff")
+		return
+	}
+	g.runBaseTree = tree
 }
 
 func (g *gates) measureVerifyBaseline(ctx context.Context) {
@@ -342,11 +370,28 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		g.cfg.Obs.Note("upgrade blocked — " + reason)
 		return res
 	}
+	// Capture the tree BEFORE verify — the verify command itself may have
+	// side effects (e.g. log files) that would otherwise make an unchanged
+	// solver tree appear different from the run-start baseline.
+	var preVerifyTree string
+	if g.runBaseTree != "" {
+		gctx, gcancel := gateContext(ctx, gateDiffTimeout)
+		preVerifyTree, _ = vcs.WriteTree(gctx, g.cfg.Root)
+		gcancel()
+	}
 	out, skipped, err := verifyRun(ctx, g.cfg, g.runTimeout)
 	if !skipped {
 		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
 	}
 	if skipped || err != nil || isRunFailure(out) {
+		return res
+	}
+	// Execution is green; refuse the upgrade when the working tree is
+	// unchanged vs the run-start baseline — a killed run whose verify
+	// command passes but changed nothing means the baseline was already
+	// green and the solver did no work (false-green kill rescue).
+	if g.runBaseTree != "" && preVerifyTree == g.runBaseTree {
+		res.Reason = fmt.Sprintf("verify passed but the run changed nothing — refusing upgrade (baseline was already green): %q passed", g.cfg.VerifyCmd)
 		return res
 	}
 	// Execution is green; the review gate has the final word on the upgrade.
@@ -382,6 +427,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	// policy): the user asked us to stop, so we spend nothing more. The finish
 	// stays un-reviewed, honestly — pass, don't block.
 	if errors.Is(ctx.Err(), context.Canceled) {
+		rv.status = ReviewCanceled
 		return "", ""
 	}
 	// A deadline expiry must not clip the final gate (review #3's policy);
@@ -392,10 +438,11 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 
 	diff, err := rv.captureDiff(gctx)
 	if err != nil {
-		g.failOpen("review error (gate fails open): " + err.Error())
-		return "", ""
+		g.failOpen(classifyReviewErr(gctx, err), "review error (gate fails open): "+err.Error())
+		return "", g.reviewRequiredBlockReason()
 	}
 	if strings.TrimSpace(diff) == "" {
+		g.setReviewSemanticStatus(ReviewClean)
 		g.cfg.Obs.Note("review: no changes to review — skipping")
 		return "", ""
 	}
@@ -426,9 +473,9 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	if err != nil {
 		// The reviewer is advisory-blocking, not authoritative: execution already
 		// passed, so a reviewer INFRA failure must not flip a verified run to
-		// Unverified. Fail open, loudly, and record it.
-		g.failOpen("review error (gate fails open): " + err.Error())
-		return "", ""
+		// Unverified unless the caller explicitly requires a completed review.
+		g.failOpen(classifyReviewErr(gctx, err), "review error (gate fails open): "+err.Error())
+		return "", g.reviewRequiredBlockReason()
 	}
 
 	// Repro solicitation (slice 2c): blocker findings with Confidence >= 7
@@ -455,7 +502,13 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 				Round:      rv.rounds,
 			}, eligible)
 			if serr != nil {
-				// Fail-open: solicitation errors leave findings as-is.
+				// Fail-open: solicitation errors leave findings as-is, but record
+				// infrastructure honesty because required review depends on this
+				// structured reviewer output too.
+				status := classifyReviewErr(gctx, serr)
+				if status != ReviewCanceled {
+					rv.status = status
+				}
 				g.cfg.Obs.Note("review: repro solicitation failed (findings stay unconfirmed): " + serr.Error())
 			} else {
 				// Merge returned repro_cmds/no_repro_reasons back into
@@ -504,6 +557,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	// after a repair round proves the solver cannot fix it — stop now
 	// instead of burning every remaining round on it.
 	if curIdx, prevIdx, ok := rv.findRecurringConfirmedBlocker(); ok {
+		rv.status = ReviewBlocked
 		rv.findings[prevIdx].Fate = FateExpired // correct the earlier Repaired mislabel.
 		rv.blocked = true
 		rv.resolvePending(FateExpired)
@@ -515,16 +569,23 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 
 	if blocking == 0 && len(advisories) == 0 {
-		return "", ""
+		g.setReviewSemanticStatus(ReviewClean)
+		return "", g.reviewRequiredBlockReason()
 	}
 	if canContinue && rv.rounds < rv.maxRounds {
+		g.setReviewSemanticStatus(ReviewBlocked)
+		if blocking == 0 {
+			g.setReviewSemanticStatus(ReviewAdvisory)
+		}
 		return reviewFeedback(blockers, advisories), ""
 	}
 	if blocking == 0 {
 		// Only advisories stand and the repair budget is gone: they were
 		// hearsay by construction (unconfirmed, sub-threshold) — pass.
-		return "", ""
+		g.setReviewSemanticStatus(ReviewAdvisory)
+		return "", g.reviewRequiredBlockReason()
 	}
+	rv.status = ReviewBlocked
 	rv.blocked = true
 	rv.resolvePending(FateExpired)
 	return "", fmt.Sprintf("review blockers remain after %d round(s)", rv.rounds)
@@ -533,11 +594,48 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 // failOpen records a review-infrastructure failure without blocking: note it,
 // and if the gate has produced no findings yet, persist the reason as the
 // report's skip field so the telemetry says WHY it contributed nothing.
-func (g *gates) failOpen(msg string) {
+func (g *gates) failOpen(status ReviewStatus, msg string) {
 	g.cfg.Obs.Note(msg)
+	g.review.status = status
 	if len(g.review.findings) == 0 && g.review.skip == "" {
 		g.review.skip = msg
 	}
+}
+
+func classifyReviewErr(ctx context.Context, err error) ReviewStatus {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return ReviewCanceled
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return ReviewTimeout
+	case errors.Is(err, ErrReviewParse):
+		return ReviewParseError
+	default:
+		return ReviewUnavailable
+	}
+}
+
+func (g *gates) setReviewSemanticStatus(status ReviewStatus) {
+	if g.review == nil || isReviewInfrastructureStatus(g.review.status) {
+		return
+	}
+	g.review.status = status
+}
+
+func isReviewInfrastructureStatus(status ReviewStatus) bool {
+	switch status {
+	case ReviewUnavailable, ReviewParseError, ReviewTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *gates) reviewRequiredBlockReason() string {
+	if g.review == nil || !g.cfg.ReviewRequired || !isReviewInfrastructureStatus(g.review.status) {
+		return ""
+	}
+	return fmt.Sprintf("review required but review status is %s", g.review.status)
 }
 
 // captureDiff writes the CURRENT working tree as a second temp-index tree and

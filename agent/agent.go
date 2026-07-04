@@ -533,6 +533,13 @@ type Config struct {
 	// imports agent, so the reviewer must be injected to avoid the cycle.
 	Reviewer Reviewer
 
+	// ReviewRequired makes review infrastructure honest in automation: when the
+	// reviewer is configured but unavailable, times out, or returns unparseable
+	// output, a would-be Answered finish becomes Unverified instead of silently
+	// passing as reviewed. Semantic reviewer outcomes (clean/advisory/blockers)
+	// keep their normal behavior; caller cancellation still cancels the run.
+	ReviewRequired bool
+
 	// ReviewRounds caps the reviewer↔solver repair cycles (0 =
 	// DefaultReviewRounds). Bounded on purpose: refine-loop gains concentrate in
 	// round 1, and unbounded review loops flip correct patches to wrong.

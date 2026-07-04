@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/vcs"
@@ -47,6 +48,24 @@ const DefaultReviewRounds = 2
 // a reviewer that proposes ten is nearly always wrong after the second.
 const reviewReproCap = 2
 
+// ReviewStatus is the terminal review-gate classification recorded in
+// ReviewReport.Status.
+type ReviewStatus string
+
+const (
+	ReviewClean       ReviewStatus = "clean"
+	ReviewBlocked     ReviewStatus = "blocked"
+	ReviewAdvisory    ReviewStatus = "advisory"
+	ReviewUnavailable ReviewStatus = "unavailable"
+	ReviewParseError  ReviewStatus = "parse_error"
+	ReviewTimeout     ReviewStatus = "timeout"
+	ReviewCanceled    ReviewStatus = "canceled"
+)
+
+// ErrReviewParse marks reviewer output that could not be parsed even after the
+// reviewer implementation's corrective retry.
+var ErrReviewParse = errors.New("review parse error")
+
 // ReviewFinding is one reviewer claim, exactly the structured-verdict schema
 // (docs/specs/REVIEW-GATE.md): a verbatim post-patch quote that re-grounds it, a two-value
 // severity, a 0-10 confidence, a concrete failure scenario, and an optional
@@ -70,8 +89,8 @@ type ReviewFinding struct {
 	// full finding prose. Missing/invalid values parse as empty and never
 	// affect the blocking decision.
 	Category     string `json:"category,omitempty"`     // correctness|performance|security|maintainability|style
-	Impact       string `json:"impact,omitempty"`        // high|medium|low
-	Reproducible string `json:"reproducible,omitempty"`  // "true"|"false" — could a runnable command demonstrate it?
+	Impact       string `json:"impact,omitempty"`       // high|medium|low
+	Reproducible string `json:"reproducible,omitempty"` // "true"|"false" — could a runnable command demonstrate it?
 }
 
 // ReviewInput is what a Reviewer judges: the task, the solver's unified diff
@@ -157,6 +176,7 @@ type ReviewedFinding struct {
 // the result JSON, and the transcript.
 type ReviewReport struct {
 	Rounds        int               `json:"rounds"`
+	Status        ReviewStatus      `json:"status,omitempty"`
 	Blocked       bool              `json:"blocked"`                  // the run ended with blockers standing.
 	Skipped       string            `json:"skipped,omitempty"`        // why the gate never ran (not a git workspace, reviewer error, …).
 	ReviewerModel string            `json:"reviewer_model,omitempty"` // from ReviewVerdict.Model — the per-reviewer calibration axis.
@@ -195,6 +215,7 @@ type reviewState struct {
 	baseTree   string
 	skip       string // non-empty => the gate is off for this run, with this recorded reason.
 	rounds     int
+	status     ReviewStatus
 	blocked    bool
 	model      string   // reviewer model id, from the first verdict that names one.
 	summaries  []string // one entry per round, blank when the reviewer emitted bare JSON.
@@ -260,6 +281,7 @@ func (rv *reviewState) report() *ReviewReport {
 	}
 	return &ReviewReport{
 		Rounds:              rv.rounds,
+		Status:              rv.status,
 		Blocked:             rv.blocked,
 		Skipped:             rv.skip,
 		ReviewerModel:       rv.model,
