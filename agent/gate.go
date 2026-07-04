@@ -481,6 +481,9 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 			advisories = append(advisories, rf)
 		}
 	}
+	if ro := reviewObserver(g.cfg.Obs); ro != nil {
+		ro.ReviewVerdict(blocking, rv.rounds, verdict.Summary)
+	}
 	// Early-stop: a CONFIRMED blocker whose File+Quote recurred unchanged
 	// after a repair round proves the solver cannot fix it — stop now
 	// instead of burning every remaining round on it.
@@ -494,9 +497,6 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		return "", fmt.Sprintf("confirmed review blocker recurred unresolved after repair round %d", rv.rounds)
 	}
 	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
-	if ro := reviewObserver(g.cfg.Obs); ro != nil {
-		ro.ReviewVerdict(blocking, rv.rounds, verdict.Summary)
-	}
 
 	if blocking == 0 && len(advisories) == 0 {
 		return "", ""

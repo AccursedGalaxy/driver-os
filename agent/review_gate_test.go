@@ -795,6 +795,27 @@ func TestReviewRecurringConfirmedBlockerEarlyStop(t *testing.T) {
 	}
 }
 
+func TestReviewRecurringConfirmedBlockerEmitsFinalVerdict(t *testing.T) {
+	f := blocker("calc.go", "package calc // patched")
+	f.ReproCmd = "echo the-bug-persists && false"
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}, {f}}}
+	obs := &recordingReviewObs{Observer: nopObserver{}}
+	turns := [][]llm.ContentPart{
+		{structuredCall("c1", "write_file", map[string]any{"path": "calc.go", "content": "package calc // patched\n"})},
+		{llm.Text("done")},
+		{structuredCall("c2", "write_file", map[string]any{"path": "helper.go", "content": "package calc\n"})},
+		{llm.Text("done again")},
+	}
+	res := reviewedRun(t, rv, Config{Obs: obs, ReviewRounds: 3, MaxIterations: 8}, turns)
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	wantTail := "verdict:1:2:"
+	if len(obs.events) == 0 || obs.events[len(obs.events)-1] != wantTail {
+		t.Fatalf("events = %v, want final early-stop verdict %q", obs.events, wantTail)
+	}
+}
+
 // Different findings each round must not trigger the early-stop — the
 // normal feedback loop proceeds unaltered.
 func TestReviewDifferentFindingsNoEarlyStop(t *testing.T) {
