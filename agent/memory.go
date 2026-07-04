@@ -188,6 +188,14 @@ func rememberAsync(ctx context.Context, obs Observer, mem mneme.Memory, scope mn
 	return done
 }
 
+// StoreMemoryAsync lets an orchestrator that deliberately suppressed in-run
+// storage (for example, ladder loser isolation) store the single accepted winner
+// without disabling recall for the attempts. It has the same best-effort,
+// detached semantics as the loop's own post-answer store.
+func StoreMemoryAsync(ctx context.Context, obs Observer, mem mneme.Memory, scope mneme.Scope, task, answer string) <-chan struct{} {
+	return rememberAsync(ctx, obs, mem, scopeOrDefault(scope), task, answer)
+}
+
 // scopeOrDefault resolves the memory namespace for a run: an explicit
 // Config.MemoryScope when set, else the package default. This is what lets two
 // agents share one store without their facts bleeding together (each passes its

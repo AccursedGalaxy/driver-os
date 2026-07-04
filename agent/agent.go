@@ -293,6 +293,11 @@ type Config struct {
 	Sandbox sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
 	Memory  mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
 
+	// DisableMemoryStore suppresses the post-answer mneme.Add call while leaving
+	// recall enabled. Ladder attempts use this so losing attempts can benefit from
+	// prior memory without leaking their own failed observations into future runs.
+	DisableMemoryStore bool
+
 	// Persona is an optional identity block prepended to the system prompt — a
 	// stable character the agent keeps across runs (e.g. "You are Adam, an
 	// energetic builder…"). Empty = the bare tool-using harness prompt. It leads

@@ -96,6 +96,10 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 	}
 	g.cfg.Obs.Done(in.answer)
 	if in.grounded {
+		if g.cfg.DisableMemoryStore && g.cfg.Memory != nil {
+			g.cfg.Obs.Note("memory: store disabled for this run")
+			return answeredWith(in.answer, nil)
+		}
 		return answeredWith(in.answer, rememberAsync(ctx, g.cfg.Obs, g.cfg.Memory, in.memoryScope, g.cfg.Task, in.answer))
 	}
 	if g.cfg.Memory != nil {
