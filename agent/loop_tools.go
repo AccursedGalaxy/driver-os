@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -654,16 +655,47 @@ func bridgeArg(c llm.ToolCallPart) string {
 	return ""
 }
 
-// compactJSON strips insignificant whitespace from raw JSON so two identical
-// calls produce an identical signature regardless of the provider's formatting.
-// It preserves key order (json.Compact doesn't reorder), which is fine: temp=0
-// makes the model emit the same field order for the same call.
+// compactJSON strips insignificant whitespace from raw JSON while preserving the
+// model/provider's object key order. It is used for human-facing trace strings,
+// where matching the emitted argument order is harmless and avoids changing
+// transcript shape. Signature paths must use canonicalJSON instead.
 func compactJSON(raw json.RawMessage) string {
 	var buf bytes.Buffer
 	if json.Compact(&buf, raw) == nil {
 		return buf.String()
 	}
 	return string(raw)
+}
+
+// canonicalJSON returns a stable, semantic JSON form for no-progress signatures.
+// It decodes with UseNumber so numeric lexemes survive intact, then marshals the
+// value back through encoding/json; maps are emitted with sorted keys recursively.
+// Signature helpers are deliberately best-effort: malformed or otherwise
+// unmarshalable JSON falls back to compactJSON rather than making detector code
+// capable of failing a turn.
+func canonicalJSON(raw json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return compactJSON(raw)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return compactJSON(raw)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return compactJSON(raw)
+	}
+	return string(b)
+}
+
+func signatureArg(c llm.ToolCallPart, tools map[string]Tool) string {
+	if t, ok := tools[c.Name]; ok && t.RunJSON != nil {
+		return canonicalJSON(c.Args)
+	}
+	return bridgeArg(c)
 }
 
 // reasoningSignature fingerprints a turn's opaque reasoning trace (llm.ReasoningPart,
@@ -696,7 +728,7 @@ func reasoningSignature(parts []llm.ContentPart) string {
 func turnSignature(calls []llm.ToolCallPart, tools map[string]Tool) string {
 	parts := make([]string, len(calls))
 	for i, c := range calls {
-		parts[i] = c.Name + " " + callArg(c, tools)
+		parts[i] = c.Name + " " + signatureArg(c, tools)
 	}
 	return strings.Join(parts, " | ")
 }

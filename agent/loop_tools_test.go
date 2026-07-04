@@ -70,6 +70,30 @@ func toolCall(id, name, arg string) llm.ToolCallPart {
 	return llm.ToolCallPart{ID: id, Name: name, Args: args}
 }
 
+func rawToolCall(id, name, args string) llm.ToolCallPart {
+	return llm.ToolCallPart{ID: id, Name: name, Args: json.RawMessage(args)}
+}
+
+func TestTurnSignatureCanonicalizesStructuredJSONArgs(t *testing.T) {
+	tools := map[string]Tool{
+		"read_file": {
+			RunJSON: func(context.Context, json.RawMessage) (string, error) { return "", nil },
+		},
+	}
+	left := rawToolCall("a", "read_file", `{"path":"x","from":1,"to":2,"nested":{"z":9,"a":{"float":2.30,"big":1e+09}}}`)
+	right := rawToolCall("b", "read_file", `{"to":2,"nested":{"a":{"big":1e+09,"float":2.30},"z":9},"from":1,"path":"x"}`)
+
+	gotLeft := turnSignature([]llm.ToolCallPart{left}, tools)
+	gotRight := turnSignature([]llm.ToolCallPart{right}, tools)
+	if gotLeft != gotRight {
+		t.Fatalf("turnSignature mismatch for semantically identical args:\nleft:  %s\nright: %s", gotLeft, gotRight)
+	}
+	want := `read_file {"from":1,"nested":{"a":{"big":1e+09,"float":2.30},"z":9},"path":"x","to":2}`
+	if gotLeft != want {
+		t.Fatalf("turnSignature = %s, want canonical form %s", gotLeft, want)
+	}
+}
+
 // runNative runs the loop against a fixture sandbox and returns the result, the
 // script (to assert the round-trip), and the sandbox (to read state back).
 func runNative(t *testing.T, files map[string]string, turns [][]llm.ContentPart) (*RunResult, *nativeScript, sandbox.Sandbox) {
@@ -1183,6 +1207,31 @@ func TestRunNativeRepeatDetectorOnStructuredArgs(t *testing.T) {
 	}
 	if res.Outcome != KilledRepeat {
 		t.Errorf("Outcome = %q, want KilledRepeat", res.Outcome)
+	}
+}
+
+func TestRunNativeRepeatDetectorCanonicalizesRotatedStructuredArgs(t *testing.T) {
+	// OpenRouter/Gemini has been observed rotating JSON object key order for the
+	// same tool call. The tight-loop detector must see these as the same action and
+	// kill at the repeat threshold, not wait until the iteration cap.
+	turns := [][]llm.ContentPart{
+		{rawToolCall("c1", "read_file", `{"path":"f.txt","from":1,"to":2}`)},
+		{rawToolCall("c2", "read_file", `{"from":1,"to":2,"path":"f.txt"}`)},
+		{rawToolCall("c3", "read_file", `{"to":2,"path":"f.txt","from":1}`)},
+		{rawToolCall("c4", "read_file", `{"path":"f.txt","from":1,"to":2}`)},
+		{rawToolCall("c5", "read_file", `{"from":1,"to":2,"path":"f.txt"}`)},
+		{rawToolCall("c6", "read_file", `{"to":2,"path":"f.txt","from":1}`)},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "one\ntwo\n"}), Task: "t", MaxIterations: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledRepeat {
+		t.Fatalf("Outcome = %q (%s), want KilledRepeat", res.Outcome, res.Reason)
+	}
+	if res.Iterations >= 6 {
+		t.Fatalf("Iterations = %d, want kill before cap", res.Iterations)
 	}
 }
 
