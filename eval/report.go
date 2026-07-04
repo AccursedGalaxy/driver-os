@@ -266,6 +266,54 @@ func (r *Report) SweepCost() (total float64, ok bool) {
 	return total, ok
 }
 
+// LadderN counts trials in the cell that have ladder metadata (i.e. were
+// run by a ladder arm). 0 for non-ladder cells.
+func (c Cell) LadderN() int {
+	n := 0
+	for _, t := range c.Trials {
+		if t.Ladder != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// LadderEscalations counts ladder trials that escalated past rung 1.
+func (c Cell) LadderEscalations() int {
+	n := 0
+	for _, t := range c.Trials {
+		if t.Ladder != nil && t.Ladder.Escalated {
+			n++
+		}
+	}
+	return n
+}
+
+// LadderEscalationRate is escalations / ladder-trials. 0 when no ladder trials.
+func (c Cell) LadderEscalationRate() float64 {
+	ln := c.LadderN()
+	if ln == 0 {
+		return 0
+	}
+	return float64(c.LadderEscalations()) / float64(ln)
+}
+
+// LadderMeanAttempts returns the mean number of attempts across ladder trials. 0
+// when no ladder trials.
+func (c Cell) LadderMeanAttempts() float64 {
+	ln := c.LadderN()
+	if ln == 0 {
+		return 0
+	}
+	sum := 0
+	for _, t := range c.Trials {
+		if t.Ladder != nil {
+			sum += t.Ladder.Attempts
+		}
+	}
+	return float64(sum) / float64(ln)
+}
+
 // Manifest is the reproducibility record — pinned ids and settings so a report
 // is a comparable artifact, not a one-off. The CLI fills it (it owns time, git,
 // and the env), keeping this package pure and testable.
@@ -282,8 +330,9 @@ type Manifest struct {
 // ReportSchemaVersion is the current eval-report schema. v2 added LatencyMs on
 // Trial and the reason/latency columns; v3 added Trial.NoAttempt (Grade.
 // NoAttempt) and the best-of-N selection section; v4 added infra tracking
-// and plan-stage cost. Bump on any further shape change.
-const ReportSchemaVersion = "4"
+// and plan-stage cost; v5 added ladder metadata and escalation guard metrics.
+// Bump on any further shape change.
+const ReportSchemaVersion = "5"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
 // renders to Markdown (human) and JSON (machine-diffable, for regression diffs).
@@ -313,8 +362,31 @@ func (r *Report) Markdown() string {
 
 	for _, name := range order {
 		fmt.Fprintf(&b, "## %s\n\n", name)
-		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |\n")
-		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|\n")
+
+		// Determine whether any cell in this case group carries ladder data —
+		// if so, extend the table with escalation and attempts columns.
+		hasLadder := false
+		for _, c := range byCase[name] {
+			if c.LadderN() > 0 {
+				hasLadder = true
+				break
+			}
+		}
+
+		// Header.
+		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |")
+		if hasLadder {
+			b.WriteString(" escalation | attempts mean |")
+		}
+		b.WriteByte('\n')
+
+		// Separator.
+		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|")
+		if hasLadder {
+			b.WriteString("------------|---------------|")
+		}
+		b.WriteByte('\n')
+
 		for _, c := range byCase[name] {
 			lo, hi := c.PassRateCI()
 			fp := ""
@@ -325,7 +397,7 @@ func (r *Report) Markdown() string {
 			if c.Infra() > 0 {
 				infra = fmt.Sprintf("%d", c.Infra())
 			}
-			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | %.2f | [%.2f, %.2f] | %s | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |\n",
+			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | %.2f | [%.2f, %.2f] | %s | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |",
 				c.Model, c.Passes(), c.N(), c.PassRate(), c.PassRateInfraExcluded(), lo, hi, infra,
 				c.FalsePositives(), c.N(), fp,
 				renderOutcomes(c.Outcomes()),
@@ -334,6 +406,11 @@ func (r *Report) Markdown() string {
 				humanInt(c.ReasoningTokensP(50)),
 				humanMs(c.LatencyP(50)),
 				renderCostP(c))
+			if hasLadder {
+				b.WriteString(renderLadderEscalation(c))
+				fmt.Fprintf(&b, " %.2f |", c.LadderMeanAttempts())
+			}
+			b.WriteByte('\n')
 		}
 		b.WriteString("\n")
 	}
@@ -532,6 +609,16 @@ func renderCostP(c Cell) string {
 		return "—"
 	}
 	return humanUSD(cost)
+}
+
+// renderLadderEscalation returns a formatted escalation cell for the Markdown
+// table: "n/N (rate)" for ladder cells, " — " for non-ladder cells.
+func renderLadderEscalation(c Cell) string {
+	ln := c.LadderN()
+	if ln == 0 {
+		return " — |"
+	}
+	return fmt.Sprintf(" %d/%d (%.2f) |", c.LadderEscalations(), ln, c.LadderEscalationRate())
 }
 
 // humanUSD formats a dollar amount with enough precision to be useful at eval

@@ -294,3 +294,55 @@ func TestMarkdownRendersReviewGateSection(t *testing.T) {
 		t.Error("review-gate section must be absent when the gate never ran")
 	}
 }
+
+func TestMarkdownRendersLadderMetrics(t *testing.T) {
+	// Two trials in the same cell: one escalated (rung > 1), one not.
+	r := &Report{
+		Manifest: Manifest{TrialsPer: 2},
+		Cells: []Cell{{
+			Case:  "selfhist",
+			Model: "ladder:abc123",
+			Trials: []Trial{
+				{
+					Outcome: agent.Answered,
+					Pass:    true,
+					Ladder:  &TrialLadder{Attempts: 2, WinnerRung: 2, Escalated: true, Cost: 1.23, Priced: true},
+				},
+				{
+					Outcome: agent.Answered,
+					Pass:    true,
+					Ladder:  &TrialLadder{Attempts: 1, WinnerRung: 1, Escalated: false, Cost: 0.45, Priced: true},
+				},
+			},
+		}},
+	}
+	md := r.Markdown()
+	if !strings.Contains(md, "escalation") {
+		t.Fatalf("markdown should include escalation column when ladder data present:\n%s", md)
+	}
+	if !strings.Contains(md, "attempts mean") {
+		t.Errorf("markdown should include attempts mean column:\n%s", md)
+	}
+	// Escalation column: 1/2 for one escalation out of two.
+	if !strings.Contains(md, "1/2") {
+		t.Errorf("markdown should show escalation fraction 1/2:\n%s", md)
+	}
+	// Mean attempts: (2+1)/2 = 1.50.
+	if !strings.Contains(md, "1.50") {
+		t.Errorf("markdown should show mean attempts 1.50:\n%s", md)
+	}
+	// Non-ladder cell: no ladder columns.
+	r2 := &Report{
+		Cells: []Cell{{
+			Case:  "calc",
+			Model: "openai/gpt-5.5",
+			Trials: []Trial{
+				{Outcome: agent.Answered, Pass: true},
+			},
+		}},
+	}
+	md2 := r2.Markdown()
+	if strings.Contains(md2, "escalation") {
+		t.Error("markdown must NOT render escalation column when no ladder data")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"iter"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -255,3 +256,126 @@ func TestRunTrial_ExplicitTextRuns(t *testing.T) {
 	}
 }
 
+// TestRunTrial_LadderSeam tests the custom runner seam: a stubbed ladder runner
+// returns a pass result with escalated metadata, and RunTrial should record the
+// ladder fields on the Trial without disturbing the normal oracle path.
+func TestRunTrial_LadderSeam(t *testing.T) {
+	c := markerCase()
+	c.VCSWorkspace = true // required by ladder runner; will auto-init git in temp dir.
+
+	// Stub model with a custom runner that simulates a ladder: 2 attempts,
+	// winner at rung 2 -> escalated.
+	m := Model{
+		Label:       "ladder:stub",
+		RequiresVCS: true,
+		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+			// Write the marker so the oracle passes.
+			if err := os.WriteFile(acfg.Root+"/result.txt", []byte("DONE"), 0644); err != nil {
+				return nil, nil, err
+			}
+			res := &agent.RunResult{
+				Outcome:    agent.Answered,
+				Answer:     "done",
+				Iterations: 1,
+				Usage:      llm.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			}
+			meta := &TrialLadder{
+				Attempts:   2,
+				WinnerRung: 2,
+				Escalated:  true,
+				Cost:       0.42,
+				Priced:     true,
+			}
+			return res, meta, nil
+		},
+	}
+
+	tr := RunTrial(context.Background(), c, m, 1)
+
+	if tr.Err != "" {
+		t.Fatalf("unexpected infra error: %s", tr.Err)
+	}
+	if tr.Ladder == nil {
+		t.Fatal("Trial.Ladder is nil, want ladder metadata")
+	}
+	if tr.Ladder.Attempts != 2 {
+		t.Errorf("Ladder.Attempts = %d, want 2", tr.Ladder.Attempts)
+	}
+	if tr.Ladder.WinnerRung != 2 {
+		t.Errorf("Ladder.WinnerRung = %d, want 2", tr.Ladder.WinnerRung)
+	}
+	if !tr.Ladder.Escalated {
+		t.Error("Ladder.Escalated = false, want true (winner rung > 1)")
+	}
+	if tr.Cost != 0.42 {
+		t.Errorf("Trial.Cost = %v, want 0.42 (from ladder metadata)", tr.Cost)
+	}
+	if !tr.Priced {
+		t.Error("Trial.Priced = false, want true (ladder metadata marked priced)")
+	}
+	if !tr.Pass {
+		t.Errorf("oracle should still pass: Detail=%q", tr.Detail)
+	}
+	if tr.Protocol != "ladder" {
+		t.Errorf("Protocol = %q, want ladder", tr.Protocol)
+	}
+}
+
+// TestRunTrial_LadderRejectsNonVCS ensures a ladder runner gets an infra error
+// when the case lacks VCSWorkspace.
+func TestRunTrial_LadderRejectsNonVCS(t *testing.T) {
+	c := markerCase() // VCSWorkspace defaults to false.
+	m := Model{
+		Label:       "ladder:stub",
+		RequiresVCS: true,
+		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+			return nil, nil, nil // never called
+		},
+	}
+	tr := RunTrial(context.Background(), c, m, 1)
+
+	if tr.Err == "" {
+		t.Fatal("expected an error for non-VCS case with ladder runner")
+	}
+	if !strings.Contains(tr.Err, "does not provide a git workspace") {
+		t.Errorf("error message does not mention workspace requirement: %s", tr.Err)
+	}
+}
+
+// TestRunTrial_VerifyCmdPropagatesToRunner ensures the case's LadderVerify
+// reaches the custom trial runner's agent.Config as VerifyCmd. The ladder needs
+// this in-run red/green signal; without it every attempt looks green and
+// escalation never fires (ESCALATION.md §2). The test also proves that
+// LadderVerify, not the CLI -verify-cmd flag, is the authority.
+func TestRunTrial_VerifyCmdPropagatesToRunner(t *testing.T) {
+	c := markerCase()
+	c.VCSWorkspace = true
+	c.LadderVerify = "go test ./..."
+	// Set Config.VerifyCmd to something different — proves LadderVerify wins.
+	c.Config.VerifyCmd = "false"
+
+	var capturedCfg agent.Config
+	m := Model{
+		Label:       "ladder:stub",
+		RequiresVCS: true,
+		Run: func(ctx context.Context, acfg agent.Config) (*agent.RunResult, *TrialLadder, error) {
+			capturedCfg = acfg
+			// Write the marker so the oracle passes.
+			if err := os.WriteFile(acfg.Root+"/result.txt", []byte("DONE"), 0644); err != nil {
+				return nil, nil, err
+			}
+			return &agent.RunResult{
+				Outcome: agent.Answered,
+				Usage:   llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			}, nil, nil
+		},
+	}
+
+	tr := RunTrial(context.Background(), c, m, 1)
+	if tr.Err != "" {
+		t.Fatalf("unexpected infra error: %s", tr.Err)
+	}
+	if capturedCfg.VerifyCmd != "go test ./..." {
+		t.Errorf("runner received VerifyCmd = %q, want %q", capturedCfg.VerifyCmd, "go test ./...")
+	}
+}

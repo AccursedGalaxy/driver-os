@@ -68,15 +68,45 @@ type Case struct {
 	// would be handed mutation tools it never has in production, and could behave
 	// (and be graded) unfaithfully. nil => the loop's DefaultTools.
 	Tools func(sb sandbox.Sandbox, runTimeout time.Duration) map[string]agent.Tool
+
+	// VCSWorkspace is true when the fixture materializes a real git work tree
+	// suitable for VCS-backed runners such as the escalation ladder. Pure
+	// in-memory fixtures (MapFixture) must leave this false so the ladder arm
+	// can reject them cleanly rather than half-working.
+	VCSWorkspace bool
+
+	// LadderVerify is the in-run command the ladder uses as the red/green signal
+	// for each rung attempt. When empty, the case verifies only via the held-out
+	// oracle and is NOT ladder-compatible — validateLadderCases rejects it. The
+	// case constructor sets this when it can provide a meaningful per-trial
+	// verify command (e.g. a suite that the agent can pass by completing the
+	// task). It is independent of the CLI -verify-cmd flag, which is an optional
+	// self-check for the single-model path and is not a substitute for a
+	// case-declared ladder signal.
+	LadderVerify string
 }
+
+// TrialRunFunc is an optional custom trial runner. When set on a Model, RunTrial
+// delegates the solve to this function instead of the normal single-model
+// provider path. The runner receives the per-trial agent.Config (already
+// populated with sandbox, root, task, tools) and must return a RunResult plus,
+// optionally, ladder metadata. nil ladder => no ladder info.
+type TrialRunFunc func(context.Context, agent.Config) (*agent.RunResult, *TrialLadder, error)
 
 // Model pairs a provider with the human-facing id used in the report. The
 // provider's Name() is its registered identity ("openrouter"), not the model
 // string the run actually exercised ("openai/gpt-4o-mini"), so the label is
 // carried explicitly — the report compares models, and a row needs the real id.
+//
+// When Run is set, RunTrial delegates the solve entirely to this function,
+// skipping the normal provider/protocol selection. RequiresVCS gates the
+// pre-run VCS initialisation needed by runners that depend on a clean git
+// work tree (e.g. the ladder).
 type Model struct {
-	Label    string
-	Provider llm.Provider
+	Label       string
+	Provider    llm.Provider
+	Run         TrialRunFunc
+	RequiresVCS bool
 }
 
 // Fixture materializes a case's pristine starting state into a fresh directory.

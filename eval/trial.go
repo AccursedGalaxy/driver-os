@@ -2,7 +2,9 @@ package eval
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
@@ -58,6 +60,11 @@ type Trial struct {
 	// failure when a tools case met a no-tools model).
 	Protocol string `json:"protocol"`
 
+	// Ladder holds per-trial escalation-ladder metadata when the trial was
+	// executed by a ladder arm. nil for normal single-model trials — the
+	// omitempty tag keeps existing report JSON stable.
+	Ladder *TrialLadder `json:"ladder,omitempty"`
+
 	// Steps is the full think->act->observe trace, kept for per-trial archival but
 	// EXCLUDED from report.json (json:"-") so the aggregate report stays compact —
 	// WriteFiles writes each trace to its own file under traces/ instead.
@@ -72,6 +79,17 @@ func (t Trial) FalsePositive() bool {
 	return t.Outcome == agent.Answered && !t.Pass
 }
 
+// TrialLadder records the per-trial escalation-ladder metadata for a trial run
+// by a ladder arm. Zero values mean "no info available" — the report renders
+// these as "—".
+type TrialLadder struct {
+	Attempts   int     // total attempts across all rungs.
+	WinnerRung int     // 1-based rung index of the winning attempt; 0 when nothing won.
+	Escalated  bool    // true when any attempt went past rung 1 (the NORTH-STAR guard).
+	Cost       float64 // USD cost of all ladder attempts summed; valid only when Priced is true.
+	Priced     bool    // whether at least one attempt had a cost known to the price table.
+}
+
 // RunTrial executes one trial: materialize a PRISTINE fixture into a fresh temp
 // dir (never the live repo, never a reused dir), run the agent against it, then
 // grade the resulting on-disk state with the case's oracle. The temp dir is
@@ -79,25 +97,46 @@ func (t Trial) FalsePositive() bool {
 // keep. err-shaped infra failures from the loop are recorded on the Trial (as
 // .Err) rather than returned, so one flaky provider call can't abort a whole
 // suite sweep; the trial just counts as a non-pass.
+//
+// When m.Run is set (a custom trial runner, e.g. the escalation ladder),
+// RunTrial delegates the solve to that function instead of the normal
+// single-model provider path. m.RequiresVCS gates a pre-run git-baseline
+// initialisation for runners that need a clean work tree.
 func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	tr := Trial{Case: c.Name, Model: m.Label, Index: index}
 
-	// Pick the loop the same way cmd/agent does: native tool-calling when the
-	// provider supports it, else the text loop (if the case allows it).
-	// Check this BEFORE materializing the fixture or opening the sandbox:
-	// a protocol mismatch is a static infra failure of the (Case, Model) pair.
-	var run func(context.Context, agent.Config) (*agent.RunResult, error)
-	switch {
-	case c.Protocol == "text":
-		tr.Protocol = "text"
-		run = agent.Run
-	case m.Provider.Capabilities().Tools:
-		tr.Protocol = "tools"
-		run = agent.RunNative
-	default:
-		tr.Protocol = "refused"
-		tr.Err = "protocol: case requires native tools but model lacks tool support (refusing text fallback)"
+	// Static checks that must run BEFORE any fixture materialisation, so a
+	// misconfigured pair never wastes time pulling a SWE-bench image or
+	// unpacking a large archive.
+
+	// 1. Custom-runner (ladder) VCS gate: a case that declares no git
+	//    workspace can be rejected immediately.
+	if m.Run != nil && m.RequiresVCS && !c.VCSWorkspace {
+		tr.Err = fmt.Sprintf("ladder: case %q does not provide a git workspace (map fixtures are not ladder-compatible)", c.Name)
 		return tr
+	}
+
+	// 2. Normal single-model path: protocol/capability mismatch must not
+	//    materialise the fixture (the original HP-11 guard).
+	var run func(context.Context, agent.Config) (*agent.RunResult, error)
+	var customRun func(context.Context, agent.Config) (*agent.RunResult, *TrialLadder, error)
+
+	if m.Run != nil {
+		customRun = m.Run
+		tr.Protocol = "ladder"
+	} else {
+		switch {
+		case c.Protocol == "text":
+			tr.Protocol = "text"
+			run = agent.Run
+		case m.Provider.Capabilities().Tools:
+			tr.Protocol = "tools"
+			run = agent.RunNative
+		default:
+			tr.Protocol = "refused"
+			tr.Err = "protocol: case requires native tools but model lacks tool support (refusing text fallback)"
+			return tr
+		}
 	}
 
 	dir, err := os.MkdirTemp("", "eval-"+c.Name+"-")
@@ -110,6 +149,15 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	if err := c.Fixture.Materialize(dir); err != nil {
 		tr.Err = "fixture: " + err.Error()
 		return tr
+	}
+
+	// VCS baseline initialisation for runners that need a clean work tree.
+	// Must happen AFTER materialise because it operates on the fixture dir.
+	if m.Run != nil && m.RequiresVCS {
+		if err := initVCSBaseline(dir); err != nil {
+			tr.Err = "ladder: vcs baseline: " + err.Error()
+			return tr
+		}
 	}
 
 	// The case's sandbox factory, when set, replaces the default host-local
@@ -134,6 +182,14 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	cfg.Root = dir
 	cfg.Obs = nil // silent: a trial yields data, not stdout (that's the Observer seam).
 
+	// When the case declares a ladder verify signal, install it on the config
+	// that the custom runner (ladder) receives.  This is independent of the
+	// CLI -verify-cmd flag — the case constructor is the authority on what a
+	// meaningful in-run red/green signal looks like for this task.
+	if customRun != nil && c.LadderVerify != "" {
+		cfg.VerifyCmd = c.LadderVerify
+	}
+
 	// Production-faithful toolset, when the case declares one — otherwise the loop
 	// falls back to DefaultTools. This binds the case's tool factory to THIS trial's
 	// sandbox (tools are sandbox-scoped, so the Case can only carry a factory).
@@ -145,7 +201,16 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		cfg.Tools = c.Tools(sb, rt)
 	}
 
-	res, runErr := run(ctx, cfg)
+	var res *agent.RunResult
+	var runErr error
+	var ladder *TrialLadder
+
+	if customRun != nil {
+		res, ladder, runErr = customRun(ctx, cfg)
+	} else {
+		res, runErr = run(ctx, cfg)
+	}
+
 	if res != nil {
 		tr.RunID = res.ID
 		tr.Outcome = res.Outcome
@@ -165,7 +230,18 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 			tr.PlanCost, tr.PlanPriced = CostOf(res.Plan.Model, res.Plan.Usage)
 		}
 	}
-	tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)
+
+	if ladder != nil {
+		tr.Ladder = ladder
+		// Cost for ladder trials is set from the runner's summed attempt
+		// costs — do NOT call CostOf(m.Label, tr.Usage) because the ladder
+		// arm label has no Pricing entry and the per-attempt usage is not
+		// on the top-level RunResult.
+		tr.Cost = ladder.Cost
+		tr.Priced = ladder.Priced
+	} else {
+		tr.Cost, tr.Priced = CostOf(m.Label, tr.Usage)
+	}
 	if runErr != nil {
 		tr.Err = runErr.Error()
 	}
@@ -179,4 +255,35 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	tr.NoAttempt = g.NoAttempt
 	tr.Detail = g.Detail
 	return tr
+}
+
+// initVCSBaseline ensures dir is a git work tree with a clean baseline commit.
+// If the dir is already inside a git work tree (e.g. SWE-bench instances that
+// ship .git inside the image), it leaves it alone — ladder.Run will enforce
+// clean-tree. Otherwise it initialises a fresh repo, stages everything, and
+// commits a baseline so ladder's VCS operations have a starting tree to diff
+// against. This is needed because GitFixture uses `git archive` and does not
+// materialize the .git directory.
+func initVCSBaseline(dir string) error {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	if err := cmd.Run(); err == nil {
+		// Already a git work tree — ladder's clean-tree check handles the rest.
+		return nil
+	}
+	// Init a fresh repo, stage everything, commit a baseline.
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w (%s)", err, string(out))
+	}
+	add := exec.Command("git", "-C", dir, "add", "-A")
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add: %w (%s)", err, string(out))
+	}
+	commit := exec.Command("git", "-C", dir,
+		"-c", "user.name=driver-eval",
+		"-c", "user.email=driver-eval@example.invalid",
+		"commit", "-m", "eval-baseline")
+	if out, err := commit.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit: %w (%s)", err, string(out))
+	}
+	return nil
 }
