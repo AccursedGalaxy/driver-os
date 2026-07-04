@@ -79,6 +79,15 @@ type Cell struct {
 	Case   string
 	Model  string
 	Trials []Trial
+
+	// PricingCoverage_ and UnpricedModels_ are additive report fields
+	// populated by WriteFiles before JSON serialisation so downstream
+	// consumers of report.json can see per-cell pricing honesty without
+	// recomputing from trials. The methods PricingCoverage() and
+	// UnpricedModels() compute the same values on the fly for callers that
+	// don't go through WriteFiles (tests, markdown).
+	PricingCoverage_ string   `json:"pricing_coverage,omitempty"`
+	UnpricedModels_  []string `json:"unpriced_models,omitempty"`
 }
 
 // N is the trial count.
@@ -236,8 +245,22 @@ func (c Cell) CostP(p float64) (cost float64, ok bool) {
 // underreported 6.5× by pricing only the solver). ok=false when nothing was
 // priced. The $/trial percentile column stays solver-only on purpose: it
 // compares MODELS, while this compares BILLS.
+//
+// Ladder trials: t.Cost is already all-in (solver + reviewer + planner summed
+// by ladder.priceAttempt across every attempt), so PlanCost/ReviewCost are NOT
+// added — they hold the WINNING attempt's components and would double-count.
 func (c Cell) CostTotal() (total float64, ok bool) {
 	for _, t := range c.Trials {
+		if t.Ladder != nil {
+			// ladder.Cost already includes solver + reviewer + planner for
+			// every attempt; the per-trial ReviewCost/PlanCost are the
+			// final-attempt components and must not be added again.
+			if t.Priced {
+				total += t.Cost
+				ok = true
+			}
+			continue
+		}
 		if t.Priced {
 			total += t.Cost
 			ok = true
@@ -314,6 +337,25 @@ func (c Cell) LadderMeanAttempts() float64 {
 	return float64(sum) / float64(ln)
 }
 
+// ReviewStatuses aggregates the status values of every trial's ReviewReport
+// into a count histogram. Returns nil when no trial carries a review report
+// (gate was off for the whole cell). Ladder trials only contribute the
+// top-level trial Review; per-attempt review reports are not carried on
+// AttemptRecord, so the histogram aggregates top-level review statuses.
+func (c Cell) ReviewStatuses() map[string]int {
+	var m map[string]int
+	for _, t := range c.Trials {
+		if t.Review == nil {
+			continue
+		}
+		if m == nil {
+			m = make(map[string]int)
+		}
+		m[string(t.Review.Status)]++
+	}
+	return m
+}
+
 // LadderCostByModel aggregates CostByModel across all ladder trials in this
 // cell. Unpriced models are absent from the map. Returns nil when there are no
 // ladder trials or no per-model data.
@@ -359,6 +401,87 @@ func (c Cell) LadderTouchRateByModel() map[string]float64 {
 		m[model] /= float64(ln)
 	}
 	return m
+}
+
+// PricingCoverage classifies the cell by how completely its trials are priced:
+// "full" (every trial has all applicable components priced), "partial" (some
+// component priced, some not), "none" (nothing priced). For ladder trials the
+// Ladder.Priced flag is the single all-in gate — ladder.Cost already includes
+// solver + reviewer + planner.
+func (c Cell) PricingCoverage() string {
+	if c.N() == 0 {
+		return "none"
+	}
+	allFull := true
+	anyPriced := false
+	for _, t := range c.Trials {
+		full, priced := trialPricingCoverage(t)
+		if priced {
+			anyPriced = true
+		}
+		if !full {
+			allFull = false
+		}
+	}
+	if !anyPriced {
+		return "none"
+	}
+	if allFull {
+		return "full"
+	}
+	return "partial"
+}
+
+// trialPricingCoverage returns (fullyPriced, anyPriced) for a single trial.
+func trialPricingCoverage(t Trial) (full, priced bool) {
+	if t.Ladder != nil {
+		return t.Ladder.Priced, t.Ladder.Priced
+	}
+	// Non-ladder: solver always applicable; plan/review applicable when non-nil.
+	solverPriced := t.Priced
+	planApplicable := t.Plan != nil
+	reviewApplicable := t.Review != nil
+	planOK := !planApplicable || t.PlanPriced
+	reviewOK := !reviewApplicable || t.ReviewPriced
+
+	priced = solverPriced || t.PlanPriced || t.ReviewPriced
+	full = solverPriced && planOK && reviewOK
+	return full, priced
+}
+
+// UnpricedModels returns the deduplicated set of model ids that were seen in
+// this cell but not priced. For non-ladder trials each unpriced component
+// contributes its model id (solver, planner, reviewer). For ladder trials only
+// the top-level Priced flag is available — individual models inside the ladder
+// cannot be distinguished — so the arm label itself is reported when unpriced.
+func (c Cell) UnpricedModels() []string {
+	seen := map[string]struct{}{}
+	for _, t := range c.Trials {
+		if t.Ladder != nil {
+			if !t.Ladder.Priced {
+				seen[c.Model] = struct{}{}
+			}
+			continue
+		}
+		if !t.Priced {
+			seen[c.Model] = struct{}{}
+		}
+		if t.Plan != nil && !t.PlanPriced {
+			seen[t.Plan.Model] = struct{}{}
+		}
+		if t.Review != nil && !t.ReviewPriced {
+			seen[t.Review.ReviewerModel] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Manifest is the reproducibility record — pinned ids and settings so a report
@@ -419,18 +542,33 @@ func (r *Report) Markdown() string {
 				break
 			}
 		}
+		// Determine whether any cell has a review report — if so, extend
+		// the table with a review statuses column.
+		hasReview := false
+		for _, c := range byCase[name] {
+			if c.ReviewStatuses() != nil {
+				hasReview = true
+				break
+			}
+		}
 
 		// Header.
-		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 |")
+		b.WriteString("| model | pass-rate | (ex-infra) | 95% CI | infra | false-pos | outcomes | iters p50/p90 (pass) | prompt tok p50 | reason tok p50 | latency p50 | $/trial p50 | pricing |")
 		if hasLadder {
 			b.WriteString(" escalation | $ by model | attempts mean |")
+		}
+		if hasReview {
+			b.WriteString(" review statuses |")
 		}
 		b.WriteByte('\n')
 
 		// Separator.
-		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|")
+		b.WriteString("|-------|-----------|------------|--------|-------|-----------|----------|----------------------|----------------|----------------|-------------|-------------|---------|")
 		if hasLadder {
 			b.WriteString("------------|------------|---------------|")
+		}
+		if hasReview {
+			b.WriteString("-----------------|")
 		}
 		b.WriteByte('\n')
 
@@ -444,7 +582,7 @@ func (r *Report) Markdown() string {
 			if c.Infra() > 0 {
 				infra = fmt.Sprintf("%d", c.Infra())
 			}
-			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | %.2f | [%.2f, %.2f] | %s | %d/%d%s | %s | %d/%d | %s | %s | %s | %s |",
+			fmt.Fprintf(&b, "| %s | %d/%d (%.2f) | %.2f | [%.2f, %.2f] | %s | %d/%d%s | %s | %d/%d | %s | %s | %s | %s | %s |",
 				c.Model, c.Passes(), c.N(), c.PassRate(), c.PassRateInfraExcluded(), lo, hi, infra,
 				c.FalsePositives(), c.N(), fp,
 				renderOutcomes(c.Outcomes()),
@@ -452,11 +590,15 @@ func (r *Report) Markdown() string {
 				humanInt(c.PromptTokensP(50)),
 				humanInt(c.ReasoningTokensP(50)),
 				humanMs(c.LatencyP(50)),
-				renderCostP(c))
+				renderCostP(c),
+				renderPricingCoverage(c))
 			if hasLadder {
 				b.WriteString(renderLadderEscalation(c))
 				b.WriteString(renderLadderCostByModel(c))
 				fmt.Fprintf(&b, " %.2f |", c.LadderMeanAttempts())
+			}
+			if hasReview {
+				b.WriteString(renderReviewStatuses(c.ReviewStatuses()))
 			}
 			b.WriteByte('\n')
 		}
@@ -479,6 +621,11 @@ func (r *Report) WriteFiles(dir string) error {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte(r.Markdown()), 0o644); err != nil {
 		return err
+	}
+	// Populate additive per-cell fields before JSON serialisation.
+	for i := range r.Cells {
+		r.Cells[i].PricingCoverage_ = r.Cells[i].PricingCoverage()
+		r.Cells[i].UnpricedModels_ = r.Cells[i].UnpricedModels()
 	}
 	j, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -659,6 +806,18 @@ func renderCostP(c Cell) string {
 	return humanUSD(cost)
 }
 
+// renderPricingCoverage renders the cell's pricing coverage status for the
+// Markdown table: "full", "partial", or "none". When not full, unpriced model
+// ids are listed parenthetically so the reader sees WHAT is unpriced.
+func renderPricingCoverage(c Cell) string {
+	status := c.PricingCoverage()
+	unpriced := c.UnpricedModels()
+	if status == "full" || len(unpriced) == 0 {
+		return status
+	}
+	return fmt.Sprintf("%s (%s)", status, strings.Join(unpriced, ", "))
+}
+
 // renderLadderEscalation returns a formatted escalation cell for the Markdown
 // table: "n/N (rate)" for ladder cells, " — " for non-ladder cells.
 func renderLadderEscalation(c Cell) string {
@@ -749,6 +908,37 @@ func renderOutcomes(h map[agent.Outcome]int) string {
 		parts[i] = fmt.Sprintf("%s=%d", p.k, p.v)
 	}
 	return strings.Join(parts, " ")
+}
+
+// renderReviewStatuses prints the review status histogram as "clean=4
+// parse_error=1" with a trailing pipe, or "— |" when the map is nil (gate was
+// off). Statuses are ordered count-desc then name for stable, diffable reports.
+func renderReviewStatuses(m map[string]int) string {
+	if m == nil {
+		return " — |"
+	}
+	if len(m) == 0 {
+		return " — |"
+	}
+	type kv struct {
+		k string
+		v int
+	}
+	pairs := make([]kv, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, kv{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = fmt.Sprintf("%s=%d", p.k, p.v)
+	}
+	return " " + strings.Join(parts, " ") + " |"
 }
 
 func humanInt(n int) string {

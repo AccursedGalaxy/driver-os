@@ -272,6 +272,58 @@ func TestCostTotalIncludesReviewerCost(t *testing.T) {
 	}
 }
 
+func TestCostTotalLadderNoDoubleCount(t *testing.T) {
+	// A ladder trial where Cost=1.00 already includes solver + reviewer + planner
+	// for every attempt (summed by ladder.priceAttempt). The per-trial
+	// ReviewCost/PlanCost carry the WINNING attempt's components and MUST NOT be
+	// added to CostTotal — they would double-count.
+	c := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{
+			Cost: 1.00, Priced: true,
+			ReviewCost: 0.25, ReviewPriced: true,
+			PlanCost: 0.10, PlanPriced: true,
+			Ladder: &TrialLadder{Attempts: 2, Cost: 1.00, Priced: true},
+		},
+	}}
+	if total, ok := c.CostTotal(); !ok || math.Abs(total-1.00) > 1e-9 {
+		t.Errorf("CostTotal (ladder) = %v (ok=%v), want 1.00 (no double-count)", total, ok)
+	}
+
+	// Mixed cell: one ladder trial + one plain trial with review.
+	// Ladder: Cost=1.00 all-in, plain: Cost=0.30 + ReviewCost=0.02 = 0.32.
+	// Total = 1.00 + 0.32 = 1.32.
+	c2 := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{
+			Cost: 1.00, Priced: true,
+			ReviewCost: 0.50, ReviewPriced: true,
+			PlanCost: 0.20, PlanPriced: true,
+			Ladder: &TrialLadder{Attempts: 1, Cost: 1.00, Priced: true},
+		},
+		{
+			Cost: 0.30, Priced: true,
+			ReviewCost: 0.02, ReviewPriced: true,
+		},
+	}}
+	if total, ok := c2.CostTotal(); !ok || math.Abs(total-1.32) > 1e-9 {
+		t.Errorf("CostTotal (mixed ladder+plain) = %v (ok=%v), want 1.32", total, ok)
+	}
+
+	// Ladder trial where ladder.Priced is false but ReviewPriced is true:
+	// the ladder cost is not added (not priced), and the review is also skipped
+	// (ladder path). Total should be 0, ok=false.
+	c3 := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{
+			Cost: 0.00, Priced: false,
+			ReviewCost: 0.40, ReviewPriced: true,
+			PlanCost: 0.10, PlanPriced: true,
+			Ladder: &TrialLadder{Attempts: 3, Cost: 1.50, Priced: false},
+		},
+	}}
+	if total, ok := c3.CostTotal(); ok {
+		t.Errorf("CostTotal (ladder unpriced) ok=true, want false; total=%v", total)
+	}
+}
+
 func TestMarkdownRendersReviewGateSection(t *testing.T) {
 	rev := &agent.ReviewReport{Rounds: 2, Blocked: true, ReviewerModel: "openai/gpt-5.5",
 		Findings: []agent.ReviewedFinding{{Fate: agent.FateRepaired}, {Fate: agent.FateNote}}}
@@ -366,7 +418,7 @@ func TestCellLadderCostByModel(t *testing.T) {
 					Priced:     true,
 					CostByModel: map[string]float64{
 						"deepseek/deepseek-v4-flash": 0.61,
-						"openai/gpt-5.5":            0.54,
+						"openai/gpt-5.5":             0.54,
 					},
 				},
 			},
@@ -380,9 +432,9 @@ func TestCellLadderCostByModel(t *testing.T) {
 					Cost:       3.32,
 					Priced:     true,
 					CostByModel: map[string]float64{
-						"deepseek/deepseek-v4-flash":     0.61,
-						"anthropic/claude-opus-4.8":      1.50,
-						"openai/gpt-5.5":                 1.21,
+						"deepseek/deepseek-v4-flash": 0.61,
+						"anthropic/claude-opus-4.8":  1.50,
+						"openai/gpt-5.5":             1.21,
 					},
 				},
 			},
@@ -440,5 +492,218 @@ func TestCellLadderCostByModel(t *testing.T) {
 	// Claude share: 1.50/4.47 ≈ 34%, gpt-5.5 share: 1.75/4.47 ≈ 39%.
 	if !strings.Contains(md, "34%") && !strings.Contains(md, "39%") {
 		t.Errorf("markdown should contain share percentages; got:\n%s", md)
+	}
+}
+
+func TestPricingCoverageFull(t *testing.T) {
+	// Every trial fully priced — solver, optional planner, optional reviewer.
+	c := Cell{Case: "c", Model: "openai/gpt-5.5", Trials: []Trial{
+		{Cost: 0.10, Priced: true},
+		{Cost: 0.20, Priced: true, PlanCost: 0.05, PlanPriced: true, Plan: &agent.PlanReport{Model: "openai/gpt-5.5"}},
+		{Cost: 0.30, Priced: true, ReviewCost: 0.02, ReviewPriced: true, Review: &agent.ReviewReport{ReviewerModel: "openai/gpt-5.5"}},
+	}}
+	if got := c.PricingCoverage(); got != "full" {
+		t.Errorf("PricingCoverage = %q, want full", got)
+	}
+	if unpriced := c.UnpricedModels(); unpriced != nil {
+		t.Errorf("UnpricedModels = %v, want nil", unpriced)
+	}
+}
+
+func TestPricingCoveragePartial(t *testing.T) {
+	// One trial fully priced, another missing reviewer pricing.
+	c := Cell{Case: "c", Model: "openai/gpt-5.5", Trials: []Trial{
+		{Cost: 0.10, Priced: true},
+		{Cost: 0.30, Priced: true, ReviewCost: 0.10, ReviewPriced: false, Review: &agent.ReviewReport{ReviewerModel: "anthropic/claude-opus-4.8"}},
+	}}
+	if got := c.PricingCoverage(); got != "partial" {
+		t.Errorf("PricingCoverage = %q, want partial", got)
+	}
+	unpriced := c.UnpricedModels()
+	if len(unpriced) != 1 || unpriced[0] != "anthropic/claude-opus-4.8" {
+		t.Errorf("UnpricedModels = %v, want [anthropic/claude-opus-4.8]", unpriced)
+	}
+}
+
+func TestPricingCoverageNone(t *testing.T) {
+	c := Cell{Case: "c", Model: "openai/gpt-5.5", Trials: []Trial{
+		{Priced: false},
+		{Priced: false},
+	}}
+	if got := c.PricingCoverage(); got != "none" {
+		t.Errorf("PricingCoverage = %q, want none", got)
+	}
+	unpriced := c.UnpricedModels()
+	if len(unpriced) != 1 || unpriced[0] != "openai/gpt-5.5" {
+		t.Errorf("UnpricedModels = %v, want [openai/gpt-5.5]", unpriced)
+	}
+}
+
+func TestPricingCoverageLadder(t *testing.T) {
+	// Ladder trials: the Ladder.Priced flag is the single all-in gate.
+	// Fully priced ladder.
+	c := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{Ladder: &TrialLadder{Priced: true, Cost: 1.00}},
+		{Ladder: &TrialLadder{Priced: true, Cost: 2.00}},
+	}}
+	if got := c.PricingCoverage(); got != "full" {
+		t.Errorf("PricingCoverage (ladder all-priced) = %q, want full", got)
+	}
+	if unpriced := c.UnpricedModels(); unpriced != nil {
+		t.Errorf("UnpricedModels (ladder all-priced) = %v, want nil", unpriced)
+	}
+
+	// Partially priced ladder (one priced, one not).
+	c2 := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{Ladder: &TrialLadder{Priced: true, Cost: 1.00}},
+		{Ladder: &TrialLadder{Priced: false}},
+	}}
+	if got := c2.PricingCoverage(); got != "partial" {
+		t.Errorf("PricingCoverage (ladder partial) = %q, want partial", got)
+	}
+	unpriced := c2.UnpricedModels()
+	if len(unpriced) != 1 || unpriced[0] != "ladder:abc123" {
+		t.Errorf("UnpricedModels (ladder partial) = %v, want [ladder:abc123]", unpriced)
+	}
+
+	// Unpriced ladder.
+	c3 := Cell{Case: "c", Model: "ladder:abc123", Trials: []Trial{
+		{Ladder: &TrialLadder{Priced: false}},
+	}}
+	if got := c3.PricingCoverage(); got != "none" {
+		t.Errorf("PricingCoverage (ladder none) = %q, want none", got)
+	}
+}
+
+func TestPricingCoverageMarkdown(t *testing.T) {
+	// Verify the pricing column renders in markdown with correct values.
+	r := &Report{
+		Manifest: Manifest{TrialsPer: 2},
+		Cells: []Cell{
+			{Case: "calc", Model: "openai/gpt-5.5", Trials: []Trial{
+				{Cost: 0.10, Priced: true},
+				{Cost: 0.20, Priced: true},
+			}},
+			{Case: "calc", Model: "deepseek/deepseek-v4-flash", Trials: []Trial{
+				{Priced: false},
+				{Priced: false},
+			}},
+			{Case: "calc", Model: "openai/gpt-4.1-mini", Trials: []Trial{
+				{Cost: 0.05, Priced: true},
+				{Cost: 0.06, Priced: true, ReviewCost: 0.01, ReviewPriced: false, Review: &agent.ReviewReport{ReviewerModel: "openai/gpt-5.5"}},
+			}},
+		},
+	}
+	md := r.Markdown()
+	if !strings.Contains(md, "pricing") {
+		t.Fatalf("markdown missing pricing column:\n%s", md)
+	}
+	if !strings.Contains(md, "full") {
+		t.Errorf("markdown missing 'full' coverage:\n%s", md)
+	}
+	if !strings.Contains(md, "none") {
+		t.Errorf("markdown missing 'none' coverage:\n%s", md)
+	}
+	if !strings.Contains(md, "partial") {
+		t.Errorf("markdown missing 'partial' coverage:\n%s", md)
+	}
+	// The partial cell should name the unpriced reviewer model.
+	if !strings.Contains(md, "openai/gpt-5.5") {
+		t.Errorf("markdown should mention the unpriced reviewer model:\n%s", md)
+	}
+}
+
+func TestReviewStatuses(t *testing.T) {
+	rev := func(status agent.ReviewStatus) *agent.ReviewReport {
+		return &agent.ReviewReport{Status: status}
+	}
+	c := Cell{
+		Case:  "calc",
+		Model: "m1",
+		Trials: []Trial{
+			{Review: rev(agent.ReviewClean)},
+			{Review: rev(agent.ReviewClean)},
+			{Review: rev(agent.ReviewParseError)},
+			{Review: rev(agent.ReviewUnavailable)},
+			{Review: rev(agent.ReviewClean)},
+			{}, // no review
+		},
+	}
+	m := c.ReviewStatuses()
+	if m == nil {
+		t.Fatal("ReviewStatuses returned nil but reviews are present")
+	}
+	if m["clean"] != 3 {
+		t.Errorf("clean = %d, want 3", m["clean"])
+	}
+	if m["parse_error"] != 1 {
+		t.Errorf("parse_error = %d, want 1", m["parse_error"])
+	}
+	if m["unavailable"] != 1 {
+		t.Errorf("unavailable = %d, want 1", m["unavailable"])
+	}
+}
+
+func TestReviewStatusesAllNil(t *testing.T) {
+	c := Cell{
+		Case:   "calc",
+		Model:  "m1",
+		Trials: []Trial{{}, {}, {}},
+	}
+	if m := c.ReviewStatuses(); m != nil {
+		t.Errorf("ReviewStatuses should be nil when no reviews, got %v", m)
+	}
+}
+
+// TestReviewStatusesMarkdown confirms the renderReviewStatuses helper
+// produces stable output and that the Markdown table includes the review
+// statuses column when reviews are present.
+func TestReviewStatusesMarkdown(t *testing.T) {
+	rev := func(status agent.ReviewStatus) *agent.ReviewReport {
+		return &agent.ReviewReport{Status: status}
+	}
+	cell := Cell{
+		Case:  "calc",
+		Model: "m1",
+		Trials: []Trial{
+			{Review: rev(agent.ReviewClean), Index: 1},
+			{Review: rev(agent.ReviewClean), Index: 2},
+			{Review: rev(agent.ReviewParseError), Index: 3},
+			{Review: rev(agent.ReviewUnavailable), Index: 4},
+			{Review: rev(agent.ReviewClean), Index: 5},
+		},
+	}
+
+	// Check the helper directly.
+	rendered := renderReviewStatuses(cell.ReviewStatuses())
+	if !strings.Contains(rendered, "clean=3") {
+		t.Errorf("rendered missing clean=3: %q", rendered)
+	}
+	if !strings.Contains(rendered, "parse_error=1") {
+		t.Errorf("rendered missing parse_error=1: %q", rendered)
+	}
+	if !strings.Contains(rendered, "unavailable=1") {
+		t.Errorf("rendered missing unavailable=1: %q", rendered)
+	}
+	// Must start with " " and end with " |"
+	if !strings.HasSuffix(rendered, " |") || !strings.HasPrefix(rendered, " ") {
+		t.Errorf("rendered should be space-prefixed and pipe-suffixed: %q", rendered)
+	}
+
+	// Nil map renders " — |"
+	nilRendered := renderReviewStatuses(nil)
+	if nilRendered != " — |" {
+		t.Errorf("nil renderReviewStatuses = %q, want \" — |\"", nilRendered)
+	}
+
+	// The Markdown must contain the "review statuses" column header when
+	// the cell has reviews.
+	rep := &Report{Manifest: Manifest{TrialsPer: 5}, Cells: []Cell{cell}}
+	md := rep.Markdown()
+	if !strings.Contains(md, "review statuses") {
+		t.Fatalf("markdown missing review statuses column:\n%s", md)
+	}
+	if !strings.Contains(md, "clean=3") {
+		t.Errorf("markdown missing clean=3 in review statuses column:\n%s", md)
 	}
 }
