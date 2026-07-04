@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,32 +64,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if promptNote != "" {
 		cfg.Obs.Note(promptNote)
 	}
-	maxIter := cfg.MaxIterations
-	if maxIter <= 0 {
-		maxIter = DefaultMaxIterations
-	}
-	maxTok := cfg.MaxTokens
-	if maxTok <= 0 {
-		maxTok = DefaultMaxTokens
-	}
-	spiralWindow := cfg.NavSpiralWindow
-	if spiralWindow <= 0 {
-		spiralWindow = noProgressWindow
-	}
-	runTimeout := cfg.RunTimeout
-	if runTimeout <= 0 {
-		runTimeout = defaultRunTimeout
-	}
-	if cfg.Tools == nil {
-		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
-	}
-	// (REVIEW-GATE slice 0) Fence the mutation tools BEFORE their schemas are
-	// advertised, and snapshot the closing gates' run-start state (fence hashes
-	// + the review diff base). Inert when unconfigured — see Run's twin.
-	// Diff-scope wraps FIRST, test-fence LAST, so the fence wins for fenced
-	// in-scope paths.
-	cfg.Tools = applyDiffScope(cfg.Tools, cfg.DiffScope, cfg.Sandbox)
-	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
+	knobs := resolveKnobs(cfg)
+	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
+	cfg.Tools = wrapTools(cfg, runTimeout)
 	gs := newGates(ctx, cfg, runTimeout)
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
@@ -105,16 +81,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	gs.applyBaseline(res)
-	// AbortOnRedBaseline: if the baseline is red and the caller wants us to stop,
-	// return immediately before any model call — the gate is unsatisfiable at base.
-	if cfg.AbortOnRedBaseline && gs.verifyBaselineRed {
-		res.Outcome = Unverified
-		res.Reason = fmt.Sprintf(
-			"refused to run: the verify command %q is ALREADY failing on the untouched workspace — "+
-				"the gate is unsatisfiable at base (-verify-baseline=abort caused this refusal)",
-			cfg.VerifyCmd,
-		)
-		res.Iterations = 0
+	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
+		res.Outcome, res.Reason, res.Iterations = refusal.Outcome, refusal.Reason, refusal.Iterations
 		return res, nil
 	}
 	// The review report travels on EVERY exit path (findings + fates are the
@@ -220,32 +188,16 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					lastAssistantText = txt
 				}
 			}
-			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
-			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
-				res.Outcome = HitDeadline
-				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, cfg, err); ok {
+				res.Outcome, res.Reason, res.Err = outcome, reason, returnErr
+				if returnErr != nil {
+					return res, returnErr
+				}
+				if outcome == Canceled {
+					return res, nil
+				}
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
-			// (HP-1) Window overflowed and eviction couldn't compact it further —
-			// degrade gracefully rather than mislabel it a transport fault.
-			if errors.Is(err, llm.ErrContextLength) {
-				res.Outcome = HitContextLimit
-				res.Reason = "context window exceeded and could not be compacted further"
-				return gs.upgradeIfVerified(ctx, res), nil
-			}
-			// A caller cancel is a normal typed stop, not an infrastructure error.
-			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
-			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
-			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
-			// a custom signalError cause, and Err() is cause-agnostic while still
-			// distinguishing deadline expiry.
-			if errors.Is(ctx.Err(), context.Canceled) {
-				res.Outcome = Canceled
-				res.Reason = "run canceled by the caller (interrupt)"
-				return res, nil
-			}
-			res.Outcome, res.Reason, res.Err = ProviderErr, err.Error(), err
-			return res, err
 		}
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)

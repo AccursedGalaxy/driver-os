@@ -710,47 +710,15 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
-	maxIter := cfg.MaxIterations
-	if maxIter <= 0 {
-		maxIter = DefaultMaxIterations
-	}
-	maxTok := cfg.MaxTokens
-	if maxTok <= 0 {
-		maxTok = DefaultMaxTokens
-	}
-	runTimeout := cfg.RunTimeout
-	if runTimeout <= 0 {
-		runTimeout = defaultRunTimeout
-	}
-	spiralWindow := cfg.NavSpiralWindow
-	if spiralWindow <= 0 {
-		spiralWindow = noProgressWindow
-	}
-	if cfg.Tools == nil {
-		cfg.Tools = DefaultTools(cfg.Sandbox, runTimeout)
-	}
-	// (REVIEW-GATE slice 0) The test fence wraps the mutation tools BEFORE the
-	// system prompt is built from them, and the closing gates snapshot their
-	// run-start state (fence hashes + the review diff base). Empty fence + nil
-	// Reviewer ⇒ both are inert and behavior is byte-identical.
-	// Diff-scope wraps FIRST, test-fence LAST, so the fence wins for fenced
-	// in-scope paths (the refusal names whichever mechanism refused).
-	cfg.Tools = applyDiffScope(cfg.Tools, cfg.DiffScope, cfg.Sandbox)
-	cfg.Tools = applyTestFence(cfg.Tools, cfg.TestFence, cfg.Sandbox)
+	knobs := resolveKnobs(cfg)
+	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
+	cfg.Tools = wrapTools(cfg, runTimeout)
 	gs := newGates(ctx, cfg, runTimeout)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	gs.applyBaseline(res)
-	// AbortOnRedBaseline: if the baseline is red and the caller wants us to stop,
-	// return immediately before any model call — the gate is unsatisfiable at base.
-	if cfg.AbortOnRedBaseline && gs.verifyBaselineRed {
-		res.Outcome = Unverified
-		res.Reason = fmt.Sprintf(
-			"refused to run: the verify command %q is ALREADY failing on the untouched workspace — "+
-				"the gate is unsatisfiable at base (-verify-baseline=abort caused this refusal)",
-			cfg.VerifyCmd,
-		)
-		res.Iterations = 0
+	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
+		res.Outcome, res.Reason, res.Iterations = refusal.Outcome, refusal.Reason, refusal.Iterations
 		return res, nil
 	}
 	// The review report travels on EVERY exit path (findings + fates are the
@@ -857,37 +825,16 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		})
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
-			// A deadline hit mid-Generate is the wall-clock budget, not a transport fault.
-			if cfg.MaxWallClock > 0 && loopCtx.Err() == context.DeadlineExceeded {
-				res.Outcome = HitDeadline
-				res.Reason = fmt.Sprintf("hit wall-clock budget (%s) mid-turn", cfg.MaxWallClock)
+			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, cfg, err); ok {
+				res.Outcome, res.Reason, res.Err = outcome, reason, returnErr
+				if returnErr != nil {
+					return res, returnErr
+				}
+				if outcome == Canceled {
+					return res, nil
+				}
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
-			// (HP-1) The window overflowed and eviction couldn't compact it any
-			// further (only TASK + the most recent turn remain). Degrade gracefully
-			// to a typed stop rather than surfacing it as a transport fault.
-			if errors.Is(err, llm.ErrContextLength) {
-				res.Outcome = HitContextLimit
-				res.Reason = "context window exceeded and could not be compacted further"
-				return gs.upgradeIfVerified(ctx, res), nil
-			}
-			// A caller cancel is a normal typed stop, not an infrastructure error.
-			// Check the PARENT ctx — loopCtx may also carry DeadlineExceeded from
-			// MaxWallClock, and wall-clock expiry must read HitDeadline, not Canceled.
-			// We check ctx.Err() because signal.NotifyContext (Go 1.26+) cancels with
-			// a custom signalError cause, and Err() is cause-agnostic while still
-			// distinguishing deadline expiry.
-			if errors.Is(ctx.Err(), context.Canceled) {
-				res.Outcome = Canceled
-				res.Reason = "run canceled by the caller (interrupt)"
-				return res, nil
-			}
-			// A transport/auth failure is a real stop (tool errors are not — see
-			// dispatch). Record it as a typed outcome AND return the error.
-			res.Outcome = ProviderErr
-			res.Reason = err.Error()
-			res.Err = err
-			return res, err
 		}
 		reply := strings.TrimSpace(resp.Text())
 		cfg.Obs.Model(reply)
