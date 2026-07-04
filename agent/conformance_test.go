@@ -1,0 +1,507 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"iter"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/mneme"
+)
+
+type conformanceLoop struct {
+	name string
+	run  func(context.Context, Config) (*RunResult, any, error)
+}
+
+func conformanceLoops(textReplies []string, nativeTurns [][]llm.ContentPart) []conformanceLoop {
+	return []conformanceLoop{
+		{name: "Run", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
+			sp := &scripted{replies: textReplies}
+			cfg.Model = sp
+			res, err := Run(ctx, cfg)
+			return res, sp, err
+		}},
+		{name: "RunNative", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
+			ns := &nativeScript{turns: nativeTurns}
+			cfg.Model = ns
+			res, err := RunNative(ctx, cfg)
+			return res, ns, err
+		}},
+	}
+}
+
+func conformanceBaseConfig(t *testing.T) Config {
+	t.Helper()
+	return Config{Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 5}
+}
+
+func assertOutcome(t *testing.T, res *RunResult, want Outcome, reasonSubstr string) {
+	t.Helper()
+	if res.Outcome != want {
+		t.Fatalf("Outcome = %q, want %q (Reason: %s)", res.Outcome, want, res.Reason)
+	}
+	if reasonSubstr != "" && !strings.Contains(res.Reason, reasonSubstr) {
+		t.Fatalf("Reason = %q, want substring %q", res.Reason, reasonSubstr)
+	}
+}
+
+func requestMessages(rec any, idx int) []llm.Message {
+	switch r := rec.(type) {
+	case *scripted:
+		return r.calls[idx].Messages
+	case *nativeScript:
+		return r.calls[idx].Messages
+	default:
+		return nil
+	}
+}
+
+func providerCallCount(rec any) int {
+	switch r := rec.(type) {
+	case *scripted:
+		return len(r.calls)
+	case *nativeScript:
+		return len(r.calls)
+	default:
+		return -1
+	}
+}
+
+func messagesContain(msgs []llm.Message, sub string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m.Text(), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func finishTools(t *testing.T) map[string]Tool {
+	t.Helper()
+	tools := DefaultTools(sbWith(t, nil), time.Second)
+	tools["say"] = Tool{
+		Name:       "say",
+		Desc:       "say the final message",
+		NativeDesc: "send the final message",
+		Run: func(context.Context, string) (string, error) {
+			return "", nil
+		},
+	}
+	return tools
+}
+
+func finishCall(id string, fields map[string]any) llm.ToolCallPart {
+	args, _ := json.Marshal(fields)
+	return llm.ToolCallPart{ID: id, Name: "say", Args: args}
+}
+
+func TestConformance_VerifiedFinish(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer done"}, [][]llm.ContentPart{{llm.Text("done")}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "true"
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Answered, "")
+			if res.Answer != "done" {
+				t.Fatalf("Answer = %q, want done", res.Answer)
+			}
+		})
+	}
+}
+
+func TestConformance_VerifyFailWithoutContinue(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer done"}, [][]llm.ContentPart{{llm.Text("done")}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "sh -c 'echo verify failed; exit 1'"
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Unverified, "verify failed")
+		})
+	}
+}
+
+func TestConformance_VerifyContinueThenGreenFinish(t *testing.T) {
+	for _, loop := range conformanceLoops(
+		[]string{"answer premature", "write_file ok yes", "answer done"},
+		[][]llm.ContentPart{
+			{llm.Text("premature")},
+			{structuredCall("c1", "write_file", map[string]any{"path": "ok", "content": "yes"})},
+			{llm.Text("done")},
+		},
+	) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "test -f ok"
+			cfg.VerifyContinue = true
+			res, rec, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Answered, "")
+			if res.Answer != "done" {
+				t.Fatalf("Answer = %q, want done", res.Answer)
+			}
+			if providerCallCount(rec) < 2 || !messagesContain(requestMessages(rec, 1), "Not finished") {
+				t.Fatalf("second request did not contain the VerifyContinue Not finished observation")
+			}
+		})
+	}
+}
+
+func TestConformance_EmptyFinalAnswer(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer"}, [][]llm.ContentPart{{}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Unverified, "empty final answer")
+		})
+	}
+}
+
+func TestConformance_BudgetStops(t *testing.T) {
+	t.Run("iteration cap", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"ponder one", "ponder two"},
+			[][]llm.ContentPart{{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})}, {structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})}},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 2
+				res, _, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitCap, "hit iteration cap")
+			})
+		}
+	})
+
+	t.Run("token budget", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"ponder"},
+			[][]llm.ContentPart{{structuredCall("c1", "read_file", map[string]any{"path": "missing"})}},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxTotalTokens = 15
+				res, _, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitBudget, "hit token budget")
+			})
+		}
+	})
+
+	t.Run("wall clock", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			run  func(context.Context, Config) (*RunResult, error)
+		}{{"Run", Run}, {"RunNative", RunNative}} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.Model = &blockProvider{}
+				cfg.MaxWallClock = 20 * time.Millisecond
+				res, err := tc.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitDeadline, "hit wall-clock budget")
+			})
+		}
+	})
+}
+
+func TestConformance_AbortOnRedBaselineBeforeModel(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer should not run"}, [][]llm.ContentPart{{llm.Text("should not run")}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "false"
+			cfg.AbortOnRedBaseline = true
+			res, rec, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Unverified, "refused to run")
+			if res.Iterations != 0 {
+				t.Fatalf("Iterations = %d, want 0", res.Iterations)
+			}
+			if got := providerCallCount(rec); got != 0 {
+				t.Fatalf("provider calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestConformance_CallerCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, Config) (*RunResult, error)
+	}{{"Run", Run}, {"RunNative", RunNative}} {
+		t.Run(tc.name, func(t *testing.T) {
+			bp := &blockProvider{blocked: make(chan struct{})}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			out := make(chan struct {
+				res *RunResult
+				err error
+			}, 1)
+			go func() {
+				cfg := conformanceBaseConfig(t)
+				cfg.Model = bp
+				res, err := tc.run(ctx, cfg)
+				out <- struct {
+					res *RunResult
+					err error
+				}{res, err}
+			}()
+			select {
+			case <-bp.blocked:
+			case <-time.After(time.Second):
+				t.Fatal("provider never entered Generate")
+			}
+			cancel()
+			got := <-out
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			assertOutcome(t, got.res, Canceled, "canceled")
+		})
+	}
+}
+
+func TestConformance_NativeFinishToolAnswered(t *testing.T) {
+	cfg := conformanceBaseConfig(t)
+	cfg.Tools = finishTools(t)
+	cfg.FinishTool = "say"
+	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutcome(t, res, Answered, "")
+	if res.Answer != "done" {
+		t.Fatalf("Answer = %q, want done", res.Answer)
+	}
+}
+
+func TestConformance_CurrentBug_EmptyFinishToolAnswered(t *testing.T) {
+	// Documents the current bug: an explicit FinishTool call with no message and no
+	// bridge arg bypasses the empty-answer guard and is accepted as Answered with an
+	// empty Answer. The planned Slice-1 extraction flips this to Unverified.
+	cfg := conformanceBaseConfig(t)
+	cfg.Tools = finishTools(t)
+	cfg.FinishTool = "say"
+	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{})}}}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutcome(t, res, Answered, "")
+	if res.Answer != "" {
+		t.Fatalf("Answer = %q, want empty", res.Answer)
+	}
+}
+
+func TestConformance_CurrentBehavior_TrustedBypassesVerify(t *testing.T) {
+	// Current behavior: FinishToolTrustsCaller bypasses verifyTermination entirely,
+	// so even a red VerifyCmd does not downgrade the finish. Slice 1 narrows this;
+	// fence/scope+cancel will still run.
+	cfg := conformanceBaseConfig(t)
+	cfg.Tools = finishTools(t)
+	cfg.FinishTool = "say"
+	cfg.FinishToolTrustsCaller = true
+	cfg.VerifyCmd = "false"
+	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
+	res, err := RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutcome(t, res, Answered, "")
+	if res.Answer != "done" {
+		t.Fatalf("Answer = %q, want done", res.Answer)
+	}
+}
+
+type cancelAfterGenerate struct {
+	cancel context.CancelFunc
+	parts  []llm.ContentPart
+	text   string
+	calls  int
+}
+
+func (p *cancelAfterGenerate) Name() string { return "cancel-after-generate" }
+func (p *cancelAfterGenerate) Capabilities() llm.Capabilities {
+	return llm.Capabilities{Tools: len(p.parts) > 0}
+}
+func (p *cancelAfterGenerate) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("cancel-after-generate")
+}
+func (p *cancelAfterGenerate) Generate(context.Context, llm.Request) (*llm.Response, error) {
+	p.calls++
+	p.cancel()
+	if p.parts != nil {
+		return &llm.Response{Content: p.parts, FinishReason: llm.FinishStop, Usage: llm.Usage{TotalTokens: 15}}, nil
+	}
+	return &llm.Response{Content: []llm.ContentPart{llm.Text(p.text)}, FinishReason: llm.FinishStop, Usage: llm.Usage{TotalTokens: 15}}, nil
+}
+
+func TestConformance_PrecedenceCancelBeatsVerifyAtAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		parts []llm.ContentPart
+		text  string
+		run   func(context.Context, Config) (*RunResult, error)
+	}{
+		{name: "Run", text: "answer done", run: Run},
+		{name: "RunNative", parts: []llm.ContentPart{llm.Text("done")}, run: RunNative},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cfg := conformanceBaseConfig(t)
+			cfg.Model = &cancelAfterGenerate{cancel: cancel, text: tc.text, parts: tc.parts}
+			cfg.VerifyCmd = "true"
+			res, err := tc.run(ctx, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Canceled, "canceled")
+		})
+	}
+}
+
+func TestConformance_PrecedenceVerifyFailSkipsReviewer(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer done"}, [][]llm.ContentPart{{llm.Text("done")}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("x.go", "x")}}}
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "false"
+			cfg.Reviewer = rv
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Unverified, "did not pass")
+			if len(rv.inputs) != 0 {
+				t.Fatalf("reviewer calls = %d, want 0", len(rv.inputs))
+			}
+		})
+	}
+}
+
+func TestConformance_PrecedenceEmptyAnswerAfterGreenVerify(t *testing.T) {
+	for _, loop := range conformanceLoops([]string{"answer"}, [][]llm.ContentPart{{}}) {
+		t.Run(loop.name, func(t *testing.T) {
+			cfg := conformanceBaseConfig(t)
+			cfg.VerifyCmd = "true"
+			res, _, err := loop.run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutcome(t, res, Unverified, "empty final answer")
+		})
+	}
+}
+
+type countingMem struct {
+	mu   sync.Mutex
+	adds int
+}
+
+func (m *countingMem) Add(context.Context, []mneme.Message, mneme.Scope) ([]mneme.Fact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.adds++
+	return []mneme.Fact{{Text: "stored"}}, nil
+}
+func (m *countingMem) Search(context.Context, string, mneme.Scope, int) ([]mneme.Fact, error) {
+	return nil, nil
+}
+func (m *countingMem) Get(context.Context, string) (mneme.Fact, error) { return mneme.Fact{}, nil }
+func (m *countingMem) Delete(context.Context, string) error            { return nil }
+func (m *countingMem) Close() error                                    { return nil }
+func (m *countingMem) count() int                                      { m.mu.Lock(); defer m.mu.Unlock(); return m.adds }
+
+func TestConformance_GroundedMemoryPolicy(t *testing.T) {
+	cases := []struct {
+		name     string
+		text     []string
+		native   [][]llm.ContentPart
+		wantAdds int
+	}{
+		{"ungrounded answer", []string{"answer done"}, [][]llm.ContentPart{{llm.Text("done")}}, 0},
+		{"grounded answer", []string{"list_dir .", "answer done"}, [][]llm.ContentPart{{structuredCall("c1", "list_dir", map[string]any{"path": "."})}, {llm.Text("done")}}, 1},
+	}
+
+	for _, tc := range cases {
+		for _, loop := range conformanceLoops(tc.text, tc.native) {
+			t.Run(tc.name+"/"+loop.name, func(t *testing.T) {
+				mem := &countingMem{}
+				cfg := conformanceBaseConfig(t)
+				cfg.Memory = mem
+				res, _, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, Answered, "")
+				res.AwaitMemory()
+				if got := mem.count(); got != tc.wantAdds {
+					t.Fatalf("memory Add calls = %d, want %d", got, tc.wantAdds)
+				}
+			})
+		}
+	}
+}
+
+var errConformanceCanceled = errors.New("interrupt signal received")
+
+func TestConformance_CallerCancelWithCause(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, Config) (*RunResult, error)
+	}{{"Run", Run}, {"RunNative", RunNative}} {
+		t.Run(tc.name, func(t *testing.T) {
+			bp := &blockProvider{blocked: make(chan struct{})}
+			ctx, cancel := context.WithCancelCause(context.Background())
+			out := make(chan struct {
+				res *RunResult
+				err error
+			}, 1)
+			go func() {
+				cfg := conformanceBaseConfig(t)
+				cfg.Model = bp
+				res, err := tc.run(ctx, cfg)
+				out <- struct {
+					res *RunResult
+					err error
+				}{res, err}
+			}()
+			select {
+			case <-bp.blocked:
+			case <-time.After(time.Second):
+				t.Fatal("provider never entered Generate")
+			}
+			cancel(errConformanceCanceled)
+			got := <-out
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			assertOutcome(t, got.res, Canceled, "canceled")
+		})
+	}
+}
