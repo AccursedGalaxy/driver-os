@@ -29,6 +29,38 @@ func noteUsage(obs Observer, iter int, u llm.Usage, budget int) {
 	obs.Note(msg)
 }
 
+func usageReported(u llm.Usage) bool {
+	return u.PromptTokens != 0 || u.CompletionTokens != 0 || u.TotalTokens != 0 || u.CachedTokens != 0 || u.ReasoningTokens != 0
+}
+
+// dollarBudgetStop checks Config.MaxTotalCostUSD at the same turn boundary as
+// MaxTotalTokens. It prices cumulative usage, so a crossing turn is already in
+// res.Usage and is not discarded; callers pass turns=i-1 from the loop header.
+func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (bool, string) {
+	if cfg.MaxTotalCostUSD <= 0 || !usageReported(u) {
+		return false, ""
+	}
+	if cfg.CostFn == nil {
+		if !*missingNoted {
+			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
+			*missingNoted = true
+		}
+		return false, ""
+	}
+	cost, ok := cfg.CostFn(u)
+	if !ok {
+		if !*missingNoted {
+			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but CostFn could not price usage; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
+			*missingNoted = true
+		}
+		return false, ""
+	}
+	if cost >= cfg.MaxTotalCostUSD {
+		return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, cfg.MaxTotalCostUSD, turns)
+	}
+	return false, ""
+}
+
 // addUsage sums two Usage values field-by-field so RunResult.Usage accumulates
 // the whole run's token cost.
 func addUsage(a, b llm.Usage) llm.Usage {

@@ -411,6 +411,19 @@ type Config struct {
 	// caller can measure before choosing a number. 0 = off.
 	MaxTotalTokens int
 
+	// MaxTotalCostUSD bounds the run's CUMULATIVE dollar spend, priced by CostFn
+	// from the run's cumulative Usage. It mirrors MaxTotalTokens but in dollars:
+	// checked at the turn boundary AFTER a paid generation, so the crossing turn
+	// is kept and overshoot is bounded by one turn's spend; the loop then ends as
+	// HitBudget and closing verification may still upgrade it. 0 = off.
+	MaxTotalCostUSD float64
+
+	// CostFn prices this run's solver model from cumulative Usage. The agent does
+	// not know catalog model ids; callers close over the model id in this function.
+	// When MaxTotalCostUSD is set but CostFn is nil or returns ok=false, the loop
+	// notes the unenforceable dollar budget once through Obs and continues.
+	CostFn func(llm.Usage) (float64, bool)
+
 	// VerifyCmd is the closing VERIFICATION gate (P5/HP-5): a success command the
 	// caller names (e.g. "go test ./...") that is re-run when the model finishes.
 	// A non-zero exit downgrades the terminal Answered to Unverified — turning a

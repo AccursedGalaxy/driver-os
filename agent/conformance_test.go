@@ -208,6 +208,157 @@ func TestConformance_BudgetStops(t *testing.T) {
 		}
 	})
 
+	t.Run("dollar budget crossing", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing"},
+			[][]llm.ContentPart{{structuredCall("c1", "read_file", map[string]any{"path": "missing"})}},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxTotalCostUSD = 0.01
+				cfg.CostFn = func(u llm.Usage) (float64, bool) {
+					return float64(u.TotalTokens) * 0.001, true
+				}
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitBudget, "dollar budget")
+				if !strings.Contains(res.Reason, "$0.015") || !strings.Contains(res.Reason, "$0.010") {
+					t.Fatalf("Reason = %q, want dollars spent and cap", res.Reason)
+				}
+				if got := providerCallCount(rec); got != 1 {
+					t.Fatalf("provider calls = %d, want 1", got)
+				}
+			})
+		}
+	})
+
+	t.Run("dollar budget stops at next turn boundary", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing-a", "read_file missing-b", "read_file missing-c"},
+			[][]llm.ContentPart{
+				{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})},
+				{structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})},
+				{structuredCall("c3", "read_file", map[string]any{"path": "missing-c"})},
+			},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 5
+				cfg.MaxTotalCostUSD = 0.02
+				cfg.CostFn = func(u llm.Usage) (float64, bool) {
+					return float64(u.TotalTokens) * 0.001, true
+				}
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitBudget, "dollar budget")
+				if got := providerCallCount(rec); got != 2 {
+					t.Fatalf("provider calls = %d, want 2 (crossing turn is paid, next is not)", got)
+				}
+			})
+		}
+	})
+
+	t.Run("dollar budget disabled", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing-a", "read_file missing-b"},
+			[][]llm.ContentPart{
+				{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})},
+				{structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})},
+			},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 2
+				cfg.MaxTotalCostUSD = 0
+				cfg.CostFn = func(llm.Usage) (float64, bool) {
+					return 1000, true
+				}
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitCap, "hit iteration cap")
+				if got := providerCallCount(rec); got != 2 {
+					t.Fatalf("provider calls = %d, want 2", got)
+				}
+			})
+		}
+	})
+
+	t.Run("dollar budget without pricer continues", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing-a", "read_file missing-b"},
+			[][]llm.ContentPart{
+				{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})},
+				{structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})},
+			},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 2
+				cfg.MaxTotalCostUSD = 0.01
+				obs := &recordObserver{}
+				cfg.Obs = obs
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitCap, "hit iteration cap")
+				if got := providerCallCount(rec); got != 2 {
+					t.Fatalf("provider calls = %d, want 2", got)
+				}
+				var notes int
+				for _, n := range obs.notes {
+					if strings.Contains(n, "dollar budget") && strings.Contains(n, "no CostFn") {
+						notes++
+					}
+				}
+				if notes != 1 {
+					t.Fatalf("missing-pricer notes = %d, want 1; notes=%v", notes, obs.notes)
+				}
+			})
+		}
+	})
+
+	t.Run("dollar budget unpriceable usage continues", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing-a", "read_file missing-b"},
+			[][]llm.ContentPart{
+				{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})},
+				{structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})},
+			},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 2
+				cfg.MaxTotalCostUSD = 0.01
+				cfg.CostFn = func(llm.Usage) (float64, bool) { return 0, false }
+				obs := &recordObserver{}
+				cfg.Obs = obs
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitCap, "hit iteration cap")
+				if got := providerCallCount(rec); got != 2 {
+					t.Fatalf("provider calls = %d, want 2", got)
+				}
+				var notes int
+				for _, n := range obs.notes {
+					if strings.Contains(n, "dollar budget") && strings.Contains(n, "could not price") {
+						notes++
+					}
+				}
+				if notes != 1 {
+					t.Fatalf("unpriceable notes = %d, want 1; notes=%v", notes, obs.notes)
+				}
+			})
+		}
+	})
 	t.Run("wall clock", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string

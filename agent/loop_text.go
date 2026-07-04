@@ -114,6 +114,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		defer cancel()
 	}
 
+	var costBudgetMissingNoted bool
+
 	for i := 1; i <= maxIter; i++ { // (P5) the hard cap lives in the loop header.
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
@@ -126,6 +128,11 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
 			res.Outcome = HitBudget
 			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
+			return gs.upgradeIfVerified(ctx, res), nil
+		}
+		if stop, reason := dollarBudgetStop(cfg, res.Usage, i-1, &costBudgetMissingNoted); stop {
+			res.Outcome = HitBudget
+			res.Reason = reason
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		cfg.Obs.Iteration(i, maxIter)
