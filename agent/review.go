@@ -254,8 +254,11 @@ func newReviewState(ctx context.Context, cfg Config) *reviewState {
 			rv.baseTree = tree
 		}
 	}
-	if rv.skip != "" && cfg.Obs != nil {
-		cfg.Obs.Note(rv.skip)
+	if rv.skip != "" {
+		rv.status = ReviewUnavailable
+		if cfg.Obs != nil {
+			cfg.Obs.Note(rv.skip)
+		}
 	}
 	return rv
 }

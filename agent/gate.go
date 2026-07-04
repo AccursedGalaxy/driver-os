@@ -420,7 +420,13 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 //	                  alone never block; with no budget left they pass).
 func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, blockReason string) {
 	rv := g.review
-	if rv == nil || rv.skip != "" {
+	if rv == nil {
+		return "", ""
+	}
+	if rv.skip != "" {
+		if g.cfg.ReviewRequired {
+			return "", fmt.Sprintf("review required but review was skipped: %s", rv.skip)
+		}
 		return "", ""
 	}
 	// A user cancel skips the reviewer like it skips VerifyCmd (verifyRun's

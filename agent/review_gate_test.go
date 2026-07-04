@@ -496,6 +496,92 @@ func TestReviewRequiredParseErrorDowngradesToUnverified(t *testing.T) {
 	}
 }
 
+// ReviewRequired + skip (Root=""): the run downgrades to Unverified with the
+// skip reason in the message and ReviewUnavailable on the report.
+func TestReviewRequiredSkipNoRootYieldsUnverified(t *testing.T) {
+	sb := sbWith(t, map[string]string{"calc.go": "package calc\n"})
+	rv := &fakeReviewer{}
+	ns := &nativeScript{turns: editThenAnswer()}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Root: "", Task: "fix calc",
+		Reviewer: rv, ReviewRequired: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s (%s), want unverified", res.Outcome, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "review was skipped") {
+		t.Fatalf("reason = %q, want 'review was skipped'", res.Reason)
+	}
+	if !strings.Contains(res.Reason, "no workspace root") {
+		t.Fatalf("reason = %q, want the original skip reason", res.Reason)
+	}
+	if res.Review == nil || res.Review.Status != ReviewUnavailable {
+		t.Fatalf("review report = %+v, want ReviewUnavailable status", res.Review)
+	}
+	if res.Answer != "done" {
+		t.Fatalf("answer = %q, want attempted answer preserved for unverified", res.Answer)
+	}
+}
+
+// ReviewRequired + skip (non-git Root): same fail-closed behavior as empty Root.
+func TestReviewRequiredSkipNonGitYieldsUnverified(t *testing.T) {
+	sb := sbWith(t, map[string]string{"calc.go": "package calc\n"})
+	rv := &fakeReviewer{}
+	ns := &nativeScript{turns: editThenAnswer()}
+	root := t.TempDir() // NOT a git repo.
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
+		Reviewer: rv, ReviewRequired: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s (%s), want unverified", res.Outcome, res.Reason)
+	}
+	if !strings.Contains(res.Reason, "review was skipped") {
+		t.Fatalf("reason = %q, want 'review was skipped'", res.Reason)
+	}
+	if !strings.Contains(res.Reason, "not a git workspace") {
+		t.Fatalf("reason = %q, want the original skip reason", res.Reason)
+	}
+	if res.Review == nil || res.Review.Status != ReviewUnavailable {
+		t.Fatalf("review report = %+v, want ReviewUnavailable status", res.Review)
+	}
+}
+
+// ReviewRequired=false + skip: fail-open (run still Answered), but the report
+// records ReviewUnavailable status.
+func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
+	sb := sbWith(t, map[string]string{"calc.go": "package calc\n"})
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
+	ns := &nativeScript{turns: editThenAnswer()}
+	root := t.TempDir() // NOT a git repo → skip.
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Root: root, Task: "t",
+		Reviewer: rv, ReviewRequired: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fail-open: the run still answers.
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s (%s), want answered (fail-open)", res.Outcome, res.Reason)
+	}
+	if len(rv.inputs) != 0 {
+		t.Fatal("reviewer must not be consulted without a git workspace")
+	}
+	if res.Review == nil || !strings.Contains(res.Review.Skipped, "not a git workspace") {
+		t.Fatalf("report = %+v, want skip reason preserved", res.Review)
+	}
+	if res.Review.Status != ReviewUnavailable {
+		t.Fatalf("review report status = %s, want ReviewUnavailable", res.Review.Status)
+	}
+}
+
 func TestReviewErrorTimeoutClassification(t *testing.T) {
 	rv := &fakeReviewer{err: context.DeadlineExceeded}
 	res := reviewedRun(t, rv, Config{}, editThenAnswer())
