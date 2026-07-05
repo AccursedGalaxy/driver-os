@@ -333,8 +333,11 @@ type Config struct {
 	// historical single-shot behavior: the run starts from "TASK: " + Task. The
 	// loop clones it before appending, so the caller's slice is never mutated.
 	History []llm.Message
-	Root    string   // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
-	Obs     Observer // optional: live progress sink; nil = silent.
+	Root    string // optional: the dir Sandbox is rooted at; recorded in RunResult.Root.
+
+	BootContext bool // include the boot-context Go dependency digest in the opening ENVIRONMENT preamble; set by the -boot-context CLI flag (default true)
+
+	Obs Observer // optional: live progress sink; nil = silent.
 
 	// Stream opts this run into token streaming: when set AND the provider reports
 	// Capabilities().Streaming, each model call goes through Provider.Stream and the

@@ -33,7 +33,7 @@ const (
 // is exactly the historical "TASK: …". This preamble is harness-observed, not
 // model-observed: it does NOT count toward the grounded gate (P4), which stays
 // about what the MODEL verified with tools this run.
-func observeEnvironment(ctx context.Context, sb sandbox.Sandbox) string {
+func observeEnvironment(ctx context.Context, sb sandbox.Sandbox, includeDeps bool) string {
 	if sb == nil {
 		return ""
 	}
@@ -73,7 +73,7 @@ func observeEnvironment(ctx context.Context, sb sandbox.Sandbox) string {
 		}
 		fmt.Fprintf(&b, "\n- top-level entries: %s", line)
 
-		if hasGoMod {
+		if includeDeps && hasGoMod {
 			if digest := observeDependencies(ctx, sb); digest != "" {
 				b.WriteString(digest)
 			}

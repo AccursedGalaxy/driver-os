@@ -17,7 +17,7 @@ import (
 
 func TestObserveEnvironmentLocalSandbox(t *testing.T) {
 	sb := sbWith(t, map[string]string{"go.mod": "module x\n", "cmd/main.go": "package main\n"})
-	env := observeEnvironment(context.Background(), sb)
+	env := observeEnvironment(context.Background(), sb, false)
 	for _, want := range []string{
 		"ENVIRONMENT (observed at start):",
 		"working directory: /", // the REAL absolute path, not a placeholder
@@ -31,12 +31,12 @@ func TestObserveEnvironmentLocalSandbox(t *testing.T) {
 }
 
 func TestObserveEnvironmentBestEffort(t *testing.T) {
-	if got := observeEnvironment(context.Background(), nil); got != "" {
+	if got := observeEnvironment(context.Background(), nil, false); got != "" {
 		t.Errorf("nil sandbox must yield an empty preamble, got %q", got)
 	}
 	// plainSandbox exposes neither WorkdirReporter nor a non-empty ListDir: the
 	// preamble must vanish entirely (seed stays the historical "TASK: …").
-	if got := observeEnvironment(context.Background(), &plainSandbox{}); got != "" {
+	if got := observeEnvironment(context.Background(), &plainSandbox{}, false); got != "" {
 		t.Errorf("bare sandbox must yield an empty preamble, got %q", got)
 	}
 }
@@ -53,7 +53,7 @@ func (m *manyEntriesSandbox) ListDir(context.Context, string) ([]sandbox.DirEntr
 }
 
 func TestObserveEnvironmentCapsListing(t *testing.T) {
-	env := observeEnvironment(context.Background(), &manyEntriesSandbox{})
+	env := observeEnvironment(context.Background(), &manyEntriesSandbox{}, false)
 	if !strings.Contains(env, "+7 more") {
 		t.Errorf("over-cap listing must be clipped with a count; got:\n%s", env)
 	}
