@@ -65,6 +65,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if promptNote != "" {
 		cfg.Obs.Note(promptNote)
 	}
+	resolveAutoVerify(ctx, &cfg)
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	cfg.Tools = wrapTools(cfg, runTimeout)
@@ -103,7 +104,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+gs.baselinePreamble())
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+verifyGatePreamble(cfg)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
 	// registered after `messages` exists so the closure reads its final value.

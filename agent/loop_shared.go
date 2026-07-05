@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 type loopKnobs struct {
@@ -55,6 +56,40 @@ func wrapTools(cfg Config, runTimeout time.Duration) map[string]Tool {
 	tools = applyDiffScope(tools, cfg.DiffScope, cfg.Sandbox)
 	tools = applyTestFence(tools, cfg.TestFence, cfg.Sandbox)
 	return tools
+}
+
+func resolveAutoVerify(ctx context.Context, cfg *Config) {
+	if !cfg.AutoVerify || cfg.VerifyCmd != "" || cfg.Root == "" {
+		return
+	}
+	if cfg.MinIsolation > sandbox.IsolationNone {
+		cfg.Obs.Note("auto-verify: off for untrusted isolation; supply -verify-cmd to arm an explicit gate")
+		return
+	}
+	cmd, prov := deriveVerifyCmd(ctx, cfg.verifySandbox(), cfg.Root)
+	if cmd == "" {
+		return
+	}
+	cfg.Obs.Note(fmt.Sprintf("verify gate auto-derived from %s: `%s`", prov, cmd))
+	out, err := runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cmd, autoVerifyBaselineTimeout)
+	cfg.SkipVerifyBaseline = true
+	if err != nil {
+		cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because the baseline could not run: %v", cmd, err))
+		return
+	}
+	if isRunFailure(out) {
+		if isRunTimeout(out) {
+			cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because the baseline timed out after %s", cmd, autoVerifyBaselineTimeout))
+		} else {
+			cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because it is already red on the untouched workspace", cmd))
+		}
+		return
+	}
+	cfg.VerifyCmd = cmd
+	cfg.AutoVerifySoft = true
+	cfg.VerifyContinue = true
+	cfg.autoVerifyProvenance = prov
+	cfg.Obs.Note(fmt.Sprintf("auto-verify: armed soft verify gate `%s` (derived from %s)", cmd, prov))
 }
 
 func redBaselineRefusal(cfg Config, gs *gates) *RunResult {

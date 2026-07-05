@@ -379,4 +379,7 @@ func TestRunTrial_VerifyCmdPropagatesToRunner(t *testing.T) {
 	if capturedCfg.VerifyCmd != "go test ./..." {
 		t.Errorf("runner received VerifyCmd = %q, want %q", capturedCfg.VerifyCmd, "go test ./...")
 	}
+	if capturedCfg.AutoVerify {
+		t.Error("eval must never arm auto-verify")
+	}
 }

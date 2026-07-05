@@ -167,3 +167,14 @@ func formatDepDigest(goListJSON string, cap int) string {
 	b.WriteString("\n- library versions above are pinned; before relying on an external Go library API, confirm it with the go_doc tool at that version — training data may be stale.")
 	return b.String()
 }
+
+func verifyGatePreamble(cfg Config) string {
+	if cfg.VerifyCmd == "" {
+		return ""
+	}
+	prov := ""
+	if cfg.autoVerifyProvenance != "" {
+		prov = " (auto-derived from " + cfg.autoVerifyProvenance + ")"
+	}
+	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish; you do NOT need to re-run it yourself to confirm you're done.", cfg.VerifyCmd, prov)
+}

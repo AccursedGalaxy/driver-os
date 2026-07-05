@@ -29,6 +29,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		cfg.Obs = nopObserver{}
 	}
 
+	resolveAutoVerify(ctx, &cfg)
+
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
 	knobs := resolveKnobs(cfg)
@@ -62,7 +64,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+gs.baselinePreamble())
+	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+verifyGatePreamble(cfg)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Registered after `messages` exists so the closure reads
 	// its final value; the closure captures the variable, which the loop reassigns.

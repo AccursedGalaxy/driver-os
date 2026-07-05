@@ -80,6 +80,9 @@ const (
 	// from that failing trace, not from here.
 	maxReasoningRepeats = 6
 
+	autoVerifyBaselineTimeout = 90 * time.Second
+	autoVerifyMaxFeedback     = 2
+
 	// maxStagnant is the (P5) stagnant-OBSERVATION detector: the SAME failing `run`
 	// result this many times KILLS the run, even when the actions producing it
 	// differ. The repeat/spiral detectors above key on the model's ACTION (same
@@ -448,6 +451,17 @@ type Config struct {
 	// success. Empty = no closing check. The harness does NOT guess the success
 	// criterion; the caller states it.
 	VerifyCmd string
+
+	// AutoVerify opts into deriving a conservative VerifyCmd from root project
+	// markers when VerifyCmd is empty. It is off by default in agent core; the
+	// daily driver enables it after prefs/flags resolve. Eval never arms it.
+	AutoVerify bool
+
+	// AutoVerifySoft marks a harness-chosen VerifyCmd whose disposition must never
+	// be worse than the empty-gate baseline. autoVerifyProvenance names the marker
+	// that produced it for notes and the boot preamble.
+	AutoVerifySoft       bool
+	autoVerifyProvenance string
 
 	// SkipVerifyBaseline, when true, opts out of the pre-flight verification
 	// check. By default (false), when VerifyCmd is set, the harness runs it

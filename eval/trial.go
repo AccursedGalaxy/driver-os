@@ -212,6 +212,7 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 			return tr
 		}
 		cfg.VerifyCmd = ladderVerify
+		// Auto-verify is never armed in eval; LadderVerify is the case authority.
 		// Abort immediately if the verify baseline is red — a permanently-red
 		// gate (e.g. test ids that don't exist on the base checkout) would burn
 		// every ladder attempt to hit_cap for no gain.

@@ -91,6 +91,11 @@ type gates struct {
 	// Only a SECOND identical failure — after a full repair round —
 	// proves the gate is unsatisfiable and goes terminal.
 	baselineGraceUsed bool
+
+	// autoVerifyFeedback counts failing finish/upgrade gates for a soft,
+	// harness-derived VerifyCmd. After the bounded feedback budget is spent, the
+	// auto gate becomes advisory so it cannot downgrade an otherwise answered run.
+	autoVerifyFeedback int
 }
 
 // newGates snapshots the run-start state both closing gates need: the fence
@@ -296,6 +301,13 @@ func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outco
 	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
 	if reason == "" {
 		return "", "", false
+	}
+	if g.cfg.AutoVerifySoft {
+		g.autoVerifyFeedback++
+		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isRunTimeout(verifyOut) {
+			g.cfg.Obs.Note(fmt.Sprintf("auto-derived verify `%s` did not pass — accepted anyway; supply -verify-cmd to make this authoritative", g.cfg.VerifyCmd))
+			return "", "", false
+		}
 	}
 	// A timed-out verify is INCONCLUSIVE — we could not confirm success,
 	// but we also don't know anything is broken. Suppress VerifyContinue:
