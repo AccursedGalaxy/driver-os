@@ -553,12 +553,14 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 			}
 		}
 		if len(eligible) > 0 {
-			merged, serr := solicitor.SolicitRepro(gctx, ReviewInput{
+			merged, solicitUsage, serr := solicitor.SolicitRepro(gctx, ReviewInput{
 				Task:       g.cfg.Task,
 				Root:       g.cfg.Root,
 				SessionKey: rv.sessionKey,
 				Round:      rv.rounds,
 			}, eligible)
+			rv.usage = addUsage(rv.usage, solicitUsage)
+			g.cfg.Spend.Add(verdict.Model, solicitUsage) // charge reviewer follow-up dollars
 			if serr != nil {
 				// Fail-open: solicitation errors leave findings as-is, but record
 				// infrastructure honesty because required review depends on this

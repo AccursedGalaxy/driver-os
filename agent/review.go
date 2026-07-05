@@ -146,7 +146,7 @@ type Reviewer interface {
 // via type assertion; the Reviewer interface itself stays unchanged so
 // existing implementations (including the fake in tests) compile untouched.
 type ReproSolicitor interface {
-	SolicitRepro(ctx context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, error)
+	SolicitRepro(ctx context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, llm.Usage, error)
 }
 
 // Finding fates — the calibration telemetry (docs/specs/REVIEW-GATE.md finding 8),

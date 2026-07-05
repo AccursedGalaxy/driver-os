@@ -73,10 +73,10 @@ type fakeSolicitor struct {
 	solicitCalls   []ReviewInput // records every SolicitRepro call.
 }
 
-func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, error) {
+func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, llm.Usage, error) {
 	f.solicitCalls = append(f.solicitCalls, in)
 	if f.solicitErr != nil {
-		return findings, f.solicitErr
+		return findings, llm.Usage{}, f.solicitErr
 	}
 	out := make([]ReviewFinding, len(findings))
 	copy(out, findings)
@@ -91,7 +91,7 @@ func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings
 			}
 		}
 	}
-	return out, nil
+	return out, llm.Usage{}, nil
 }
 
 // gitWorkspace builds a git-initialized workspace (WriteTree needs a repo, not
