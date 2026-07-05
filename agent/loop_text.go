@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	gs := newGates(ctx, cfg, runTimeout)
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	recordAutoVerifyResolution(res, cfg)
 	gs.applyBaseline(res)
 	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
 		res.Outcome, res.Reason, res.Iterations = refusal.Outcome, refusal.Reason, refusal.Iterations
@@ -119,6 +121,12 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	var costBudgetMissingNoted bool
 
 	for i := 1; i <= maxIter; i++ { // (P5) the hard cap lives in the loop header.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			res.Outcome = Canceled
+			res.Reason = "run canceled by the caller (interrupt)"
+			res.Iterations = i - 1
+			return res, nil
+		}
 		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
 			res.Outcome = HitDeadline
 			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
