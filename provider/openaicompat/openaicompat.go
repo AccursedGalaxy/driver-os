@@ -237,14 +237,10 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		acc := openai.ChatCompletionAccumulator{}
 		var reasoning reasoningAccumulator
 		var usage openai.CompletionUsage
-		var usageCostRaw json.RawMessage
 		var providerRaw json.RawMessage // OpenRouter: captured for sticky pinning.
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
-			if raw := costRawFromUsage(chunk.Usage); len(raw) > 0 {
-				usageCostRaw = raw
-			}
 			if chunk.Usage.TotalTokens > 0 {
 				usage = chunk.Usage
 			}
@@ -316,7 +312,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		}
 
 		// Terminal chunk: the run's finish reason and full token accounting.
-		final := llm.Chunk{Done: true, Usage: usageFrom(usage, usageCostRaw)}
+		final := llm.Chunk{Done: true, Usage: usageFrom(usage)}
 		if len(acc.Choices) > 0 {
 			final.FinishReason = mapFinish(acc.Choices[0].FinishReason)
 		}
@@ -658,30 +654,43 @@ func toResponse(cc *openai.ChatCompletion) *llm.Response {
 		}
 		r.FinishReason = mapFinish(choice.FinishReason)
 	}
-	r.Usage = usageFrom(cc.Usage, costRawFromUsage(cc.Usage))
+	r.Usage = usageFrom(cc.Usage)
 	return r
 }
 
 // usageFrom normalizes the SDK's token accounting into our Usage. Shared by the
 // non-streaming response and the streaming Done chunk so both report tokens the
-// same way (CachedTokens included, where the backend populates it). costRaw is
-// OpenRouter's unmodeled native billed USD cost from usage.cost, when present.
-func usageFrom(u openai.CompletionUsage, costRaw json.RawMessage) llm.Usage {
+// same way (CachedTokens included, where the backend populates it).
+func usageFrom(u openai.CompletionUsage) llm.Usage {
 	return llm.Usage{
 		PromptTokens:     int(u.PromptTokens),
 		CompletionTokens: int(u.CompletionTokens),
 		TotalTokens:      int(u.TotalTokens),
 		CachedTokens:     int(u.PromptTokensDetails.CachedTokens),
 		ReasoningTokens:  int(u.CompletionTokensDetails.ReasoningTokens),
-		Cost:             parseUsageCost(costRaw),
+		Cost: resolveUsageCost(
+			u.JSON.ExtraFields["cost"].Raw(),
+			u.JSON.ExtraFields["cost_details"].Raw(),
+		),
 	}
 }
 
-func costRawFromUsage(u openai.CompletionUsage) json.RawMessage {
-	if raw := u.JSON.ExtraFields["cost"].Raw(); raw != "" && raw != "null" {
-		return json.RawMessage(raw)
+func resolveUsageCost(costRaw, costDetailsRaw string) float64 {
+	topLevel := parseUsageCost(json.RawMessage(costRaw))
+	if topLevel > 0 {
+		return topLevel
 	}
-	return nil
+
+	if costDetailsRaw == "" || costDetailsRaw == "null" {
+		return 0
+	}
+	var details struct {
+		UpstreamInferenceCost float64 `json:"upstream_inference_cost"`
+	}
+	if err := json.Unmarshal([]byte(costDetailsRaw), &details); err != nil {
+		return 0
+	}
+	return details.UpstreamInferenceCost
 }
 
 func parseUsageCost(raw json.RawMessage) float64 {
