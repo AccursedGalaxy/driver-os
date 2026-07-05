@@ -351,8 +351,10 @@ type Config struct {
 	BootContext bool // include the boot-context Go dependency digest in the opening ENVIRONMENT preamble; set by the -boot-context CLI flag (default true)
 
 	// StandingContext opts into a never-persisted per-turn trailer summarizing the
-	// model's own diff since run start plus the last run/verify status. Default off
-	// so runs that don't opt in pay no extra git or prompt cost.
+	// model's own diff since run start plus the last run/verify status. Off at the
+	// library level (zero value) so callers that don't opt in pay no extra git or
+	// prompt cost; the interactive TUI (cmd/driver) opts in by default, headless
+	// cmd/agent leaves it off.
 	StandingContext bool
 
 	Obs Observer // optional: live progress sink; nil = silent.
