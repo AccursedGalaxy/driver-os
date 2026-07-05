@@ -40,8 +40,8 @@ func TestEditFileAmbiguousMatch(t *testing.T) {
 	// Two identical lines: the model must add context to disambiguate, not guess.
 	sb := sbWith(t, map[string]string{"f.go": "x := 1\ny := 1\nx := 1\n"})
 	_, err := editFileOp(context.Background(), sb, "f.go", "x := 1", "x := 2")
-	if err == nil || !strings.Contains(err.Error(), "2 places") {
-		t.Fatalf("want an ambiguity error naming the match count; got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "2 places") || !strings.Contains(err.Error(), "lines [1 3]") {
+		t.Fatalf("want an ambiguity error naming the match count and lines; got %v", err)
 	}
 	// File must be untouched when the match is ambiguous.
 	if got := readback(t, sb, "f.go"); got != "x := 1\ny := 1\nx := 1\n" {

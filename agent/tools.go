@@ -747,7 +747,18 @@ func editFileOp(ctx context.Context, sb sandbox.Sandbox, path, oldStr, newStr st
 	case n == 0:
 		return "", fmt.Errorf("`old` text not found in %q — it must match the file byte-for-byte (indentation and whitespace included); read_file to copy the exact text", path)
 	case n > 1:
-		return "", fmt.Errorf("`old` matches %d places in %q — include more surrounding lines in `old` so it identifies exactly one location", n, path)
+		var lineNums []int
+		offset := 0
+		for i := 0; i < n; i++ {
+			idx := strings.Index(src[offset:], oldStr)
+			if idx == -1 {
+				break
+			}
+			matchOffset := offset + idx
+			lineNums = append(lineNums, 1+strings.Count(src[:matchOffset], "\n"))
+			offset = matchOffset + len(oldStr)
+		}
+		return "", fmt.Errorf("`old` matches %d places in %q (lines %v) — include more surrounding lines in `old` so it identifies exactly one location", n, path, lineNums)
 	}
 
 	body := strings.Replace(src, oldStr, newStr, 1)

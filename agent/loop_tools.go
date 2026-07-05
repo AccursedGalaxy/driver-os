@@ -128,6 +128,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// list_dir-only turns.
 	var lastTurnSig string
 	var lastReasoningSig string // (P5) the prior turn's reasoning fingerprint — see the repeat detector.
+	var lastReadSig string      // (Change A) signature of the last executed read-only call.
+	var lastReadObs string      // (Change A) observation from the last executed read-only call.
+	var lastExecutedSig string  // (Change A) signature of the immediately-preceding EXECUTED call.
 	repeats, navRun := 0, 0
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
@@ -473,7 +476,21 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			usageForTurn, modelMsForTurn = llm.Usage{}, 0
 
 			toolStart := time.Now()
-			obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
+			sig := c.Name + " " + signatureArg(c, cfg.Tools)
+			readOnly := c.Name == "read_file" || c.Name == "search" || c.Name == "list_dir"
+			var obs string
+			var isErr bool
+			if readOnly && sig == lastReadSig && sig == lastExecutedSig && !reasoningAdvanced {
+				obs = "(skipped: identical to your previous read; result unchanged) " + lastReadObs
+				isErr = false
+			} else {
+				obs, isErr = dispatchNative(loopCtx, cfg.Tools, c)
+				lastExecutedSig = sig
+				if readOnly && !isErr {
+					lastReadSig = sig
+					lastReadObs = obs
+				}
+			}
 			step.ToolMs = time.Since(toolStart).Milliseconds()
 			if !isErr {
 				grounded = true // (P4) the model has now seen real external state.

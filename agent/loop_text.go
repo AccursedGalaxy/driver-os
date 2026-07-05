@@ -84,6 +84,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string
+	var lastReadSig string     // (Change A) signature of the last executed read-only call.
+	var lastReadObs string     // (Change A) observation from the last executed read-only call.
+	var lastExecutedSig string // signature of the immediately previous executed tool call.
 	repeats := 0
 	sameVerb := 0
 	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
@@ -274,7 +277,19 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 		// ACT: run the named tool. The model only chose it; we execute it (P2).
 		toolStart := time.Now()
-		observation := dispatch(loopCtx, cfg.Tools, verb, arg)
+		sig := verb + " " + arg
+		readOnly := verb == "read_file" || verb == "search" || verb == "list_dir"
+		var observation string
+		if readOnly && sig == lastReadSig && sig == lastExecutedSig && !reasoningAdvanced {
+			observation = "(skipped: identical to your previous read; result unchanged) " + lastReadObs
+		} else {
+			observation = dispatch(loopCtx, cfg.Tools, verb, arg)
+			lastExecutedSig = sig
+			if readOnly && !strings.HasPrefix(observation, "ERROR:") {
+				lastReadSig = sig
+				lastReadObs = observation
+			}
+		}
 		step.ToolMs = time.Since(toolStart).Milliseconds()
 
 		// A successful tool observation means the model has now seen REAL external
