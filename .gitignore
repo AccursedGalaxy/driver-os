@@ -21,6 +21,7 @@ __debug_bin*
 /commit-msg
 /driver
 /synthbank
+/mutspike
 # council scratch artifacts (real runs persist under $XDG_DATA_HOME/driver-os/council/)
 /_council_*
 
