@@ -135,6 +135,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// stagnant detector is still evaluated on each `run` result regardless of
 	// which turn it lands in.
 	tr := newTurnTracker(cfg, maxIter)
+	var standing *standingState
+	if cfg.StandingContext {
+		standing = newStandingState()
+		defer standing.cleanup()
+	}
 	answerNudged := false
 	sayNudged := false
 
@@ -172,6 +177,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
+		standingBlock := ""
+		if cfg.StandingContext && standing != nil {
+			standingBlock = standing.block(loopCtx, cfg, gs, tr, i)
+		}
+
 		// generateWithEviction adds HP-1's reactive fallback: on a window overflow it
 		// compacts the OLDEST turn (pairing-safe) and retries instead of crashing,
 		// returning the possibly-shrunk transcript we carry forward.
@@ -181,6 +191,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
 			System:          system,
 			Messages:        messages,
+			StandingContext: standingBlock,
 			Tools:           schemas,
 			Temperature:     &temp,
 			MaxTokens:       maxTok,
@@ -333,6 +344,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					}
 					if c.Name == "run" {
 						tr.observeRun(obs) // so a VerifyLastRun gate reads this turn's last run (kill ignored — we're finishing).
+						recordNativeRun(loopCtx, cfg, standing, tr, c, obs)
 					}
 					step.Grounded = grounded
 					step.Observation = obs
@@ -469,6 +481,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			stagnantCount := 0
 			if c.Name == "run" {
 				kill, stagnantCount = tr.observeRun(obs)
+				recordNativeRun(loopCtx, cfg, standing, tr, c, obs)
 			}
 			if tr.observeAction(i, c.Name) {
 				editedThisTurn = true
@@ -586,6 +599,32 @@ func isObserveOnly(tools map[string]Tool) bool {
 		}
 	}
 	return true
+}
+
+func recordNativeRun(ctx context.Context, cfg Config, standing *standingState, tr *turnTracker, c llm.ToolCallPart, obs string) {
+	if tr == nil {
+		return
+	}
+	cmd := runCommandArg(c, cfg.Tools)
+	tree := ""
+	if cfg.StandingContext && standing != nil {
+		if cur, err := standing.currentTree(ctx, cfg); err == nil {
+			tree = cur
+		}
+	}
+	tr.recordRun(cmd, obs, tree)
+}
+
+func runCommandArg(c llm.ToolCallPart, tools map[string]Tool) string {
+	if t, ok := tools[c.Name]; ok && t.RunJSON != nil {
+		var a struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(c.Args, &a) == nil {
+			return strings.TrimSpace(a.Command)
+		}
+	}
+	return strings.TrimSpace(bridgeArg(c))
 }
 
 // dispatchNative runs the tool a call names and turns any failure into an error

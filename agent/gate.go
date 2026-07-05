@@ -83,6 +83,11 @@ type gates struct {
 	// degrades to the historical behavior).
 	runBaseTree string
 
+	// stdBaseTree is the standing-context run-start baseline. It is captured only
+	// when the feature is enabled, and may reuse runBaseTree/review/scope baselines
+	// from the same run-start point.
+	stdBaseTree string
+
 	// baselineGraceUsed tracks whether the single rescue round has been
 	// granted for a baseline-identical verify failure. On the FIRST
 	// identical failure the gate still rejects via VerifyContinue so the
@@ -116,6 +121,7 @@ func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates 
 	}
 	g.measureVerifyBaseline(ctx)
 	g.captureRunBaseTree(ctx)
+	g.captureStandingBaseTree(ctx)
 	return g
 }
 
@@ -135,6 +141,39 @@ func (g *gates) captureRunBaseTree(ctx context.Context) {
 		return
 	}
 	g.runBaseTree = tree
+}
+
+func (g *gates) captureStandingBaseTree(ctx context.Context) {
+	if !g.cfg.StandingContext || g.cfg.Root == "" {
+		return
+	}
+	if g.runBaseTree != "" {
+		g.stdBaseTree = g.runBaseTree
+		return
+	}
+	if g.scope != nil && g.scope.snapErr == nil && g.scope.base != "" {
+		g.stdBaseTree = g.scope.base
+		return
+	}
+	if g.review != nil && g.review.baseTree != "" {
+		g.stdBaseTree = g.review.baseTree
+		return
+	}
+	gctx, cancel := gateContext(ctx, gateDiffTimeout)
+	tree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	cancel()
+	if err != nil {
+		g.cfg.Obs.Note("standing context: baseline tree snapshot failed (" + err.Error() + ") — diff section disabled")
+		return
+	}
+	g.stdBaseTree = tree
+}
+
+func (g *gates) standingBaseTree() string {
+	if g == nil {
+		return ""
+	}
+	return g.stdBaseTree
 }
 
 func (g *gates) measureVerifyBaseline(ctx context.Context) {

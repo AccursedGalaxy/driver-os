@@ -193,6 +193,33 @@ func TestThinkingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStandingContextTrailerAfterRealTailCacheControl(t *testing.T) {
+	var gotBody map[string]any
+	p := newTestProvider(t, Config{PromptCache: true}, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_trailer","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	if _, err := p.Generate(context.Background(), llm.Request{System: "sys", Messages: []llm.Message{llm.User("real one"), llm.User("real tail")}, StandingContext: "standing trailer"}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	msgs := gotBody["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %d, want 2 real + trailer", len(msgs))
+	}
+	realTailBlocks := msgs[1].(map[string]any)["content"].([]any)
+	realTail := realTailBlocks[len(realTailBlocks)-1].(map[string]any)
+	if realTail["cache_control"] == nil {
+		t.Fatalf("last real block lacks cache_control: %v", realTail)
+	}
+	trailerBlocks := msgs[2].(map[string]any)["content"].([]any)
+	trailer := trailerBlocks[0].(map[string]any)
+	if trailer["text"] != "standing trailer" || trailer["cache_control"] != nil {
+		t.Fatalf("standing trailer should be final unmarked user text: %v", msgs[2])
+	}
+}
+
 func TestBuildParamsKnobs(t *testing.T) {
 	var gotBody map[string]any
 	p := newTestProvider(t, Config{PromptCache: true}, func(w http.ResponseWriter, r *http.Request) {
@@ -231,14 +258,21 @@ func TestBuildParamsKnobs(t *testing.T) {
 		t.Errorf("output_config = %v, want effort=high (the native effort knob)", gotBody["output_config"])
 	}
 
-	// PromptCache marks the two anchors: the system block and the request tail
-	// (top-level cache_control, which the API applies to the last cacheable block).
+	// PromptCache marks the two anchors: the system block and the last real
+	// message block. It must not rely on the top-level tail cache_control because
+	// a standing-context trailer may be appended after the real transcript.
 	sys := gotBody["system"].([]any)[0].(map[string]any)
 	if sys["cache_control"] == nil {
 		t.Errorf("system block lacks cache_control: %v", sys)
 	}
-	if gotBody["cache_control"] == nil {
-		t.Errorf("request lacks the top-level tail cache_control")
+	msgs := gotBody["messages"].([]any)
+	tailBlocks := msgs[len(msgs)-1].(map[string]any)["content"].([]any)
+	tail := tailBlocks[len(tailBlocks)-1].(map[string]any)
+	if tail["cache_control"] == nil {
+		t.Errorf("real tail block lacks cache_control: %v", tail)
+	}
+	if gotBody["cache_control"] != nil {
+		t.Errorf("top-level cache_control should not be used for tail marking with standing trailers: %v", gotBody["cache_control"])
 	}
 
 	// Usage normalization: Anthropic's input_tokens EXCLUDES cache reads/writes;

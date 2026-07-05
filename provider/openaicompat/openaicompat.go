@@ -339,8 +339,13 @@ func (p *Provider) buildParams(req llm.Request) (openai.ChatCompletionNewParams,
 	}
 	if p.cache {
 		// (HP-8) Mark cache breakpoints so the re-sent prefix is served from the
-		// provider's prompt cache instead of re-billed every turn.
+		// provider's prompt cache instead of re-billed every turn. This runs BEFORE
+		// StandingContext is appended so the tail marker stays on the last real
+		// transcript message, never on the changing ephemeral trailer.
 		applyCacheBreakpoints(params.Messages)
+	}
+	if req.StandingContext != "" {
+		params.Messages = append(params.Messages, openai.UserMessage(req.StandingContext))
 	}
 	if req.MaxTokens > 0 {
 		params.MaxTokens = openai.Int(int64(req.MaxTokens))

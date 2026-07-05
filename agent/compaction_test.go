@@ -232,6 +232,41 @@ func TestGenerateWithEvictionCapsRetries(t *testing.T) {
 	}
 }
 
+type trailerOverflowModel struct {
+	calls []llm.Request
+}
+
+func (m *trailerOverflowModel) Name() string                   { return "trailer-overflow" }
+func (m *trailerOverflowModel) Capabilities() llm.Capabilities { return llm.Capabilities{} }
+func (m *trailerOverflowModel) Stream(context.Context, llm.Request) iter.Seq2[llm.Chunk, error] {
+	return llm.UnsupportedStream("trailer-overflow")
+}
+func (m *trailerOverflowModel) Generate(_ context.Context, req llm.Request) (*llm.Response, error) {
+	m.calls = append(m.calls, req)
+	if req.StandingContext != "" {
+		return nil, llm.ErrContextLength
+	}
+	return &llm.Response{Content: []llm.ContentPart{llm.Text("ok")}}, nil
+}
+
+func TestGenerateWithEvictionShedsStandingContextBeforeEvicting(t *testing.T) {
+	m := &trailerOverflowModel{}
+	msgs := []llm.Message{llm.User("TASK"), llm.Assistant("a"), llm.User("o"), llm.Assistant("latest")}
+	_, gotMsgs, err := generateWithEviction(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{Messages: msgs, StandingContext: "changing trailer"})
+	if err != nil {
+		t.Fatalf("generateWithEviction: %v", err)
+	}
+	if len(m.calls) != 2 {
+		t.Fatalf("calls = %d, want overflow then trailerless retry", len(m.calls))
+	}
+	if m.calls[0].StandingContext == "" || m.calls[1].StandingContext != "" {
+		t.Fatalf("standing context was not shed first: first=%q second=%q", m.calls[0].StandingContext, m.calls[1].StandingContext)
+	}
+	if len(gotMsgs) != len(msgs) {
+		t.Fatalf("real messages were evicted before shedding trailer: got %d want %d", len(gotMsgs), len(msgs))
+	}
+}
+
 // When the window is so small that even TASK + one turn overflows, eviction has
 // nothing left to drop: the run must DEGRADE to HitContextLimit, not crash.
 func TestRunDegradesWhenUncompactable(t *testing.T) {

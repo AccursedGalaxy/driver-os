@@ -245,13 +245,16 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 	}
 	if p.cache {
 		// (HP-8) Two anchors, same shape as openaicompat's breakpoints: the
-		// stable system prefix, and the request tail via the top-level marker
-		// (the API applies it to the last cacheable block, so each turn WRITES
-		// the growing history that the next turn READS).
+		// stable system prefix and the last REAL transcript block. Mark the real
+		// tail before appending StandingContext so the changing trailer is never a
+		// cache breakpoint.
 		if n := len(params.System); n > 0 {
 			params.System[n-1].CacheControl = sdk.NewCacheControlEphemeralParam()
 		}
-		params.CacheControl = sdk.NewCacheControlEphemeralParam()
+		markTailCacheControl(params.Messages)
+	}
+	if req.StandingContext != "" {
+		params.Messages = append(params.Messages, sdk.NewUserMessage(sdk.NewTextBlock(req.StandingContext)))
 	}
 	if req.Temperature != nil && !isClaude5(model) {
 		// Claude 5 models REJECT temperature outright ("`temperature` is
@@ -307,6 +310,31 @@ func isClaude5(model string) bool {
 	}
 	v := rest[i+1:]
 	return strings.HasPrefix(v, "5") && (len(v) == 1 || v[1] == '-' || v[1] == '.')
+}
+
+func markTailCacheControl(msgs []sdk.MessageParam) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		for j := len(msgs[i].Content) - 1; j >= 0; j-- {
+			b := msgs[i].Content[j]
+			switch {
+			case b.OfText != nil:
+				marked := *b.OfText
+				marked.CacheControl = sdk.NewCacheControlEphemeralParam()
+				msgs[i].Content[j] = sdk.ContentBlockParamUnion{OfText: &marked}
+				return
+			case b.OfToolResult != nil:
+				marked := *b.OfToolResult
+				marked.CacheControl = sdk.NewCacheControlEphemeralParam()
+				msgs[i].Content[j] = sdk.ContentBlockParamUnion{OfToolResult: &marked}
+				return
+			case b.OfToolUse != nil:
+				marked := *b.OfToolUse
+				marked.CacheControl = sdk.NewCacheControlEphemeralParam()
+				msgs[i].Content[j] = sdk.ContentBlockParamUnion{OfToolUse: &marked}
+				return
+			}
+		}
+	}
 }
 
 // toSystem folds Request.System plus any RoleSystem messages into the

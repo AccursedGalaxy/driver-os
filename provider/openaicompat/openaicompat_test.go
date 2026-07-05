@@ -406,6 +406,29 @@ func hasCacheControl(msg any) bool {
 	return ok && cc["type"] == "ephemeral"
 }
 
+func TestPromptCacheStandingContextTrailerUnmarked(t *testing.T) {
+	req := llm.Request{
+		System:          "SYSTEM PROMPT",
+		Messages:        []llm.Message{llm.User("real user"), llm.User("real tail")},
+		StandingContext: "changing standing trailer",
+	}
+	body := captureBody(t, true, req)
+	msgs := body["messages"].([]any)
+	if len(msgs) != 4 {
+		t.Fatalf("messages = %d, want system + 2 real + trailer", len(msgs))
+	}
+	if !hasCacheControl(msgs[2]) {
+		t.Fatalf("last real message lacks cache_control: %v", msgs[2])
+	}
+	if hasCacheControl(msgs[3]) {
+		t.Fatalf("standing trailer must be unmarked: %v", msgs[3])
+	}
+	trailer := msgs[3].(map[string]any)
+	if trailer["role"] != "user" || trailer["content"] != "changing standing trailer" {
+		t.Fatalf("trailer not final user message: %v", trailer)
+	}
+}
+
 func TestPromptCacheBreakpoints(t *testing.T) {
 	req := llm.Request{
 		System: "SYSTEM PROMPT",

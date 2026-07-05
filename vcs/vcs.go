@@ -115,6 +115,28 @@ func WriteTree(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// WriteTreeCached is WriteTree's warm-index variant. It stages into the caller's
+// persistent indexPath (never the repository index), so repeated calls can reuse
+// git's stat cache while preserving WriteTree's tracked+untracked, gitignore-aware
+// semantics. The index path's parent is created if needed.
+func WriteTreeCached(ctx context.Context, dir, indexPath string) (string, error) {
+	if strings.TrimSpace(indexPath) == "" {
+		return WriteTree(ctx, dir)
+	}
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		return "", err
+	}
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := runEnv(ctx, dir, env, "add", "-A"); err != nil {
+		return "", err
+	}
+	out, err := runEnv(ctx, dir, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // DiffTrees returns the unified diff between two tree objects (as produced by
 // WriteTree). Empty output means the trees are identical.
 func DiffTrees(ctx context.Context, dir, a, b string) (string, error) {

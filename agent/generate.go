@@ -109,6 +109,11 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
 		}
+		if req.StandingContext != "" {
+			cfg.Obs.Note("context overflow — dropped standing context trailer and retrying before evicting real turns (HP-1 reactive fallback)")
+			req.StandingContext = ""
+			continue
+		}
 		if attempt >= evictionMaxRetries {
 			return nil, req.Messages, err // still overflowing after the paid retries — degrade.
 		}

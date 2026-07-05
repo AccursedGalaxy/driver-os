@@ -14,6 +14,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,18 @@ type turnTracker struct {
 	stagnant      int
 	lastRunFailed bool
 	lastRunPassed bool
+
+	// Standing context records: generic last run and authoritative gate run are
+	// independent so a later non-gate command cannot clobber the last verify status.
+	lastRunCmd  string
+	lastRunTail string
+	lastRunTree string
+
+	lastVerifyCmd    string
+	lastVerifyPassed bool
+	lastVerifyFailed bool
+	lastVerifyTail   string
+	lastVerifyTree   string
 
 	// Churn signals + the once-only latch (see Config.ChurnNudgeRuns).
 	failRuns int // failing `run` results this session.
@@ -105,6 +118,21 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 	}
 
 	return t.stagnant >= maxStagnant, t.stagnant
+}
+
+func (t *turnTracker) recordRun(cmd, obs, tree string) {
+	cmd = strings.TrimSpace(cmd)
+	t.lastRunCmd = cmd
+	t.lastRunTail = tailClip(obs, standingGateTailCap)
+	t.lastRunTree = tree
+	verify := strings.TrimSpace(t.cfg.VerifyCmd)
+	if verify != "" && cmd == verify {
+		t.lastVerifyCmd = cmd
+		t.lastVerifyPassed = isRunSuccess(obs)
+		t.lastVerifyFailed = isRunFailure(obs)
+		t.lastVerifyTail = tailClip(obs, standingGateTailCap)
+		t.lastVerifyTree = tree
+	}
 }
 
 // observeToolObservation ingests a complete action+observation fingerprint for a
