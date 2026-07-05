@@ -37,10 +37,16 @@ type Session struct {
 // Task and History fields of cfg are ignored — Send sets them per turn. A nil
 // loop defaults to Run (the text protocol); pass RunNative for native tool use.
 func NewSession(cfg Config, loop LoopFunc) *Session {
+	return NewSessionWith(cfg, loop, nil)
+}
+
+// NewSessionWith is NewSession plus an explicit conversation seed. The seed is
+// used by resume paths that loaded a prior RunRecord.Messages transcript.
+func NewSessionWith(cfg Config, loop LoopFunc, history []llm.Message) *Session {
 	if loop == nil {
 		loop = Run
 	}
-	return &Session{cfg: cfg, loop: loop}
+	return &Session{cfg: cfg, loop: loop, messages: append([]llm.Message(nil), history...)}
 }
 
 // Send runs one user turn to completion and returns its result. The conversation

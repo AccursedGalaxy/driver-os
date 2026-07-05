@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AccursedGalaxy/driver-os/llm"
 )
 
 func TestRunStampsIDAndTiming(t *testing.T) {
@@ -64,6 +66,12 @@ func TestWriteTranscriptAndIndex(t *testing.T) {
 	}
 	if len(got.Steps) != len(res.Steps) {
 		t.Errorf("steps not preserved: got %d, want %d", len(got.Steps), len(res.Steps))
+	}
+	if len(got.Messages) != len(res.Messages) {
+		t.Errorf("messages not preserved: got %d, want %d", len(got.Messages), len(res.Messages))
+	}
+	if len(got.Messages) > 0 && got.Messages[len(got.Messages)-1].Text() != res.Messages[len(res.Messages)-1].Text() {
+		t.Errorf("last message = %q, want %q", got.Messages[len(got.Messages)-1].Text(), res.Messages[len(res.Messages)-1].Text())
 	}
 
 	// The index got exactly one compact (trace-less) line.
@@ -125,5 +133,31 @@ func TestRecordFromNilAndTaskPreview(t *testing.T) {
 	}
 	if len([]rune(p)) > 120 {
 		t.Errorf("preview not clipped: %d runes", len([]rune(p)))
+	}
+}
+
+func TestLoadTranscriptRoundTripsMessagesAndSteps(t *testing.T) {
+	dir := t.TempDir()
+	rec := RunRecord{
+		SchemaVersion: TranscriptSchemaVersion,
+		ID:            "20260705-010203-abcdef12",
+		Task:          "resume me",
+		Outcome:       Answered,
+		Answer:        "ok",
+		Steps:         []Step{{Iter: 1, Reply: "answer ok", Verb: "answer"}},
+		Messages:      []llm.Message{llm.User("TASK: resume me"), llm.Assistant("ok")},
+	}
+	if _, err := WriteTranscript(dir, rec); err != nil {
+		t.Fatalf("WriteTranscript: %v", err)
+	}
+	got, err := LoadTranscript(dir, rec.ID)
+	if err != nil {
+		t.Fatalf("LoadTranscript: %v", err)
+	}
+	if len(got.Messages) != 2 || got.Messages[0].Text() != "TASK: resume me" || got.Messages[1].Text() != "ok" {
+		t.Fatalf("messages = %#v, want user+assistant text round-trip", got.Messages)
+	}
+	if len(got.Steps) != 1 || got.Steps[0].Reply != "answer ok" {
+		t.Fatalf("steps = %#v, want one preserved step", got.Steps)
 	}
 }

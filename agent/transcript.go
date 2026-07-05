@@ -21,7 +21,9 @@ import (
 //	v1 = original; Usage had no json tags → PascalCase keys on disk.
 //	v2 = Usage carries snake_case json tags (llm.Usage.UnmarshalJSON dual-accepts
 //	     both shapes for backward-compat with v1-era records).
-const TranscriptSchemaVersion = "2"
+//	v3 = RunRecord carries Messages, the continuation seam for resuming a
+//	     conversation into agent.Session.
+const TranscriptSchemaVersion = "3"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -93,8 +95,9 @@ type RunRecord struct {
 	// Plan is the plan-stage record (the plan handed to the solver, or why
 	// there was none, plus the planner's own usage — kept out of Usage so
 	// per-role spend stays attributable). Absent when the run had no Planner.
-	Plan  *PlanReport `json:"plan,omitempty"`
-	Steps []Step      `json:"steps,omitempty"`
+	Plan     *PlanReport   `json:"plan,omitempty"`
+	Messages []llm.Message `json:"messages,omitempty"`
+	Steps    []Step        `json:"steps,omitempty"`
 }
 
 // RecordFrom builds a RunRecord from a finished run. model is the caller's label
@@ -115,6 +118,7 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Usage:         res.Usage,
 		Review:        res.Review,
 		Plan:          res.Plan,
+		Messages:      res.Messages,
 		Steps:         res.Steps,
 	}
 	if !res.StartedAt.IsZero() {
@@ -173,6 +177,22 @@ func WriteTranscript(dir string, rec RunRecord) (string, error) {
 		return path, err // the full record landed; surface the index failure but don't lose the path.
 	}
 	return path, nil
+}
+
+// LoadTranscript reads one per-run transcript by run id from dir.
+func LoadTranscript(dir, runID string) (*RunRecord, error) {
+	if runID == "" {
+		return nil, errors.New("transcript: empty run ID")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, runID+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var rec RunRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
 }
 
 // runIndexEntry is the compact, trace-less summary line in runs.jsonl. The task

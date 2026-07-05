@@ -227,3 +227,22 @@ func TestSeedMessagesSingleShot(t *testing.T) {
 		t.Fatalf("single-shot seed = %v, want one %q message", got, "TASK: do a thing")
 	}
 }
+
+func TestNewSessionWithSeedsNextSendHistory(t *testing.T) {
+	seed := []llm.Message{llm.User("TASK: previous"), llm.Assistant("previous answer")}
+	var got Config
+	loop := func(ctx context.Context, cfg Config) (*RunResult, error) {
+		got = cfg
+		return &RunResult{Messages: append(append([]llm.Message(nil), cfg.History...), llm.User(cfg.Task), llm.Assistant("next answer"))}, nil
+	}
+	s := NewSessionWith(Config{}, loop, seed)
+	if _, err := s.SendParts(context.Background(), "next", nil); err != nil {
+		t.Fatalf("SendParts: %v", err)
+	}
+	if len(got.History) != 2 || got.History[0].Text() != "TASK: previous" || got.History[1].Text() != "previous answer" {
+		t.Fatalf("History = %#v, want seeded two-message history", got.History)
+	}
+	if got.Task != "next" {
+		t.Fatalf("Task = %q, want next", got.Task)
+	}
+}

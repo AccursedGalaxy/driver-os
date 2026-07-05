@@ -1,5 +1,10 @@
 package llm
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Role identifies the author of a message.
 type Role string
 
@@ -14,6 +19,79 @@ const (
 type Message struct {
 	Role  Role
 	Parts []ContentPart
+}
+
+type messageWire struct {
+	Role  Role              `json:"role"`
+	Parts []contentPartWire `json:"parts,omitempty"`
+}
+
+type contentPartWire struct {
+	Type       string          `json:"type"`
+	Text       string          `json:"text,omitempty"`
+	URL        string          `json:"url,omitempty"`
+	Data       []byte          `json:"data,omitempty"`
+	MIME       string          `json:"mime,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Content    string          `json:"content,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	Raw        json.RawMessage `json:"raw,omitempty"`
+}
+
+// MarshalJSON gives Message a durable JSON shape despite Parts being an
+// interface slice. Transcripts depend on being able to read conversations back
+// into Config.History for session resume.
+func (m Message) MarshalJSON() ([]byte, error) {
+	parts := make([]contentPartWire, 0, len(m.Parts))
+	for _, p := range m.Parts {
+		switch v := p.(type) {
+		case TextPart:
+			parts = append(parts, contentPartWire{Type: "text", Text: v.Text})
+		case ImagePart:
+			parts = append(parts, contentPartWire{Type: "image", URL: v.URL, Data: v.Data, MIME: v.MIME})
+		case ToolCallPart:
+			parts = append(parts, contentPartWire{Type: "tool_call", ID: v.ID, Name: v.Name, Args: v.Args})
+		case ToolResultPart:
+			parts = append(parts, contentPartWire{Type: "tool_result", ToolCallID: v.ToolCallID, Content: v.Content, IsError: v.IsError})
+		case ReasoningPart:
+			parts = append(parts, contentPartWire{Type: "reasoning", Raw: v.Raw})
+		default:
+			return nil, fmt.Errorf("llm: unsupported content part %T", p)
+		}
+	}
+	return json.Marshal(messageWire{Role: m.Role, Parts: parts})
+}
+
+// UnmarshalJSON restores the concrete ContentPart implementations emitted by
+// MarshalJSON.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var w messageWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	parts := make([]ContentPart, 0, len(w.Parts))
+	for _, p := range w.Parts {
+		switch p.Type {
+		case "text":
+			parts = append(parts, TextPart{Text: p.Text})
+		case "image":
+			parts = append(parts, ImagePart{URL: p.URL, Data: p.Data, MIME: p.MIME})
+		case "tool_call":
+			parts = append(parts, ToolCallPart{ID: p.ID, Name: p.Name, Args: p.Args})
+		case "tool_result":
+			parts = append(parts, ToolResultPart{ToolCallID: p.ToolCallID, Content: p.Content, IsError: p.IsError})
+		case "reasoning":
+			parts = append(parts, ReasoningPart{Raw: p.Raw})
+		default:
+			return fmt.Errorf("llm: unknown content part type %q", p.Type)
+		}
+	}
+	m.Role = w.Role
+	m.Parts = parts
+	return nil
 }
 
 // Text returns the concatenated text of the message's text parts.
