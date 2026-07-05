@@ -270,6 +270,16 @@ type RunResult struct {
 	// clipped like other observations. Empty when the baseline was green.
 	VerifyBaselineOut string `json:"verify_baseline_out,omitempty"`
 
+	// autoVerify* fields are the Session hand-off for approach (B): Run/RunNative
+	// still resolve lazily inside the loop, then Session persists the resolved base
+	// config so turns 2..N copy an already-armed (or already-decided-off) gate.
+	autoVerifyResolved           bool
+	autoVerifyCmd                string
+	autoVerifySoft               bool
+	autoVerifyProvenance         string
+	autoVerifyVerifyContinue     bool
+	autoVerifySkipVerifyBaseline bool
+
 	// memDone closes when the post-answer memory store finishes; nil when no
 	// store was started. Unexported (a process handle, not run data) — await it
 	// through AwaitMemory.
@@ -464,9 +474,12 @@ type Config struct {
 
 	// AutoVerifySoft marks a harness-chosen VerifyCmd whose disposition must never
 	// be worse than the empty-gate baseline. autoVerifyProvenance names the marker
-	// that produced it for notes and the boot preamble.
+	// that produced it for notes and the boot preamble. autoVerifyResolved is a
+	// session guard: once an interactive Session has attempted auto-verify
+	// resolution, later turns must not re-derive or re-run the preflight on WIP.
 	AutoVerifySoft       bool
 	autoVerifyProvenance string
+	autoVerifyResolved   bool
 
 	// SkipVerifyBaseline, when true, opts out of the pre-flight verification
 	// check. By default (false), when VerifyCmd is set, the harness runs it

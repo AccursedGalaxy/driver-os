@@ -66,7 +66,16 @@ func (s *Session) ReasoningEffort() string { return s.cfg.ReasoningEffort }
 // it or the turn ends Unverified (or keeps working, under VerifyContinue).
 // Same calling contract as SetModel: only from the driving goroutine, never
 // mid-Send.
-func (s *Session) SetVerifyCmd(cmd string) { s.cfg.VerifyCmd = cmd }
+func (s *Session) SetVerifyCmd(cmd string) {
+	s.cfg.VerifyCmd = cmd
+	s.cfg.AutoVerifySoft = false
+	s.cfg.autoVerifyProvenance = ""
+	if cmd == "" && s.cfg.AutoVerify {
+		// An explicit /verify off is a user decision, not an invitation for the next
+		// turn to auto-arm the gate again.
+		s.cfg.autoVerifyResolved = true
+	}
+}
 
 // VerifyCmd returns the verification command the next Send will gate on
 // ("" = gate off).

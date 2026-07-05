@@ -59,9 +59,14 @@ func wrapTools(cfg Config, runTimeout time.Duration) map[string]Tool {
 }
 
 func resolveAutoVerify(ctx context.Context, cfg *Config) {
-	if !cfg.AutoVerify || cfg.VerifyCmd != "" || cfg.Root == "" {
+	if !cfg.AutoVerify || cfg.VerifyCmd != "" || cfg.Root == "" || cfg.autoVerifyResolved {
 		return
 	}
+	// Record that this session has made its one auto-verify decision before any
+	// exit path below. A later TUI turn may be running against WIP, so repeating
+	// derivation/preflight would both cost another suite run and let transient WIP
+	// flicker the gate on or off.
+	cfg.autoVerifyResolved = true
 	if cfg.MinIsolation > sandbox.IsolationNone {
 		cfg.Obs.Note("auto-verify: off for untrusted isolation; supply -verify-cmd to arm an explicit gate")
 		return
@@ -90,6 +95,18 @@ func resolveAutoVerify(ctx context.Context, cfg *Config) {
 	cfg.VerifyContinue = true
 	cfg.autoVerifyProvenance = prov
 	cfg.Obs.Note(fmt.Sprintf("auto-verify: armed soft verify gate `%s` (derived from %s)", cmd, prov))
+}
+
+func recordAutoVerifyResolution(res *RunResult, cfg Config) {
+	if res == nil || !cfg.autoVerifyResolved {
+		return
+	}
+	res.autoVerifyResolved = true
+	res.autoVerifyCmd = cfg.VerifyCmd
+	res.autoVerifySoft = cfg.AutoVerifySoft
+	res.autoVerifyProvenance = cfg.autoVerifyProvenance
+	res.autoVerifyVerifyContinue = cfg.VerifyContinue
+	res.autoVerifySkipVerifyBaseline = cfg.SkipVerifyBaseline
 }
 
 func redBaselineRefusal(cfg Config, gs *gates) *RunResult {

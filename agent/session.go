@@ -68,6 +68,7 @@ func (s *Session) SendParts(ctx context.Context, text string, images []llm.Image
 	cfg.TaskImages = images
 	cfg.History = s.messages
 	res, err := s.loop(ctx, cfg)
+	s.persistAutoVerify(res)
 	// On cancellation (Ctrl-C interrupting a turn, or a deadline) the transcript may
 	// end mid-turn — an assistant tool-call whose results never came back — and
 	// committing that would malform the next request's tool-call/result pairing. Leave
@@ -84,6 +85,26 @@ func (s *Session) SendParts(ctx context.Context, text string, images []llm.Image
 // Messages returns the conversation accumulated so far. The returned slice is the
 // Session's own backing store — treat it as read-only; the next Send replaces it.
 func (s *Session) Messages() []llm.Message { return s.messages }
+
+func (s *Session) persistAutoVerify(res *RunResult) {
+	if res == nil || !res.autoVerifyResolved {
+		return
+	}
+	// Approach B: keep auto-verify lazy in Run/RunNative, then persist the one
+	// resolution back into the Session base config. Later SendParts copies a cfg
+	// where either VerifyCmd is already armed (natural resolveAutoVerify no-op) or
+	// autoVerifyResolved records that auto-verify was already decided off; both
+	// avoid re-deriving and re-running the preflight on a WIP tree.
+	s.cfg.autoVerifyResolved = true
+	if res.autoVerifyCmd == "" {
+		return
+	}
+	s.cfg.VerifyCmd = res.autoVerifyCmd
+	s.cfg.AutoVerifySoft = res.autoVerifySoft
+	s.cfg.autoVerifyProvenance = res.autoVerifyProvenance
+	s.cfg.VerifyContinue = res.autoVerifyVerifyContinue
+	s.cfg.SkipVerifyBaseline = res.autoVerifySkipVerifyBaseline
+}
 
 // Reset clears the conversation, starting fresh on the next Send (the /clear
 // command). The warm Sandbox and Memory are untouched — only the dialogue resets.

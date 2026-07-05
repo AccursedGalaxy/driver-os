@@ -5,8 +5,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // lastUserText returns the text of the final user message in a request — the turn
@@ -244,5 +246,98 @@ func TestNewSessionWithSeedsNextSendHistory(t *testing.T) {
 	}
 	if got.Task != "next" {
 		t.Fatalf("Task = %q, want next", got.Task)
+	}
+}
+
+func TestSessionPersistsAutoVerifyResolutionAcrossTurns(t *testing.T) {
+	orig := hasCommand
+	defer func() { hasCommand = orig }()
+	var derives int
+	hasCommand = func(ctx context.Context, sb sandbox.Sandbox, tool string) bool {
+		if tool == "go" {
+			derives++
+			return true
+		}
+		return false
+	}
+
+	var preflights int
+	var closing int
+	sb := autoExecSandbox{Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}), exec: func(line string, timeout time.Duration) *sandbox.Result {
+		if line == "go build ./... && go test ./..." {
+			if timeout == autoVerifyBaselineTimeout {
+				preflights++
+			} else {
+				closing++
+			}
+		}
+		return &sandbox.Result{ExitCode: 0}
+	}}
+	spy := &noteSpy{}
+	sp := &scripted{replies: []string{"answer one", "answer two", "answer three"}}
+	s := NewSession(Config{Model: sp, Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, Run)
+
+	for i, input := range []string{"first", "second", "third"} {
+		res, err := s.Send(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Send %d: %v", i+1, err)
+		}
+		if res.Outcome != Answered {
+			t.Fatalf("Send %d outcome = %s reason=%q, want answered", i+1, res.Outcome, res.Reason)
+		}
+	}
+
+	const wantCmd = "go build ./... && go test ./..."
+	if derives != 1 {
+		t.Fatalf("derive hasCommand(go) calls = %d, want 1", derives)
+	}
+	if preflights != 1 {
+		t.Fatalf("auto-verify preflights = %d, want 1", preflights)
+	}
+	if closing != 3 {
+		t.Fatalf("closing verify runs = %d, want one per turn (3)", closing)
+	}
+	if got := s.VerifyCmd(); got != wantCmd {
+		t.Fatalf("session VerifyCmd = %q, want persisted %q", got, wantCmd)
+	}
+	if !s.cfg.AutoVerifySoft || !s.cfg.VerifyContinue || s.cfg.autoVerifyProvenance != "go.mod" || !s.cfg.SkipVerifyBaseline {
+		t.Fatalf("auto verify metadata did not persist: soft=%v continue=%v prov=%q skipBaseline=%v", s.cfg.AutoVerifySoft, s.cfg.VerifyContinue, s.cfg.autoVerifyProvenance, s.cfg.SkipVerifyBaseline)
+	}
+	var armNotes int
+	for _, n := range spy.notes {
+		if strings.Contains(n, "verify gate auto-derived") || strings.Contains(n, "auto-verify: armed soft verify gate") {
+			armNotes++
+		}
+	}
+	if armNotes != 2 {
+		t.Fatalf("auto-verify arm notes = %d, want the two first-turn notes only; notes=%q", armNotes, spy.notes)
+	}
+}
+
+func TestSingleShotRunWithoutAutoVerifyDoesNotTouchAutoPath(t *testing.T) {
+	orig := hasCommand
+	defer func() { hasCommand = orig }()
+	hasCommand = func(ctx context.Context, sb sandbox.Sandbox, tool string) bool {
+		t.Fatalf("hasCommand(%q) called with AutoVerify off; cmd/agent leaves AutoVerify false", tool)
+		return false
+	}
+	var execs int
+	sb := autoExecSandbox{Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}), exec: func(line string, timeout time.Duration) *sandbox.Result {
+		execs++
+		return &sandbox.Result{ExitCode: 0}
+	}}
+	sp := &scripted{replies: []string{"answer done"}}
+	res, err := Run(context.Background(), Config{Model: sp, Sandbox: sb, Root: ".", Task: "single"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("outcome = %s reason=%q, want answered", res.Outcome, res.Reason)
+	}
+	if execs != 0 {
+		t.Fatalf("sandbox Exec calls = %d, want 0 with no VerifyCmd and AutoVerify off", execs)
+	}
+	if res.autoVerifyResolved || res.autoVerifyCmd != "" {
+		t.Fatalf("single-shot result carried auto resolution: resolved=%v cmd=%q", res.autoVerifyResolved, res.autoVerifyCmd)
 	}
 }
