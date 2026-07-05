@@ -56,6 +56,13 @@ var Pricing = map[string]Price{
 	"qwen/qwen3.7-max":              {InPerM: 1.20, OutPerM: 6.00},
 	"anthropic/claude-opus-4.8":     {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
 	"google/gemini-3.1-pro-preview": {InPerM: 2.00, OutPerM: 12.00, CacheReadPerM: 0.20},
+
+	// Native-API-id rows (hyphen form) paralleling the OpenRouter dotted slugs.
+	"claude-opus-4-8":  {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
+	"claude-opus-4-7":  {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
+	"claude-sonnet-5":  {InPerM: 3.00, OutPerM: 15.00},
+	"claude-haiku-4-5": {InPerM: 1.00, OutPerM: 5.00, CacheReadPerM: 0.10},
+
 	// affordable
 	"deepseek/deepseek-v4-flash":   {InPerM: 0.09, OutPerM: 0.18, CacheReadPerM: 0.018},
 	"tencent/hy3-preview":          {InPerM: 0.30, OutPerM: 1.20},
@@ -87,19 +94,28 @@ var Pricing = map[string]Price{
 // priced at all. ok=false means the slug is absent from Pricing — the caller
 // renders "—", not 0, because free and unknown are different facts.
 func CostOf(model string, u llm.Usage) (cost float64, ok bool) {
-	// Normalize the model string by stripping a leading known-provider prefix
-	// before the table lookup. This matches the convention in
-	// internal/cli.SplitModelRef (keep the list of five providers in sync).
+	// Try the ref verbatim (covers slash refs and bare slugs).
+	if p, ok := Pricing[model]; ok {
+		return p.Cost(u), true
+	}
+
+	// Try candidate-key resolution for colon-form refs.
+	// Keep the list of five providers in sync with internal/cli.SplitModelRef.
 	if i := strings.IndexByte(model, ':'); i > 0 {
-		switch p := model[:i]; p {
+		provider := model[:i]
+		slug := model[i+1:]
+		switch provider {
 		case "openrouter", "anthropic", "xai", "openai", "ollama":
-			model = model[i+1:]
+			// Try <provider>/<slug> (colon->slash normalization).
+			if p, ok := Pricing[provider+"/"+slug]; ok {
+				return p.Cost(u), true
+			}
+			// Try the bare <slug> (fallback).
+			if p, ok := Pricing[slug]; ok {
+				return p.Cost(u), true
+			}
 		}
 	}
 
-	p, ok := Pricing[model]
-	if !ok {
-		return 0, false
-	}
-	return p.Cost(u), true
+	return 0, false
 }

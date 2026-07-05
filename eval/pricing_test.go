@@ -44,6 +44,50 @@ func TestCostOfDistinguishesUnpricedFromFree(t *testing.T) {
 	}
 }
 
+func TestCostOfResolution(t *testing.T) {
+	u := llm.Usage{
+		PromptTokens:     10000,
+		CompletionTokens: 5000,
+		CachedTokens:     2000,
+	}
+
+	tests := []struct {
+		model string
+		want  string // key in Pricing to compare against
+	}{
+		{"anthropic:claude-opus-4.8", "anthropic/claude-opus-4.8"}, // colon->slash
+		{"openai:gpt-5.5", "openai/gpt-5.5"},                      // colon->slash
+		{"anthropic:claude-fable-5", "claude-fable-5"},            // colon->bare
+		{"anthropic:claude-opus-4-8", "claude-opus-4-8"},          // native hyphen id
+		{"anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8"}, // verbatim slash
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			gotCost, gotOk := CostOf(tt.model, u)
+			if !gotOk {
+				t.Errorf("CostOf(%q) ok=false, want true", tt.model)
+				return
+			}
+			wantPrice, ok := Pricing[tt.want]
+			if !ok {
+				t.Fatalf("test error: Pricing[%q] not found", tt.want)
+			}
+			wantCost := wantPrice.Cost(u)
+			if math.Abs(gotCost-wantCost) > 1e-9 {
+				t.Errorf("CostOf(%q) = %v, want %v (from %q)", tt.model, gotCost, wantCost, tt.want)
+			}
+		})
+	}
+
+	t.Run("totally-unknown-model", func(t *testing.T) {
+		cost, ok := CostOf("totally-unknown-model", u)
+		if ok || cost != 0 {
+			t.Errorf("CostOf(unknown) = %v, %v; want 0, false", cost, ok)
+		}
+	})
+}
+
 func TestCacheDiscount(t *testing.T) {
 	// 1M prompt tokens, 500K of which are cached.
 	u := llm.Usage{PromptTokens: 1_000_000, CachedTokens: 500_000, CompletionTokens: 0}
