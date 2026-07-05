@@ -46,10 +46,11 @@ const (
 	// It is a large positive value so it flows through the loop's `maxIter <= 0 ->
 	// DefaultMaxIterations` fallback unchanged.
 	UncappedIterations = math.MaxInt32
-	// DefaultMaxTokens caps a single model turn's output when Config.MaxTokens is
-	// unset. Too low silently clips a long final answer — or a write_file/edit_file
-	// content block — mid-sentence (P7: our knob, not the model's).
-	DefaultMaxTokens = 1024
+	// DefaultMaxTokens is the fallback output cap used when Config.MaxTokens is
+	// unset (see agent/loop_shared.go). 1024 was anomalously low and silently
+	// truncated long final answers or write_file/edit_file content blocks mid-block,
+	// forcing a recovery round-trip. 8192 aligns with provider/anthropic.DefaultMaxTokens.
+	DefaultMaxTokens = 8192
 
 	maxRepeats = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
 
