@@ -261,9 +261,15 @@ func goDocArg(ctx context.Context, workdir, arg string) (string, error) {
 // against the project. Returns combined stdout+stderr so a model sees go's own
 // diagnostics on failure.
 func runGoTool(ctx context.Context, workdir string, args []string) (string, error) {
+	return runGoToolEnv(ctx, workdir, nil, args)
+}
+
+// runGoToolEnv is the internal variant that allows extra environment variables.
+func runGoToolEnv(ctx context.Context, workdir string, extraEnv []string, args []string) (string, error) {
 	c := exec.CommandContext(ctx, "go", args...)
 	c.Dir = workdir
 	c.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=readonly")
+	c.Env = append(c.Env, extraEnv...)
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf
