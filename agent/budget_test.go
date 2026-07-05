@@ -93,3 +93,65 @@ func TestRunAnswerOnCrossingTurnStillAnswers(t *testing.T) {
 		t.Fatalf("outcome = %q, want answered — the crossing turn must not be discarded", res.Outcome)
 	}
 }
+
+func TestDollarBudgetStopUsesSpendAcrossRoles(t *testing.T) {
+	spend := NewSpend(func(model string, u llm.Usage) (float64, bool) {
+		switch model {
+		case "cheap-solver":
+			return float64(u.TotalTokens) * 0.001, true
+		case "flagship-reviewer":
+			return float64(u.TotalTokens) * 0.02, true
+		default:
+			return 0, false
+		}
+	})
+	cfg := Config{MaxTotalCostUSD: 0.05, Spend: spend}
+	var missing bool
+
+	spend.Add("cheap-solver", llm.Usage{TotalTokens: 10}) // $0.01: below cap by itself.
+	if stop, reason := dollarBudgetStop(cfg, llm.Usage{}, 1, &missing); stop {
+		t.Fatalf("solver-only spend stopped = %v, %q; want continue", stop, reason)
+	}
+
+	spend.Add("flagship-reviewer", llm.Usage{TotalTokens: 2}) // +$0.04: combined spend reaches cap.
+	stop, reason := dollarBudgetStop(cfg, llm.Usage{}, 1, &missing)
+	if !stop {
+		t.Fatalf("combined solver+reviewer spend did not stop; reason %q", reason)
+	}
+	if !strings.Contains(reason, "hit dollar budget") {
+		t.Fatalf("reason = %q, want dollar budget reason", reason)
+	}
+}
+
+func TestDollarBudgetStopSpendSupersedesCostFn(t *testing.T) {
+	spend := NewSpend(func(string, llm.Usage) (float64, bool) { return 0.03, true })
+	spend.Add("model", llm.Usage{TotalTokens: 1})
+	cfg := Config{
+		MaxTotalCostUSD: 0.05,
+		Spend:           spend,
+		CostFn: func(llm.Usage) (float64, bool) {
+			return 1000, true
+		},
+	}
+	var missing bool
+
+	if stop, reason := dollarBudgetStop(cfg, llm.Usage{TotalTokens: 1}, 1, &missing); stop {
+		t.Fatalf("dollarBudgetStop used CostFn instead of Spend: stopped with %q", reason)
+	}
+}
+
+func TestDollarBudgetStopFallsBackToCostFnWhenSpendNil(t *testing.T) {
+	cfg := Config{
+		MaxTotalCostUSD: 0.05,
+		CostFn:          func(llm.Usage) (float64, bool) { return 0.05, true },
+	}
+	var missing bool
+
+	stop, reason := dollarBudgetStop(cfg, llm.Usage{TotalTokens: 1}, 2, &missing)
+	if !stop {
+		t.Fatalf("dollarBudgetStop with Spend nil did not use CostFn; reason %q", reason)
+	}
+	if !strings.Contains(reason, "hit dollar budget") {
+		t.Fatalf("reason = %q, want dollar budget reason", reason)
+	}
+}

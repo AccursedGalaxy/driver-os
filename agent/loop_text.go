@@ -168,6 +168,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		cfg.Obs.Model(reply)
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
+		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
 		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
 
 		// The model's turn becomes part of the state we carry forward (P1).

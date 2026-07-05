@@ -428,6 +428,17 @@ type Config struct {
 	// notes the unenforceable dollar budget once through Obs and continues.
 	CostFn func(llm.Usage) (float64, bool)
 
+	// SolverModel is the solver model's id, so the loop can price solver turns into
+	// Spend (the agent otherwise does not know catalog model ids). Empty disables
+	// solver pricing in Spend.
+	SolverModel string
+
+	// Spend is the run's shared role-aware dollar accumulator (solver + reviewer +
+	// planner, each priced at its own model). When non-nil it is the source of truth
+	// for MaxTotalCostUSD, superseding CostFn. Shared by POINTER so it accumulates
+	// across repair rounds and gate/plan calls. nil = fall back to CostFn (solver-only).
+	Spend *Spend
+
 	// VerifyCmd is the closing VERIFICATION gate (P5/HP-5): a success command the
 	// caller names (e.g. "go test ./...") that is re-run when the model finishes.
 	// A non-zero exit downgrades the terminal Answered to Unverified — turning a

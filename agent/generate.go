@@ -37,20 +37,32 @@ func usageReported(u llm.Usage) bool {
 // MaxTotalTokens. It prices cumulative usage, so a crossing turn is already in
 // res.Usage and is not discarded; callers pass turns=i-1 from the loop header.
 func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (bool, string) {
-	if cfg.MaxTotalCostUSD <= 0 || !usageReported(u) {
+	if cfg.MaxTotalCostUSD <= 0 {
 		return false, ""
 	}
-	if cfg.CostFn == nil {
-		if !*missingNoted {
-			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
-			*missingNoted = true
+
+	var (
+		cost float64
+		ok   bool
+	)
+	if cfg.Spend != nil {
+		cost, ok = cfg.Spend.USD()
+	} else {
+		if !usageReported(u) {
+			return false, ""
 		}
-		return false, ""
+		if cfg.CostFn == nil {
+			if !*missingNoted {
+				cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
+				*missingNoted = true
+			}
+			return false, ""
+		}
+		cost, ok = cfg.CostFn(u)
 	}
-	cost, ok := cfg.CostFn(u)
 	if !ok {
 		if !*missingNoted {
-			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but CostFn could not price usage; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
+			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
 			*missingNoted = true
 		}
 		return false, ""

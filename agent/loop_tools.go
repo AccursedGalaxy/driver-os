@@ -209,6 +209,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
+		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
 		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
 
 		// (P5) Hidden-reasoning progress for THIS turn, computed once: it selects the

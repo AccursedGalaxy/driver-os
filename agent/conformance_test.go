@@ -349,7 +349,7 @@ func TestConformance_BudgetStops(t *testing.T) {
 				}
 				var notes int
 				for _, n := range obs.notes {
-					if strings.Contains(n, "dollar budget") && strings.Contains(n, "could not price") {
+					if strings.Contains(n, "dollar budget") && strings.Contains(n, "could not be priced") {
 						notes++
 					}
 				}

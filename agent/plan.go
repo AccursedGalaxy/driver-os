@@ -104,6 +104,7 @@ func runPlanStage(ctx context.Context, cfg Config) (string, *PlanReport) {
 	var plan string
 	if pr != nil {
 		rep.Model, rep.Usage, rep.PlannerRun = pr.Model, pr.Usage, pr.RunID
+		cfg.Spend.Add(rep.Model, rep.Usage)
 		plan = strings.TrimSpace(pr.Plan)
 	}
 	switch {

@@ -468,6 +468,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	})
 	if verdict != nil {
 		rv.usage = addUsage(rv.usage, verdict.Usage)
+		g.cfg.Spend.Add(verdict.Model, verdict.Usage) // charge each reviewer round's dollars
 		if rv.model == "" {
 			rv.model = verdict.Model
 		}
