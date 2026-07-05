@@ -205,7 +205,7 @@ func TestGenerateParsesResponse(t *testing.T) {
 			"id": "chatcmpl-1",
 			"model": "test-model-resolved",
 			"choices": [{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello there"}}],
-			"usage": {"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2}}
+			"usage": {"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2},"cost":0.42}
 		}`)
 	})
 
@@ -229,7 +229,7 @@ func TestGenerateParsesResponse(t *testing.T) {
 	if resp.FinishReason != llm.FinishStop {
 		t.Errorf("FinishReason = %q, want %q", resp.FinishReason, llm.FinishStop)
 	}
-	want := llm.Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14, CachedTokens: 4, ReasoningTokens: 2}
+	want := llm.Usage{PromptTokens: 11, CompletionTokens: 3, TotalTokens: 14, CachedTokens: 4, ReasoningTokens: 2, Cost: 0.42}
 	if resp.Usage != want {
 		t.Errorf("Usage = %+v, want %+v", resp.Usage, want)
 	}
@@ -243,6 +243,10 @@ func TestGenerateParsesResponse(t *testing.T) {
 	}
 	if gotBody["temperature"] != 0.5 {
 		t.Errorf("request temperature = %v, want 0.5", gotBody["temperature"])
+	}
+	usage, _ := gotBody["usage"].(map[string]any)
+	if usage == nil || usage["include"] != true {
+		t.Errorf("request usage = %v, want include:true", gotBody["usage"])
 	}
 	msgs, _ := gotBody["messages"].([]any)
 	if len(msgs) != 2 {
@@ -506,7 +510,7 @@ func TestStreamTextDeltas(t *testing.T) {
 		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
 		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"content":", world"},"finish_reason":null}]}`,
 		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":3}}}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":0,"model":"m","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":3},"cost":0.17}}`,
 	)
 
 	text, calls, done, err := drainStream(p.Stream(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi")}}))
@@ -527,8 +531,8 @@ func TestStreamTextDeltas(t *testing.T) {
 	}
 	// Token accounting on the terminal chunk mirrors Generate — including the
 	// cached-tokens detail that the SDK accumulator drops.
-	if done.Usage.TotalTokens != 6 || done.Usage.CachedTokens != 3 {
-		t.Errorf("Done.Usage = %+v, want Total=6 Cached=3", done.Usage)
+	if done.Usage.TotalTokens != 6 || done.Usage.CachedTokens != 3 || done.Usage.Cost != 0.17 {
+		t.Errorf("Done.Usage = %+v, want Total=6 Cached=3 Cost=0.17", done.Usage)
 	}
 	// The request opted into the trailing usage chunk; without it Done.Usage is zero.
 	var sent map[string]any
@@ -539,6 +543,10 @@ func TestStreamTextDeltas(t *testing.T) {
 	so, _ := sent["stream_options"].(map[string]any)
 	if so == nil || so["include_usage"] != true {
 		t.Errorf("request stream_options = %v, want include_usage:true", sent["stream_options"])
+	}
+	usage, _ := sent["usage"].(map[string]any)
+	if usage == nil || usage["include"] != true {
+		t.Errorf("request usage = %v, want include:true", sent["usage"])
 	}
 }
 

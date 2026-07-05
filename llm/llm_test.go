@@ -169,6 +169,24 @@ func TestUsageUnmarshalPartialFields(t *testing.T) {
 	}
 }
 
+func TestUsageUnmarshalCost(t *testing.T) {
+	var got Usage
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":5,"cost":0.42}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Cost != 0.42 {
+		t.Fatalf("cost decode: got %v, want 0.42", got.Cost)
+	}
+
+	got = Usage{}
+	if err := json.Unmarshal([]byte(`{"prompt_tokens":5}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Cost != 0 {
+		t.Fatalf("missing cost: got %v, want 0", got.Cost)
+	}
+}
+
 func TestUsageUnmarshalEmpty(t *testing.T) {
 	var got Usage
 	if err := json.Unmarshal([]byte(`{}`), &got); err != nil {

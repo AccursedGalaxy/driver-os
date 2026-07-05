@@ -70,6 +70,7 @@ func addUsage(a, b llm.Usage) llm.Usage {
 		TotalTokens:      a.TotalTokens + b.TotalTokens,
 		CachedTokens:     a.CachedTokens + b.CachedTokens,
 		ReasoningTokens:  a.ReasoningTokens + b.ReasoningTokens,
+		Cost:             a.Cost + b.Cost,
 	}
 }
 

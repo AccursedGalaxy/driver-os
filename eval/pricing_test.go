@@ -68,3 +68,19 @@ func TestCacheDiscount(t *testing.T) {
 		t.Errorf("expected cache discount, but %v >= %v", costWithCache, costNoCache)
 	}
 }
+
+func TestCostOfCacheDiscount(t *testing.T) {
+	// openai/gpt-5.5: InPerM 5.00, OutPerM 30.00, CacheReadPerM 0.50
+	// Usage: 1M prompt, 800K cached, 0 completion.
+	// Expected: (1M - 800K) * 5.00/1M + 800K * 0.50/1M = 200K * 5.00/1M + 800K * 0.50/1M
+	//           = 0.2 * 5.00 + 0.8 * 0.50 = 1.00 + 0.40 = 1.40.
+	u := llm.Usage{PromptTokens: 1_000_000, CachedTokens: 800_000, CompletionTokens: 0}
+	cost, ok := CostOf("openai/gpt-5.5", u)
+	if !ok {
+		t.Fatal("openai/gpt-5.5 not found in Pricing")
+	}
+	want := 1.40
+	if math.Abs(cost-want) > 1e-9 {
+		t.Errorf("CostOf(openai/gpt-5.5) = %v, want %v", cost, want)
+	}
+}

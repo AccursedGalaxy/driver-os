@@ -40,7 +40,7 @@ func (p Price) Cost(u llm.Usage) float64 {
 }
 
 // Pricing is the hand-maintained price table for the eval roster, USD per 1M
-// tokens, transcribed from openrouter.ai/models on 2026-06-02. It is a STATIC,
+// tokens, in/out + cache-read refreshed from live OpenRouter 2026-07-05. It is a STATIC,
 // in-repo table by design, not a live fetch: a report is a git-pinned,
 // reproducible artifact (see report.go's Manifest), so the cost column must be
 // pinned too — a price that moved after a run must not silently rewrite a past
@@ -52,26 +52,26 @@ func (p Price) Cost(u llm.Usage) float64 {
 // the cheapest in the table.
 var Pricing = map[string]Price{
 	// flagships
-	"openai/gpt-5.5":                {InPerM: 1.25, OutPerM: 10.00},
+	"openai/gpt-5.5":                {InPerM: 5.00, OutPerM: 30.00, CacheReadPerM: 0.50},
 	"qwen/qwen3.7-max":              {InPerM: 1.20, OutPerM: 6.00},
-	"anthropic/claude-opus-4.8":     {InPerM: 5.00, OutPerM: 25.00},
-	"google/gemini-3.1-pro-preview": {InPerM: 1.25, OutPerM: 10.00},
+	"anthropic/claude-opus-4.8":     {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
+	"google/gemini-3.1-pro-preview": {InPerM: 2.00, OutPerM: 12.00, CacheReadPerM: 0.20},
 	// affordable
-	"deepseek/deepseek-v4-flash":   {InPerM: 0.10, OutPerM: 0.20},
+	"deepseek/deepseek-v4-flash":   {InPerM: 0.09, OutPerM: 0.18, CacheReadPerM: 0.018},
 	"tencent/hy3-preview":          {InPerM: 0.30, OutPerM: 1.20},
 	"google/gemini-2.5-flash-lite": {InPerM: 0.10, OutPerM: 0.40},
 	// coding
-	"anthropic/claude-opus-4.7":     {InPerM: 5.00, OutPerM: 25.00},
+	"anthropic/claude-opus-4.7":     {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
 	"moonshotai/kimi-k2.6":          {InPerM: 0.60, OutPerM: 2.50},
 	"moonshotai/kimi-k2.6:free":     {InPerM: 0.00, OutPerM: 0.00}, // free tier: priced, and the price is zero.
-	"google/gemini-3-flash-preview": {InPerM: 0.30, OutPerM: 2.50},
+	"google/gemini-3-flash-preview": {InPerM: 0.50, OutPerM: 3.00, CacheReadPerM: 0.05},
 
 	// Round-12 candidates — untested families/tiers scouted against the live
 	// catalog (2026-06-03) and run through the explore+code probe before any
 	// promotion into `roster`. Grok is written "4.20" on OpenRouter (no "4.2").
 	"x-ai/grok-4.3":               {InPerM: 1.25, OutPerM: 2.50},
 	"x-ai/grok-4.20":              {InPerM: 1.25, OutPerM: 2.50},
-	"z-ai/glm-5":                  {InPerM: 0.60, OutPerM: 2.08},
+	"z-ai/glm-5":                  {InPerM: 0.60, OutPerM: 1.92, CacheReadPerM: 0.12},
 	"openai/gpt-5.4":              {InPerM: 2.50, OutPerM: 15.00},
 	"openai/gpt-5.2-codex":        {InPerM: 1.75, OutPerM: 14.00},
 	"anthropic/claude-sonnet-4.6": {InPerM: 3.00, OutPerM: 15.00},
@@ -80,7 +80,7 @@ var Pricing = map[string]Price{
 	"minimax/minimax-m3":          {InPerM: 0.30, OutPerM: 1.20},
 	"google/gemini-3.5-flash":     {InPerM: 1.50, OutPerM: 9.00},
 	"moonshotai/kimi-k2-thinking": {InPerM: 0.60, OutPerM: 2.50},
-	"deepseek/deepseek-v4-pro":    {InPerM: 0.43, OutPerM: 0.87},
+	"deepseek/deepseek-v4-pro":    {InPerM: 0.435, OutPerM: 0.87, CacheReadPerM: 0.0036},
 }
 
 // CostOf returns the USD cost for a model's usage and whether the model was

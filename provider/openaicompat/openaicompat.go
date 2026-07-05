@@ -107,6 +107,9 @@ func New(cfg Config) *Provider {
 		// (cheap/queued) model's stream died while fast ones never did. See
 		// ssefilter.go.
 		option.WithMiddleware(sseKeepaliveMiddleware),
+		// Ask OpenRouter to include its native billed USD cost in response usage.
+		// The SDK does not model this request field, so set the raw JSON body path.
+		option.WithJSONSet("usage.include", true),
 	}
 	if cfg.APIKey != "" {
 		opts = append(opts, option.WithAPIKey(cfg.APIKey))
@@ -234,10 +237,14 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		acc := openai.ChatCompletionAccumulator{}
 		var reasoning reasoningAccumulator
 		var usage openai.CompletionUsage
+		var usageCostRaw json.RawMessage
 		var providerRaw json.RawMessage // OpenRouter: captured for sticky pinning.
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
+			if raw := costRawFromUsage(chunk.Usage); len(raw) > 0 {
+				usageCostRaw = raw
+			}
 			if chunk.Usage.TotalTokens > 0 {
 				usage = chunk.Usage
 			}
@@ -309,7 +316,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 		}
 
 		// Terminal chunk: the run's finish reason and full token accounting.
-		final := llm.Chunk{Done: true, Usage: usageFrom(usage)}
+		final := llm.Chunk{Done: true, Usage: usageFrom(usage, usageCostRaw)}
 		if len(acc.Choices) > 0 {
 			final.FinishReason = mapFinish(acc.Choices[0].FinishReason)
 		}
@@ -646,21 +653,41 @@ func toResponse(cc *openai.ChatCompletion) *llm.Response {
 		}
 		r.FinishReason = mapFinish(choice.FinishReason)
 	}
-	r.Usage = usageFrom(cc.Usage)
+	r.Usage = usageFrom(cc.Usage, costRawFromUsage(cc.Usage))
 	return r
 }
 
 // usageFrom normalizes the SDK's token accounting into our Usage. Shared by the
 // non-streaming response and the streaming Done chunk so both report tokens the
-// same way (CachedTokens included, where the backend populates it).
-func usageFrom(u openai.CompletionUsage) llm.Usage {
+// same way (CachedTokens included, where the backend populates it). costRaw is
+// OpenRouter's unmodeled native billed USD cost from usage.cost, when present.
+func usageFrom(u openai.CompletionUsage, costRaw json.RawMessage) llm.Usage {
 	return llm.Usage{
 		PromptTokens:     int(u.PromptTokens),
 		CompletionTokens: int(u.CompletionTokens),
 		TotalTokens:      int(u.TotalTokens),
 		CachedTokens:     int(u.PromptTokensDetails.CachedTokens),
 		ReasoningTokens:  int(u.CompletionTokensDetails.ReasoningTokens),
+		Cost:             parseUsageCost(costRaw),
 	}
+}
+
+func costRawFromUsage(u openai.CompletionUsage) json.RawMessage {
+	if raw := u.JSON.ExtraFields["cost"].Raw(); raw != "" && raw != "null" {
+		return json.RawMessage(raw)
+	}
+	return nil
+}
+
+func parseUsageCost(raw json.RawMessage) float64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var cost float64
+	if err := json.Unmarshal(raw, &cost); err != nil {
+		return 0
+	}
+	return cost
 }
 
 func mapFinish(reason string) llm.FinishReason {
