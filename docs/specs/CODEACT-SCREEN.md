@@ -1,6 +1,18 @@
 # CodeAct-lite screen — is code-as-action worth a build?
 
-Status: DESIGN (not yet run). Screen, not confirmatory.
+> **DECIDED 2026-07-06 — NO (do not default, do not build Stage 2).** Ran the full
+> staged screen (docs/findings/PARALLEL-DISPATCH-AND-CODEACT-PROBE.md §3): a real
+> `-codeact` knob (commit cd5fad5) A/B'd on greenfield + 3 internal edit cases + an
+> 8-instance SWE-bench spine subset, cheap solver, solo. **Resolve: zero effect on
+> every screen** (9/9=9/9 internal; 5/8=5/8 swebench, SAME instances) — confirms the
+> verifier binds, not the action space. **Efficiency: robust only on greenfield**
+> (−64% iters); a wash-to-worse on real editing. Verdict: keep `-codeact` as a shipped
+> experimental opt-in (CLI only; TUI wiring NOT justified); narrow use = greenfield
+> scaffolding batches. The staged design + kill-cheap discipline below worked as
+> intended — Stage 0's greenfield win did NOT generalize, exactly as the drift/verifier
+> priors predicted.
+
+Status: DESIGN (superseded by the DECIDED banner above). Screen, not confirmatory.
 Frozen spine: SWEBENCH-GATE-EXPERIMENT.md §2.1 stride-30 IDs (same 30 M0/M2 used).
 Related: docs/findings/VERIFIER-ORACLE-WALL.md, docs/specs/NORTH-STAR.md,
 docs/specs/M2-MEASUREMENT.md (screen template), docs/specs/SESSION.md.
