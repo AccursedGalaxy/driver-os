@@ -107,6 +107,13 @@ func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 		}
 		note += "code-as-action mode ON"
 	}
+	if cfg.ReproGate {
+		prompt += reproGateAddendum
+		if note != "" {
+			note += "; "
+		}
+		note += "repro-first mode ON"
+	}
 	if cfg.BatchReads {
 		prompt += batchReadsAddendum
 		if note != "" {
@@ -120,3 +127,11 @@ func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 const batchReadsAddendum = "\n\nBATCH INDEPENDENT READS\nWhen you need information from several files, symbols, or searches whose results do NOT depend on each other, request them together in a SINGLE turn — emit multiple read_file / go_doc / search / list_dir tool calls at once rather than one per turn. The harness fetches parallel-safe reads concurrently, so batching cuts round-trips at no extra cost. Only serialize a read when it genuinely depends on an earlier result (e.g. a path you must first discover with list_dir, or a symbol you learned from a prior file). Never batch write_file, edit_file, or run — only read-only calls."
 
 const codeActAddendum = "\n\nCODE-AS-ACTION MODE\nYour primary action is executable shell via the `run` tool. Prefer to accomplish work by composing and running code rather than issuing many discrete file operations:\n- Locate and inspect with shell (rg/grep, sed -n, cat) instead of guessing.\n- Apply changes as code where practical — a targeted `sed -i`, a small script, or a heredoc — and combine build+test into one command (e.g. `go test ./... 2>&1 | tail -40`), so each `run` both changes state and verifies it.\n- Batch related steps into a single `run` with `&&` or a heredoc script to cut round-trips.\n- Reach for the dedicated read_file/write_file/edit_file tools only when a shell command would be clearly more error-prone (e.g. a delicate multi-line edit in a large file).\nThink in terms of \"what program produces this change and proves it\", not \"what single tool call comes next\"."
+
+const reproGateAddendum = "\n\nTRACE-THE-PRODUCER, THEN REPRODUCE\n" +
+	"A passing build or green existing tests are NOT sufficient evidence a bug is fixed — and neither is a reproduction that only exercises the case you first thought of. The real bug usually lives in a code path you have not yet conceived, so a test written from your current mental model will pass while the bug survives. Before your final answer you MUST:\n" +
+	"- TRACE THE PRODUCER: for every value your fix relies on being correct, do NOT assume it is already right. Find where that value is PRODUCED (the function and the branch that assigns it) and enumerate EVERY branch or return case of that producer. For each case, check whether the value is correct for the invariant you are enforcing. Bugs of this class are typically a producer returning a wrong value in ONE branch — not the consumer you are tempted to edit.\n" +
+	"- FIX AT THE RIGHT LAYER: prefer correcting the producer that returns the wrong value over patching each consumer. A consumer-only fix that assumes the incoming value is already correct will silently miss the branches where it is not.\n" +
+	"- REPRODUCE EVERY BRANCH: before editing production code, write a check that FAILS on the unmodified code and that exercises EACH producer branch you enumerated (every distinct input regime — e.g. boundary-straddling, entirely-inside, entirely-outside), not a single happy-path example. Run it and confirm it is RED. If you cannot make it fail, you do not yet understand the bug — keep tracing, do NOT start fixing.\n" +
+	"- CONFIRM RED->GREEN: after fixing, re-run your reproduction across all branches, confirm it now PASSES, and confirm you did not break neighboring behavior.\n" +
+	"- Only THEN answer, naming which producer(s) you traced, every branch you checked, and why your reproduction covers them. If you skipped any step, say so explicitly and why."

@@ -420,6 +420,9 @@ type Config struct {
 	// An A/B experiment knob (docs/specs/CODEACT-SCREEN.md); arms differ in it alone.
 	CodeAct bool
 
+	// ReproGate, when true, appends a reproduction-first disposition to the solver system prompt.
+	ReproGate bool
+
 	// BatchReads, when true, appends a "batch independent reads" instruction
 	// block to the native-loop system prompt (see resolveSystemPrompt): it
 	// steers the model to emit several parallel-safe read-only tool calls in
