@@ -83,20 +83,31 @@ func modelIDOf(p any) string {
 func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 	switch cfg.PromptProfile {
 	case "", "legacy":
-		return nativeSystemPrompt(), "", nil
+		prompt, note = nativeSystemPrompt(), ""
 	case "structured":
-		return structuredSystemPrompt(), "", nil
+		prompt, note = structuredSystemPrompt(), ""
 	case "auto":
 		id := modelIDOf(cfg.Model)
 		switch fam := modelFamily(id); fam {
 		case famScope:
-			return structuredSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s (structured)", id, fam), nil
+			prompt, note = structuredSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s (structured)", id, fam)
 		case famPersistence:
-			return persistenceSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s (structured+persistence)", id, fam), nil
+			prompt, note = persistenceSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s (structured+persistence)", id, fam)
 		default:
-			return nativeSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s — TERSE FALLBACK (add it to promptFamilies if this is wrong)", id, fam), nil
+			prompt, note = nativeSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s — TERSE FALLBACK (add it to promptFamilies if this is wrong)", id, fam)
 		}
 	default:
 		return "", "", fmt.Errorf("unknown PromptProfile %q (valid: \"\", \"legacy\", \"structured\", \"auto\")", cfg.PromptProfile)
 	}
+
+	if cfg.CodeAct {
+		prompt += codeActAddendum
+		if note != "" {
+			note += "; "
+		}
+		note += "code-as-action mode ON"
+	}
+	return prompt, note, nil
 }
+
+const codeActAddendum = "\n\nCODE-AS-ACTION MODE\nYour primary action is executable shell via the `run` tool. Prefer to accomplish work by composing and running code rather than issuing many discrete file operations:\n- Locate and inspect with shell (rg/grep, sed -n, cat) instead of guessing.\n- Apply changes as code where practical — a targeted `sed -i`, a small script, or a heredoc — and combine build+test into one command (e.g. `go test ./... 2>&1 | tail -40`), so each `run` both changes state and verifies it.\n- Batch related steps into a single `run` with `&&` or a heredoc script to cut round-trips.\n- Reach for the dedicated read_file/write_file/edit_file tools only when a shell command would be clearly more error-prone (e.g. a delicate multi-line edit in a large file).\nThink in terms of \"what program produces this change and proves it\", not \"what single tool call comes next\"."

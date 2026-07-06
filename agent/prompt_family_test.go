@@ -128,3 +128,45 @@ func TestRunNativeAutoProfileNotesRouting(t *testing.T) {
 		t.Errorf("glm-5 request does not carry the persistence variant")
 	}
 }
+
+// TestResolveSystemPromptCodeAct: the -codeact knob appends the code-as-action
+// block onto whatever base profile resolved, notes it, and is byte-identical to
+// off when false — arms differ in this flag alone (docs/specs/CODEACT-SCREEN.md).
+func TestResolveSystemPromptCodeAct(t *testing.T) {
+	off, _, err := resolveSystemPrompt(Config{CodeAct: false})
+	if err != nil {
+		t.Fatalf("codeact off: %v", err)
+	}
+	if strings.Contains(off, "CODE-AS-ACTION MODE") {
+		t.Errorf("base prompt must NOT contain the addendum when CodeAct is off")
+	}
+
+	on, note, err := resolveSystemPrompt(Config{CodeAct: true})
+	if err != nil {
+		t.Fatalf("codeact on: %v", err)
+	}
+	if !strings.Contains(on, "CODE-AS-ACTION MODE") {
+		t.Errorf("prompt must contain the addendum when CodeAct is on")
+	}
+	// On == base (off) + addendum: the flag only ADDS, never rewrites the base.
+	if !strings.HasPrefix(on, off) {
+		t.Errorf("codeact prompt must be the base prompt plus the addendum, not a rewrite")
+	}
+	if !strings.Contains(note, "code-as-action mode ON") {
+		t.Errorf("note must announce code-as-action mode, got %q", note)
+	}
+
+	// Composes with a non-default profile and still carries both parts.
+	structured, _, err := resolveSystemPrompt(Config{PromptProfile: "structured", CodeAct: true})
+	if err != nil {
+		t.Fatalf("structured+codeact: %v", err)
+	}
+	if !strings.Contains(structured, "Working rules:") || !strings.Contains(structured, "CODE-AS-ACTION MODE") {
+		t.Errorf("structured+codeact must contain both the structured base and the addendum")
+	}
+
+	// The error path (unknown profile) is unaffected by CodeAct.
+	if _, _, err := resolveSystemPrompt(Config{PromptProfile: "bogus", CodeAct: true}); err == nil {
+		t.Errorf("unknown profile must still error even with CodeAct on")
+	}
+}

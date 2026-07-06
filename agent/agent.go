@@ -413,6 +413,13 @@ type Config struct {
 	// (Run/buildSystemPrompt is protocol-shaped, not profile-shaped).
 	PromptProfile string
 
+	// CodeAct, when true, appends a "code-as-action" instruction block to the
+	// native-loop system prompt (see resolveSystemPrompt): it steers the model to
+	// treat `run` shell as its primary action — composing/executing code to make
+	// and verify changes — rather than issuing many discrete file-tool calls.
+	// An A/B experiment knob (docs/specs/CODEACT-SCREEN.md); arms differ in it alone.
+	CodeAct bool
+
 	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
 	// is the universal backstop for a spiral that dodges every action/observation
 	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool
