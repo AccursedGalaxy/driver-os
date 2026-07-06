@@ -45,3 +45,4 @@ _deps/
 
 # Eval harness generated reports (HP-11)
 eval/runs/
+eval/scripts/review_cost_pass.jsonl
