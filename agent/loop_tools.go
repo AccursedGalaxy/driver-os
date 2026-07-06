@@ -221,6 +221,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	var lastReadSig string      // (Change A) signature of the last executed read-only call.
 	var lastReadObs string      // (Change A) observation from the last executed read-only call.
 	var lastExecutedSig string  // (Change A) signature of the immediately-preceding EXECUTED call.
+	dd := newObsDedup()
 	repeats, navRun := 0, 0
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
@@ -648,6 +649,17 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// command with no file changes between — nudge, never kill.
 			if !kill && tr.greenRepeatNudge() {
 				obs += greenRepeatNudgeText
+			}
+
+			// (Lever 2b) Wire dedup-at-source. rawObs already fed the repeat-detector
+			// fingerprint above, so the count-6 KilledRepeat and the 3/4/5 escalating
+			// nudges are unaffected; this shrinks ONLY the billed copy. If these exact
+			// observation bytes were sent at an earlier iteration, replace the raw portion
+			// with a one-line stub, preserving any nudge suffix appended above. Append-only
+			// ⇒ prefix cache stays valid. `run` still executes (execution-dedup is a
+			// separate, consecutive-read-only mechanism); this only dedupes bytes.
+			if s, dup := dd.stub(rawObs, i); dup {
+				obs = s + strings.TrimPrefix(obs, rawObs)
 			}
 
 			step.Grounded = grounded

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,39 @@ import (
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
+
+// obsDedupMinLen is the floor below which deduping can't save tokens: the stub
+// itself is ~35 chars, and tiny observations aren't worth a map entry.
+const obsDedupMinLen = 200
+
+// obsDedup records the first iteration at which each raw observation byte-string
+// was seen in a run, so a later byte-identical observation can be replaced on the
+// wire (the BILLED copy) by a one-line stub. It is per-run state (create one per
+// Run/RunNative call). It is purely a token optimization: it never changes whether
+// a tool executes, and callers must feed it the RAW observation bytes AFTER the
+// repeat-detector fingerprint has already consumed them.
+type obsDedup struct {
+	seen map[string]int // sha256(rawObs) -> first iteration index
+}
+
+func newObsDedup() *obsDedup { return &obsDedup{seen: map[string]int{}} }
+
+// stub returns (stubText, true) if rawObs's bytes were already recorded at an
+// earlier iteration; otherwise it records rawObs at iteration i and returns
+// ("", false). Observations shorter than obsDedupMinLen are never deduped (and
+// never recorded) — the stub couldn't save tokens.
+func (d *obsDedup) stub(rawObs string, i int) (string, bool) {
+	if len(rawObs) < obsDedupMinLen {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(rawObs))
+	key := string(sum[:])
+	if k, ok := d.seen[key]; ok {
+		return fmt.Sprintf("[identical to iter %d — deduped]", k), true
+	}
+	d.seen[key] = i
+	return "", false
+}
 
 type loopKnobs struct {
 	maxIter      int

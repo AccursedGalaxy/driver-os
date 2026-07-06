@@ -87,6 +87,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	var lastReadSig string     // (Change A) signature of the last executed read-only call.
 	var lastReadObs string     // (Change A) observation from the last executed read-only call.
 	var lastExecutedSig string // signature of the immediately previous executed tool call.
+	dd := newObsDedup()
 	repeats := 0
 	sameVerb := 0
 	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
@@ -292,6 +293,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				lastReadObs = observation
 			}
 		}
+		rawObs := observation
 		step.ToolMs = time.Since(toolStart).Milliseconds()
 
 		// A successful tool observation means the model has now seen REAL external
@@ -365,6 +367,13 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			return gs.upgradeIfVerified(ctx, res), nil
 		} else {
 			repeatNudge = escalatingRepeatNudge(count)
+		}
+
+		// (Lever 2b) Wire dedup-at-source — placed AFTER the repeat detector above so
+		// the fingerprint still keys on raw bytes. Replaces only the billed copy; the
+		// nudge/diagnostics suffix appended above rides along. See loop_tools.go.
+		if s, dup := dd.stub(rawObs, i); dup {
+			observation = s + strings.TrimPrefix(observation, rawObs)
 		}
 
 		// Record the step with the FINAL observation — after every augmentation —
