@@ -24,10 +24,61 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
+
+// parallelSafe reports whether a tool has no side effects and no shared state,
+// so it can be dispatched concurrently with other such calls in the same turn.
+// run/write_file/edit_file are excluded. go_doc reads host Go docs/source only.
+func parallelSafe(name string) bool {
+	switch name {
+	case "read_file", "search", "list_dir", "go_doc":
+		return true
+	}
+	return false
+}
+
+type prefetchResult struct {
+	obs   string
+	isErr bool
+	dur   time.Duration // real dispatch wall-time of THIS call (see ToolMs requirement)
+}
+
+// prefetchLeadingReadOnly dispatches the maximal LEADING prefix of parallel-safe
+// calls concurrently and returns their results indexed by position plus the
+// prefix length k. It prefetches only when k >= 2 AND the leading call would not
+// be elided by the identical-read skip (skipLeading == false); otherwise it
+// returns (nil, 0) and the caller dispatches every call inline as today.
+// results[i] is valid only for i in [0,k); ordering matches `calls`; physical
+// execution order does not. Each goroutine records its own call's dispatch
+// duration in results[i].dur.
+func prefetchLeadingReadOnly(ctx context.Context, tools map[string]Tool, calls []llm.ToolCallPart, skipLeading bool) (results []prefetchResult, k int) {
+	for _, c := range calls {
+		if !parallelSafe(c.Name) {
+			break
+		}
+		k++
+	}
+	if k < 2 || skipLeading {
+		return nil, 0
+	}
+	results = make([]prefetchResult, k)
+	var wg sync.WaitGroup
+	wg.Add(k)
+	for i := 0; i < k; i++ {
+		go func(i int) {
+			defer wg.Done()
+			start := time.Now()
+			obs, isErr := dispatchNative(ctx, tools, calls[i])
+			results[i] = prefetchResult{obs, isErr, time.Since(start)}
+		}(i)
+	}
+	wg.Wait()
+	return results, k
+}
 
 // RunNative executes the agent against a tool-capable provider. Its signature and
 // RunResult match Run exactly, so a caller swaps loops without other changes.
@@ -458,9 +509,23 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P1) Committed to dispatch — NOW the assistant turn (carrying its tool-call
 		// parts) becomes state we re-send; the API requires the tool_calls to precede
 		// their results. Deferred to here (past the no-progress detectors above) so a
-		// detector kill returns a well-formed transcript with no dangling tool-call —
-		// the continuation seam bug (harness review finding #1).
+		// detector kill returns a well-formed transcript with no message-order error.
 		messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
+
+		// The identical-read skip (below) elides a leading read that repeats the
+		// previous turn's read. If calls[0] would be skipped, disable prefetch for
+		// this turn: that is the "model is repeating" case, never the parallel-
+		// orientation case we optimize, and prefetching it would defeat the skip.
+		skipLeading := false
+		if len(calls) > 0 {
+			c0 := calls[0]
+			readOnly0 := c0.Name == "read_file" || c0.Name == "search" || c0.Name == "list_dir"
+			if readOnly0 && !reasoningAdvanced {
+				sig0 := c0.Name + " " + signatureArg(c0, cfg.Tools)
+				skipLeading = sig0 == lastReadSig && sig0 == lastExecutedSig
+			}
+		}
+		prefetched, prefetchK := prefetchLeadingReadOnly(loopCtx, cfg.Tools, calls, skipLeading)
 
 		// ACT: run every requested call in order, appending one result per id (a
 		// missing result for any call would make the next request malformed).
@@ -483,15 +548,21 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if readOnly && sig == lastReadSig && sig == lastExecutedSig && !reasoningAdvanced {
 				obs = "(skipped: identical to your previous read; result unchanged) " + lastReadObs
 				isErr = false
+				step.ToolMs = time.Since(toolStart).Milliseconds()
 			} else {
-				obs, isErr = dispatchNative(loopCtx, cfg.Tools, c)
+				if idx < prefetchK {
+					obs, isErr = prefetched[idx].obs, prefetched[idx].isErr
+					step.ToolMs = prefetched[idx].dur.Milliseconds()
+				} else {
+					obs, isErr = dispatchNative(loopCtx, cfg.Tools, c)
+					step.ToolMs = time.Since(toolStart).Milliseconds()
+				}
 				lastExecutedSig = sig
 				if readOnly && !isErr {
 					lastReadSig = sig
 					lastReadObs = obs
 				}
 			}
-			step.ToolMs = time.Since(toolStart).Milliseconds()
 			if !isErr {
 				grounded = true // (P4) the model has now seen real external state.
 			}
