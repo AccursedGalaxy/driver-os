@@ -420,6 +420,13 @@ type Config struct {
 	// An A/B experiment knob (docs/specs/CODEACT-SCREEN.md); arms differ in it alone.
 	CodeAct bool
 
+	// BatchReads, when true, appends a "batch independent reads" instruction
+	// block to the native-loop system prompt (see resolveSystemPrompt): it
+	// steers the model to emit several parallel-safe read-only tool calls in
+	// ONE turn instead of one per turn, so the harness's parallel prefetch
+	// (prefetchLeadingReadOnly) can fetch them concurrently. An A/B arm knob.
+	BatchReads bool
+
 	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
 	// is the universal backstop for a spiral that dodges every action/observation
 	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool

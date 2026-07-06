@@ -107,7 +107,16 @@ func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 		}
 		note += "code-as-action mode ON"
 	}
+	if cfg.BatchReads {
+		prompt += batchReadsAddendum
+		if note != "" {
+			note += "; "
+		}
+		note += "batch-reads mode ON"
+	}
 	return prompt, note, nil
 }
+
+const batchReadsAddendum = "\n\nBATCH INDEPENDENT READS\nWhen you need information from several files, symbols, or searches whose results do NOT depend on each other, request them together in a SINGLE turn — emit multiple read_file / go_doc / search / list_dir tool calls at once rather than one per turn. The harness fetches parallel-safe reads concurrently, so batching cuts round-trips at no extra cost. Only serialize a read when it genuinely depends on an earlier result (e.g. a path you must first discover with list_dir, or a symbol you learned from a prior file). Never batch write_file, edit_file, or run — only read-only calls."
 
 const codeActAddendum = "\n\nCODE-AS-ACTION MODE\nYour primary action is executable shell via the `run` tool. Prefer to accomplish work by composing and running code rather than issuing many discrete file operations:\n- Locate and inspect with shell (rg/grep, sed -n, cat) instead of guessing.\n- Apply changes as code where practical — a targeted `sed -i`, a small script, or a heredoc — and combine build+test into one command (e.g. `go test ./... 2>&1 | tail -40`), so each `run` both changes state and verifies it.\n- Batch related steps into a single `run` with `&&` or a heredoc script to cut round-trips.\n- Reach for the dedicated read_file/write_file/edit_file tools only when a shell command would be clearly more error-prone (e.g. a delicate multi-line edit in a large file).\nThink in terms of \"what program produces this change and proves it\", not \"what single tool call comes next\"."

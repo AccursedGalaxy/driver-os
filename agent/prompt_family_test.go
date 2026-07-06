@@ -170,3 +170,39 @@ func TestResolveSystemPromptCodeAct(t *testing.T) {
 		t.Errorf("unknown profile must still error even with CodeAct on")
 	}
 }
+
+// TestResolveSystemPromptBatchReads: the -batch-reads knob appends the
+// batch-reads block onto whatever base profile resolved, notes it, and is
+// byte-identical to off when false — arms differ in this flag alone.
+func TestResolveSystemPromptBatchReads(t *testing.T) {
+	off, _, err := resolveSystemPrompt(Config{BatchReads: false})
+	if err != nil {
+		t.Fatalf("batch-reads off: %v", err)
+	}
+	if strings.Contains(off, "BATCH INDEPENDENT READS") {
+		t.Errorf("base prompt must NOT contain the addendum when BatchReads is off")
+	}
+
+	on, note, err := resolveSystemPrompt(Config{BatchReads: true})
+	if err != nil {
+		t.Fatalf("batch-reads on: %v", err)
+	}
+	if !strings.Contains(on, "BATCH INDEPENDENT READS") {
+		t.Errorf("prompt must contain the addendum when BatchReads is on")
+	}
+	if !strings.Contains(note, "batch-reads mode ON") {
+		t.Errorf("note must mention batch-reads: %q", note)
+	}
+
+	// Composes with other profiles.
+	structured, _, _ := resolveSystemPrompt(Config{PromptProfile: "structured", BatchReads: true})
+	if !strings.Contains(structured, "Working rules:") || !strings.Contains(structured, "BATCH INDEPENDENT READS") {
+		t.Errorf("batch-reads should compose with structured profile")
+	}
+
+	// Unknown profile still errors.
+	_, _, err = resolveSystemPrompt(Config{PromptProfile: "invalid", BatchReads: true})
+	if err == nil {
+		t.Errorf("unknown profile should still error with BatchReads on")
+	}
+}
