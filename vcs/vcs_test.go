@@ -265,3 +265,65 @@ func TestRestoreTreeRestoresModifiedDeletedAndAddedFiles(t *testing.T) {
 		t.Fatalf("RestoreTree polluted the real index: %q", out)
 	}
 }
+
+// RestoreTree must remove ignored artifacts left by a prior attempt, so each
+// escalation rung starts from an exact baseline. WriteTree respects .gitignore,
+// so a tree it restores never includes ignored files; without a clean step the
+// cruft from attempt N survives into attempt N+1.
+func TestRestoreTreeRemovesIgnoredArtifacts(t *testing.T) {
+	ctx := context.Background()
+	dir := initRepo(t)
+	// An ignore rule for a build-output directory, the kind of thing an agent
+	// rung writes and the baseline must not inherit.
+	write(t, dir, ".gitignore", "__pycache__/\n*.pyc\nbuild/\n")
+	if err := StageAll(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := Commit(ctx, dir, "add gitignore"); err != nil {
+		t.Fatal(err)
+	}
+	// Baseline captured with NO ignored cruft present.
+	base, err := WriteTree(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt N writes ignored artifacts (a cache dir + a coverage file) plus a
+	// real tracked edit, simulating what a rung leaves behind.
+	if err := os.MkdirAll(filepath.Join(dir, "__pycache__"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "__pycache__/foo.pyc", "compiled junk\n")
+	write(t, dir, "build/out.txt", "build output\n")
+	write(t, dir, "README.md", "tampered\n")
+
+	// The reset for attempt N+1.
+	if err := RestoreTree(ctx, dir, base); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ignored cruft from attempt N must be gone — the second attempt sees a
+	// baseline with no leftover ignored artifact.
+	for _, name := range []string{"__pycache__/foo.pyc", "build/out.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after RestoreTree (err=%v); ignored artifacts must not survive into the next attempt", name, err)
+		}
+	}
+	// The tracked edit was restored to baseline.
+	b, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil || string(b) != "hello\n" {
+		t.Errorf("README = %q (err %v), want baseline content restored", string(b), err)
+	}
+	// And the restored tree matches the baseline exactly (no ignored diff).
+	restored, err := WriteTree(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != base {
+		diff, _ := DiffTrees(ctx, dir, base, restored)
+		t.Fatalf("restored tree = %s, want %s; leftover diff:\n%s", restored, base, diff)
+	}
+}

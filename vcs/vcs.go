@@ -192,7 +192,16 @@ func RestoreTree(ctx context.Context, dir, tree string) error {
 	if _, err := runEnv(ctx, dir, env, "read-tree", tree); err != nil {
 		return err
 	}
-	_, err = runEnv(ctx, dir, env, "checkout-index", "-af")
+	if _, err := runEnv(ctx, dir, env, "checkout-index", "-af"); err != nil {
+		return err
+	}
+	// WriteTree respects .gitignore, so a restored tree never contains
+	// ignored files (__pycache__, build dirs, coverage output). Without this
+	// step, ignored artifacts written by one escalation attempt survive into
+	// the next, breaking attempt isolation. `clean -fdX` removes ONLY ignored
+	// files and directories — tracked and untracked-non-ignored state was
+	// already reconciled above — so each rung starts from an exact baseline.
+	_, err = run(ctx, dir, "clean", "-fdX")
 	return err
 }
 
