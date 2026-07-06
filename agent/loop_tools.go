@@ -285,6 +285,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		res.Usage = addUsage(res.Usage, resp.Usage)
 		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
 		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
+		ctxTok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		notifyUsage(cfg.Obs, res.Usage, ctxTok)
 
 		// (P5) Hidden-reasoning progress for THIS turn, computed once: it selects the
 		// tight-loop threshold below AND is recorded on every Step of the turn so a

@@ -183,6 +183,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		res.Usage = addUsage(res.Usage, resp.Usage)
 		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
 		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
+		ctxTok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		notifyUsage(cfg.Obs, res.Usage, ctxTok)
 
 		// The model's turn becomes part of the state we carry forward (P1).
 		messages = append(messages, llm.Assistant(reply))

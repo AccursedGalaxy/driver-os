@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/AccursedGalaxy/driver-os/llm"
 )
 
 // Observer receives live progress events from a Run. It is the seam that lets
@@ -44,10 +46,28 @@ type VerifyObserver interface {
 	VerifyResult(cmd string, ok bool)
 }
 
+// UsageObserver is an OPTIONAL Observer extension, discovered by type-assertion
+// like DeltaObserver/VerifyObserver. It receives typed per-model-call usage for
+// live UI telemetry; the string note path stays intact for observers that print
+// the CLI trace.
+type UsageObserver interface {
+	// StepUsage reports cumulative turn usage after each model call, plus the
+	// live context size (this call's prompt+completion). ctxTokens is separate
+	// because cumulative.PromptTokens SUMS across iterations.
+	StepUsage(cumulative llm.Usage, ctxTokens int)
+}
+
 // notifyVerify forwards one VerifyCmd outcome to the observer when it opted in.
 func notifyVerify(obs Observer, cmd string, ok bool) {
 	if v, ok2 := obs.(VerifyObserver); ok2 {
 		v.VerifyResult(cmd, ok)
+	}
+}
+
+// notifyUsage forwards one model-call usage update to the observer when it opted in.
+func notifyUsage(obs Observer, cumulative llm.Usage, ctxTokens int) {
+	if u, ok := obs.(UsageObserver); ok {
+		u.StepUsage(cumulative, ctxTokens)
 	}
 }
 
