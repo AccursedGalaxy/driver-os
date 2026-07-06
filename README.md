@@ -204,3 +204,15 @@ The open research backlog lives in `HARD-PROBLEMS.md`.
 go test ./...        # deterministic unit tests (no network)
 go run ./experiments/cmd/playground   # live round-trip (needs keys in .env)
 ```
+
+## Status & stability
+
+This is a **v0.1.0 beta** and a personal research platform. The `v0.x` version
+line means the API and CLI surface are still moving — expect breaking changes
+between minor versions until v1. It's shared because the pieces are genuinely
+useful and the research process is out in the open; it is not (yet) a hardened
+product with compatibility guarantees.
+
+## License
+
+[MIT](LICENSE) © Robin Bohrer
