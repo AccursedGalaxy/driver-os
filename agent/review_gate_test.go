@@ -71,6 +71,10 @@ type fakeSolicitor struct {
 	solicitReplies map[string]struct{ cmd, reason string }
 	solicitErr     error         // non-nil => fail the solicitation call.
 	solicitCalls   []ReviewInput // records every SolicitRepro call.
+	// solicitUsage is the usage returned from each SolicitRepro call. Zero
+	// value keeps the historical empty-usage behavior; setting it lets a
+	// test assert the gate folds the solicitation bill into its total.
+	solicitUsage llm.Usage
 }
 
 func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings []ReviewFinding) ([]ReviewFinding, llm.Usage, error) {
@@ -91,7 +95,7 @@ func (f *fakeSolicitor) SolicitRepro(_ context.Context, in ReviewInput, findings
 			}
 		}
 	}
-	return out, llm.Usage{}, nil
+	return out, f.solicitUsage, nil
 }
 
 // gitWorkspace builds a git-initialized workspace (WriteTree needs a repo, not
@@ -1188,6 +1192,46 @@ func TestSolicitRepro_SkippedWithoutSolicitor(t *testing.T) {
 	rf := res.Review.Findings[0]
 	if rf.Confirmed {
 		t.Fatal("finding must not be confirmed — no solicitor available")
+	}
+}
+
+// TestSolicitReproCostFoldedIntoGateTotal is the gate-level regression for the
+// SolicitRepro cost-telemetry leak: the billed follow-up Provider.Generate call
+// inside CodeReviewer.SolicitRepro returns a Usage whose Cost must be folded
+// into the run's review total (ReviewReport.Usage), not dropped. The council-
+// level TestSolicitReproCostIsNotDropped covers the impl returning the usage;
+// this covers the agent/gate.go call site aggregating it like reviewer usage.
+// It only fires on rounds that solicit repro for ≥1 blocker, so a clean review
+// would mask the leak — hence the explicit eligible-blocker fixture.
+func TestSolicitReproCostFoldedIntoGateTotal(t *testing.T) {
+	f := ReviewFinding{
+		File: "calc.go", Quote: "package calc // patched",
+		Severity: "blocker", Confidence: 8,
+		FailureScenario: "the change breaks X",
+		// No ReproCmd — the harness must solicit one.
+	}
+	fs := &fakeSolicitor{
+		fakeReviewer: fakeReviewer{verdicts: [][]ReviewFinding{{f}}},
+		solicitReplies: map[string]struct{ cmd, reason string }{
+			"calc.go\x00package calc // patched": {cmd: "echo the-defect && false"},
+		},
+		// The billed solicitation follow-up: tokens AND a non-zero Cost.
+		solicitUsage: llm.Usage{PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60, Cost: 0.02},
+	}
+	res := reviewedRun(t, fs, Config{ReviewRounds: 1}, editThenAnswer())
+	if len(fs.solicitCalls) != 1 {
+		t.Fatalf("solicitation called %d times, want 1", len(fs.solicitCalls))
+	}
+	if res.Review == nil {
+		t.Fatal("no review report")
+	}
+	// fakeReviewer.Review returns 120 tokens / Cost 0; the solicitation adds
+	// 60 tokens / Cost 0.02 — the gate total must carry BOTH.
+	if got, want := res.Review.Usage.TotalTokens, 180; got != want {
+		t.Errorf("Usage.TotalTokens = %d, want %d (reviewer + solicitation)", got, want)
+	}
+	if got, want := res.Review.Usage.Cost, 0.02; got != want {
+		t.Errorf("Usage.Cost = %v, want %v (solicitation cost dropped from gate total)", got, want)
 	}
 }
 
