@@ -54,12 +54,13 @@ func (s *standingState) block(ctx context.Context, cfg Config, gs *gates, tr *tu
 	if gs != nil {
 		base = gs.standingBaseTree()
 	}
+	unchanged := curErr == nil && base != "" && cur == base
 	diffSection := "# Your changes so far: unavailable (could not read working tree)"
 	if curErr == nil {
 		s.renderDiff(ctx, cfg, base, cur)
 		diffSection = s.lastDiff
 	}
-	return renderStandingBlock(diffSection, tr, strings.TrimSpace(cfg.VerifyCmd), cur, curErr != nil)
+	return renderStandingBlock(diffSection, tr, strings.TrimSpace(cfg.VerifyCmd), cur, curErr != nil, unchanged)
 }
 
 func (s *standingState) renderDiff(ctx context.Context, cfg Config, base, cur string) {
@@ -141,28 +142,36 @@ func boundedStat(stat string) string {
 	return strings.Join(out, "\n")
 }
 
-func renderStandingBlock(diffSection string, tr *turnTracker, verifyCmd, curTree string, curUnknown bool) string {
+func renderStandingBlock(diffSection string, tr *turnTracker, verifyCmd, curTree string, curUnknown bool, unchanged bool) string {
 	var b strings.Builder
 	b.WriteString("=== STANDING CONTEXT (auto-refreshed each turn — do NOT run `git diff` or re-read\n")
 	b.WriteString("    files just to reconstruct this summary; read files when you need details not\n")
 	b.WriteString("    shown here) ===\n\n")
 	b.WriteString(strings.TrimRight(diffSection, "\n"))
 	b.WriteString("\n\n# Last verification\n")
-	b.WriteString(renderVerification(tr, verifyCmd, curTree, curUnknown))
+	b.WriteString(renderVerification(tr, verifyCmd, curTree, curUnknown, unchanged))
 	b.WriteString("\n=== END STANDING CONTEXT ===")
 	return b.String()
 }
 
-func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown bool) string {
+func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown bool, unchanged bool) string {
 	if tr == nil {
 		tr = &turnTracker{}
 	}
 	var lines []string
 	if verifyCmd != "" {
 		if tr.lastVerifyCmd == "" {
-			lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session — run it to confirm", verifyCmd))
+			if unchanged {
+				lines = append(lines, fmt.Sprintf("gate: `%s` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)", verifyCmd))
+			} else {
+				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session — run it to confirm", verifyCmd))
+			}
 		} else {
-			lines = append(lines, fmt.Sprintf("gate: `%s` → %s%s", tr.lastVerifyCmd, passFail(tr.lastVerifyPassed, tr.lastVerifyFailed), freshnessTag(tr.lastVerifyTree, curTree, curUnknown)))
+			tag := freshnessTag(tr.lastVerifyTree, curTree, curUnknown)
+			if unchanged {
+				tag = ""
+			}
+			lines = append(lines, fmt.Sprintf("gate: `%s` → %s%s", tr.lastVerifyCmd, passFail(tr.lastVerifyPassed, tr.lastVerifyFailed), tag))
 			if tr.lastVerifyTail != "" {
 				lines = append(lines, tr.lastVerifyTail)
 			}

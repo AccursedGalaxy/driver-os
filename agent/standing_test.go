@@ -52,6 +52,26 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	}
 }
 
+func TestStandingVerificationSkipsRunNudgeWhenUnchanged(t *testing.T) {
+	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8), "go test ./...", "tree1", false, true)
+	if !strings.Contains(got, "nothing to verify") {
+		t.Fatalf("unchanged verification missing calm skip wording:\n%s", got)
+	}
+	if strings.Contains(got, "run it to confirm") || strings.Contains(got, "STALE") {
+		t.Fatalf("unchanged verification should not nudge for a rerun:\n%s", got)
+	}
+}
+
+func TestStandingVerificationStillNudgesWhenChanged(t *testing.T) {
+	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8), "go test ./...", "tree2", false, false)
+	if !strings.Contains(got, "NOT run yet this session") || !strings.Contains(got, "run it to confirm") {
+		t.Fatalf("changed verification lost normal run nudge:\n%s", got)
+	}
+	if strings.Contains(got, "nothing to verify") {
+		t.Fatalf("changed verification used unchanged skip wording:\n%s", got)
+	}
+}
+
 func TestStandingDiffCapShowsStatOnlyNoMalformedHunk(t *testing.T) {
 	big := strings.Repeat("x\n", standingDiffCap+100)
 	got := renderDiffSection(" big.txt | 7000 +++++\n 1 file changed, 7000 insertions(+)", "@@ -0,0 +1,7000 @@\n+"+big)
@@ -90,7 +110,7 @@ func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 	tr.recordRun("go test ./...", "exit 0 (1ms)\nstdout:\ngreen", "tree1")
 	tr.observeRun("exit 0 (1ms)\nstdout:\nlisting")
 	tr.recordRun("ls", "exit 0 (1ms)\nstdout:\nlisting", "tree1")
-	got := renderVerification(tr, cfg.VerifyCmd, "tree1", false)
+	got := renderVerification(tr, cfg.VerifyCmd, "tree1", false, false)
 	if !strings.Contains(got, "gate: `go test ./...` → PASS") || !strings.Contains(got, "green") {
 		t.Fatalf("gate pass/tail clobbered by non-gate run:\n%s", got)
 	}
@@ -104,7 +124,7 @@ func TestStandingFreshnessUnknown(t *testing.T) {
 	tr := newTurnTracker(cfg, 8)
 	tr.observeRun("exit 0 (1ms)")
 	tr.recordRun("go test ./...", "exit 0 (1ms)", "tree1")
-	got := renderVerification(tr, cfg.VerifyCmd, "", true)
+	got := renderVerification(tr, cfg.VerifyCmd, "", true, false)
 	if !strings.Contains(got, "[FRESHNESS UNKNOWN: could not read working tree]") {
 		t.Fatalf("missing freshness unknown:\n%s", got)
 	}

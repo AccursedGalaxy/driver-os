@@ -72,8 +72,9 @@ type gates struct {
 	scope      *scopeState
 	review     *reviewState
 
-	verifyBaselineRed bool
-	verifyBaselineOut string
+	verifyBaselineRed      bool
+	verifyBaselineOut      string
+	verifyBaselineMeasured bool
 
 	// runBaseTree is the git tree hash of the workspace at run start,
 	// captured for the upgradeIfVerified empty-diff guard: a killed run
@@ -199,10 +200,13 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
 			return
 		}
+		g.verifyBaselineMeasured = true
 		g.verifyBaselineRed = true
 		g.verifyBaselineOut = out
 		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable")
+		return
 	}
+	g.verifyBaselineMeasured = true
 }
 
 func (g *gates) applyBaseline(res *RunResult) {
@@ -337,7 +341,24 @@ func (g *gates) verifySafety(ctx context.Context) (outcome Outcome, reason strin
 }
 
 func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
+	if g.runBaseTree != "" && !g.cfg.SkipVerifyBaseline && g.verifyBaselineMeasured {
+		gctx, cancel := gateContext(ctx, gateDiffTimeout)
+		curTree, err := vcs.WriteTree(gctx, g.cfg.Root)
+		cancel()
+		if err == nil && curTree == g.runBaseTree {
+			if !g.verifyBaselineRed {
+				g.cfg.Obs.Note("verify: no file changes this run — nothing to verify (baseline was green)")
+				return "", "", false
+			}
+			reason := fmt.Sprintf("verification command %q did not pass:\n%s", g.cfg.VerifyCmd, g.verifyBaselineOut)
+			return g.verifyCompletionFailure(reason, g.verifyBaselineOut)
+		}
+	}
 	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
+	return g.verifyCompletionFailure(reason, verifyOut)
+}
+
+func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outcome, outReason string, noContinue bool) {
 	if reason == "" {
 		return "", "", false
 	}
@@ -430,19 +451,15 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		preVerifyTree, _ = vcs.WriteTree(gctx, g.cfg.Root)
 		gcancel()
 	}
+	if g.runBaseTree != "" && preVerifyTree == g.runBaseTree {
+		res.Reason = fmt.Sprintf("verify passed but the run changed nothing — refusing upgrade (baseline was already green): %q passed", g.cfg.VerifyCmd)
+		return res
+	}
 	out, skipped, err := verifyRun(ctx, g.cfg, g.runTimeout)
 	if !skipped {
 		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
 	}
 	if skipped || err != nil || isRunFailure(out) {
-		return res
-	}
-	// Execution is green; refuse the upgrade when the working tree is
-	// unchanged vs the run-start baseline — a killed run whose verify
-	// command passes but changed nothing means the baseline was already
-	// green and the solver did no work (false-green kill rescue).
-	if g.runBaseTree != "" && preVerifyTree == g.runBaseTree {
-		res.Reason = fmt.Sprintf("verify passed but the run changed nothing — refusing upgrade (baseline was already green): %q passed", g.cfg.VerifyCmd)
 		return res
 	}
 	// Execution is green; the review gate has the final word on the upgrade.
