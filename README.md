@@ -1,8 +1,13 @@
 # driver-os
 
+[![CI](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml/badge.svg)](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/AccursedGalaxy/driver-os.svg)](https://pkg.go.dev/github.com/AccursedGalaxy/driver-os)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An agent-harness research platform, built on a small Go library for driving LLM
-**model behavior** across providers behind one uniform interface — swap
-providers freely, or run several at once to compare/race them. The library core
+**model behavior** across providers behind one uniform interface. Swap providers
+freely, or run several at once to compare or race them. The library core
 (`llm/`) is modeled on the `database/sql` driver pattern; on top of it sit a
 think→act→observe agent loop, sandbox isolation tiers, an eval/dogfood harness,
 and an adversarial council review system (see the **Status** section below for
@@ -18,12 +23,12 @@ decision.
 | OpenAI            | `openaicompat`  | `OPENAI_API_KEY`     | `openai`          | ✅ |
 | OpenRouter        | `openaicompat`  | `OPENROUTER_API_KEY` | `openrouter`      | ✅ |
 | X.AI (Grok)       | `openaicompat`  | `X_AI_API_KEY`       | `xai`             | ✅ |
-| Local (Ollama, …) | `openaicompat`  | — (keyless)          | `ollama`          | ✅ |
+| Local (Ollama, …) | `openaicompat`  | (keyless)            | `ollama`          | ✅ |
 | Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | `anthropic`       | ✅ |
 
 The first four speak the OpenAI Chat Completions wire format, so a single adapter
 covers them. Claude uses its own **native** Messages API via the `anthropic`
-adapter (DESIGN.md, decision 3) — signed-thinking replay, the 5-family effort
+adapter (DESIGN.md, decision 3): signed-thinking replay, the 5-family effort
 knob, and prompt caching. `cmd/agent` can select any of the five with `-provider`.
 
 ## Quick start
@@ -68,7 +73,7 @@ go run ./cmd/agent -memory=false ...                            # disable memory
 `cmd/agent` obeys the Unix contract, so it composes in a pipe, a Makefile, or CI
 (full contract in [docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
 
-- **`-format text|json|ndjson`** — `text` (default) prints the answer + a `SUMMARY`
+- **`-format text|json|ndjson`**: `text` (default) prints the answer + a `SUMMARY`
   line for humans; `json` emits one result object; `ndjson` streams one event per
   turn ending in a terminal `result` event. **stdout is the data channel; the live
   trace and banners always go to stderr**, so `agent -format=json … | jq .answer`
@@ -78,10 +83,10 @@ go run ./cmd/agent -memory=false ...                            # disable memory
   provider/transport error · `6` refused on policy · `7` canceled by caller
   (SIGINT / ctx cancel) · `1` setup error. Branch on
   `$?` to retry, escalate, or give up.
-- **`-provider` / `-model`** — pick the backend and model on the command line
+- **`-provider` / `-model`**: pick the backend and model on the command line
   instead of via env (the `*_MODEL` vars still work as defaults; the flag wins).
-- **`-task -`** — read the task from stdin: `cat issue.md | agent -task -`.
-- **`-review` non-interactively** — `-approve interactive|policy|never` decides a
+- **`-task -`** reads the task from stdin: `cat issue.md | agent -task -`.
+- **`-review` non-interactively**: `-approve interactive|policy|never` decides a
   gated `run` (policy = auto-allow the safe allowlist, block the rest), and
   `-review-action prompt|commit|discard|keep` decides the diff at the end.
   Interactive prompts use `/dev/tty`, so they coexist with `-task -` and never
@@ -98,7 +103,7 @@ agent -format=ndjson -task "run the tests, report failures" | jq -c 'select(.typ
 agent -review -approve=policy -review-action=keep -task "fix the failing test"
 ```
 
-Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored — delete to
+Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored; delete to
 reset) and reuses `OPENROUTER_API_KEY`. It is best-effort: with no key the agent
 runs statelessly. Each mneme call is bounded by a 30s timeout.
 
@@ -107,7 +112,7 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
 - **Self-correcting, but only where re-observed.** The agent runs mneme in its
   `Consolidate` strategy: each store reconciles the new facts against existing
   ones (ADD / UPDATE / DELETE), so a changed fact about a mutable repo *replaces*
-  the stale one instead of piling up beside it — bump the Go version and a later
+  the stale one instead of piling up beside it. Bump the Go version and a later
   grounded run overwrites the old value. The catch: reconciliation only touches
   facts a run actually re-observes, so a fact no run has revisited can still be
   stale. Recalled facts stay labelled possibly-stale in the prompt so the model
@@ -120,22 +125,22 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
   is not written back.
 - **The embedding model is pinned to the store.** Stored vectors and query
   vectors must come from the same model. Changing `MNEME_EMBED_MODEL` after facts
-  exist silently degrades search (no error) — delete `.agent-memory.db` first.
+  exist silently degrades search (no error), so delete `.agent-memory.db` first.
 - **Storing is on the happy path.** After the answer prints, the store does a
   synchronous extraction + embedding call before the run returns, so you see the
   answer and then wait briefly.
 
 ## Running untrusted code (sandbox backends)
 
-Every effect the agent causes — running a command, reading/writing a file — flows
-through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`). The backend, not the
-tool, decides how strongly that boundary isolates:
+Every effect the agent causes (running a command, reading or writing a file)
+flows through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`). The
+backend, not the tool, decides how strongly that boundary isolates:
 
 | `-sandbox` / `-runtime` | isolation | use for |
 |---|---|---|
-| `local` *(default)* | none — host subprocess + path fence | code **we** wrote and trust |
-| `docker` / `runc` | process — container, shared host kernel | isolated-but-not-hostile |
-| `docker` / `runsc` | kernel — gVisor userspace kernel | **arbitrary, model-authored code** |
+| `local` *(default)* | none: host subprocess + path fence | code **we** wrote and trust |
+| `docker` / `runc` | process: container, shared host kernel | isolated-but-not-hostile |
+| `docker` / `runsc` | kernel: gVisor userspace kernel | **arbitrary, model-authored code** |
 
 ```sh
 # Run the agent's `run`/`search` commands inside a locked-down container
@@ -143,7 +148,7 @@ tool, decides how strongly that boundary isolates:
 go run ./cmd/agent -sandbox=docker -task "..."
 
 # Treat the task's code as HOSTILE: require gVisor and refuse to start on
-# anything weaker. Fails closed — `-untrusted` without `-runtime=runsc` will not
+# anything weaker. Fails closed: `-untrusted` without `-runtime=runsc` will not
 # run a single command:
 go run ./cmd/agent -sandbox=docker -runtime=runsc -untrusted -task "..."
 ```
@@ -160,15 +165,15 @@ Notes:
 - **Network is off by default** (`--network none`) so untrusted code can't
   exfiltrate. Pass `-network` to allow egress (e.g. a trusted dep-fetch). With the
   network off, in-container `go build`/`go test` resolve modules only from a
-  read-only host `GOMODCACHE` mount — exposed via the library `docker.Options`
+  read-only host `GOMODCACHE` mount, exposed via the library `docker.Options`
   (`ExtraMounts`), which the integration tests exercise.
 - **The workspace is the only writable mount.** For a genuinely untrusted task,
-  point the sandbox at a *throwaway copy*, not your live checkout — the backend
+  point the sandbox at a *throwaway copy*, not your live checkout. The backend
   takes a `dir`; the trust decision is the caller's.
 - **The fence is symlink-safe.** A symlink planted inside the workspace by
   in-container code can't redirect a host-side read/write off-root (the
   confused-deputy guard in `sandbox/local`).
-- `issue-bot` and the `eval` harness stay on `local` (trusted fixtures) — they
+- `issue-bot` and the `eval` harness stay on `local` (trusted fixtures); they
   don't pay container startup cost.
 
 ## Status
@@ -176,24 +181,24 @@ Notes:
 The original library build order (DESIGN.md, decision 11) is **complete**: core
 types + registry, the `openaicompat` adapter (chat + `iter.Seq2` streaming), the
 native `anthropic` adapter, self-contained dual-schema tools, the `Runner`
-tool-exec loop, and the comparison/fan-in harness — all end-to-end tested.
+tool-exec loop, and the comparison/fan-in harness. All are end-to-end tested.
 
 On top of that foundation the project has grown into an agent-harness research
 platform:
 
-- **Agent loop** (`cmd/agent`) — think→act→observe over the sandbox tools, with
+- **Agent loop** (`cmd/agent`): think→act→observe over the sandbox tools, with
   cross-run memory ([mneme](https://github.com/AccursedGalaxy/mneme)),
   reasoning-trace round-tripping, per-turn timing, and stuck-detection backed by
   a build-diagnostics feed (see `docs/specs/CODE-INTELLIGENCE.md`).
-- **Sandbox** (`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`) — one effect boundary, three isolation
-  tiers (local / docker-runc / docker-gVisor), plus a long-lived process host and
-  stateful shell sessions.
-- **Eval harness** (`eval/`) — multiple suites including a dogfood corpus
+- **Sandbox** (`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`): one effect
+  boundary, three isolation tiers (local / docker-runc / docker-gVisor), plus a
+  long-lived process host and stateful shell sessions.
+- **Eval harness** (`eval/`): multiple suites including a dogfood corpus
   regression scored against real human verdicts (see `docs/findings/DOGFOOD.md`).
-- **Council** (`docs/specs/COUNCIL.md`) — adversarial multi-model review (author ↔ critic ↔
-  referee) plus a structured consult/Q&A mode; every run recorded as dogfood
-  corpus.
-- **Dogfood integrations** — `cmd/commit-msg` (commit-message generator) and
+- **Council** (`docs/specs/COUNCIL.md`): adversarial multi-model review (author ↔
+  critic ↔ referee) plus a structured consult/Q&A mode; every run recorded as
+  dogfood corpus.
+- **Dogfood integrations**: `cmd/commit-msg` (commit-message generator) and
   `cmd/issue-bot`.
 
 The open research backlog lives in `HARD-PROBLEMS.md`.
@@ -208,7 +213,7 @@ go run ./experiments/cmd/playground   # live round-trip (needs keys in .env)
 ## Status & stability
 
 This is a **v0.1.0 beta** and a personal research platform. The `v0.x` version
-line means the API and CLI surface are still moving — expect breaking changes
+line means the API and CLI surface are still moving, so expect breaking changes
 between minor versions until v1. It's shared because the pieces are genuinely
 useful and the research process is out in the open; it is not (yet) a hardened
 product with compatibility guarantees.
