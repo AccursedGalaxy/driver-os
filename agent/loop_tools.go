@@ -631,6 +631,14 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			if tr.observeAction(i, c.Name) {
 				editedThisTurn = true
 			}
+			// Build the observation-repeat fingerprint from the RAW tool output only.
+			// Hints/nudges are still appended to what the model reads below, but they
+			// must never perturb the hard repeat detector's key: escalating hints differ
+			// at counts 3/4/5, and baking them in would reset the counter before the
+			// count-6 KilledRepeat backstop can fire.
+			rawObs := obs
+			turnObservationFPs = append(turnObservationFPs, c.Name+" "+signatureArg(c, cfg.Tools)+"\nOBSERVATION:\n"+rawObs)
+
 			// (P3) Churn nudge. Skipped on a kill turn (we're terminating anyway).
 			if !kill && tr.churnNudge() {
 				obs += churnNudge
@@ -642,7 +650,6 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				obs += greenRepeatNudgeText
 			}
 
-			turnObservationFPs = append(turnObservationFPs, c.Name+" "+signatureArg(c, cfg.Tools)+"\nOBSERVATION:\n"+obs)
 			step.Grounded = grounded
 			step.Observation = obs
 			res.Steps = append(res.Steps, step)
@@ -675,6 +682,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Outcome = KilledRepeat
 			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, count)
 			return gs.upgradeIfVerified(ctx, res), nil
+		} else if msg := escalatingRepeatNudge(count); msg != "" {
+			messages = append(messages, llm.User(msg))
 		}
 
 		// (code-intel slice 1) Diagnostics feed (shared tracker), once per turn

@@ -1661,3 +1661,146 @@ func TestCacheStats(t *testing.T) {
 		t.Errorf("empty stats hitPct = %f, want 0", cs2.hitPct())
 	}
 }
+
+func stableRunTools(sb sandbox.Sandbox, obs string) map[string]Tool {
+	tools := DefaultTools(sb, 0)
+	run := tools["run"]
+	run.Run = func(context.Context, string) (string, error) { return obs, nil }
+	run.RunJSON = func(context.Context, json.RawMessage) (string, error) { return obs, nil }
+	tools["run"] = run
+	return tools
+}
+
+func repeatedStableRunTurns(n int) [][]llm.ContentPart {
+	turns := make([][]llm.ContentPart, 0, n)
+	for i := 0; i < n; i++ {
+		turns = append(turns, []llm.ContentPart{
+			llm.ReasoningPart{Raw: json.RawMessage(fmt.Sprintf(`[{"data":"r%d"}]`, i))},
+			structuredCall(fmt.Sprintf("r%d", i), "run", map[string]any{"command": "go test ./..."}),
+		})
+	}
+	return turns
+}
+
+func requestTextContains(req llm.Request, needle string) bool {
+	for _, m := range req.Messages {
+		if strings.Contains(m.Text(), needle) {
+			return true
+		}
+		for _, p := range m.Parts {
+			if tr, ok := p.(llm.ToolResultPart); ok && strings.Contains(tr.Content, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scriptSawMessage(ns *nativeScript, needle string) bool {
+	for _, req := range ns.calls {
+		if requestTextContains(req, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRunNativeGreenNudgeDoesNotPerturbObservationRepeatCount(t *testing.T) {
+	// On the third identical green run, greenRepeatNudgeText is appended to the
+	// tool result the model reads. The observation-repeat counter must still see
+	// the raw observation as its third recurrence and inject the count-3 nudge.
+	turns := repeatedStableRunTurns(3)
+	turns = append(turns, []llm.ContentPart{llm.Text("banked after the nudge")})
+	sb := sbWith(t, nil)
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered", res.Outcome, res.Reason)
+	}
+	finalReq := ns.calls[len(ns.calls)-1]
+	if !requestTextContains(finalReq, "same command has now passed 3 times") {
+		t.Fatal("final request missing green-repeat nudge")
+	}
+	if !requestTextContains(finalReq, escalatingRepeatNudge(3)) {
+		t.Fatal("final request missing count-3 escalating repeat nudge; green nudge may have polluted the repeat fingerprint")
+	}
+}
+
+func TestRunNativeChurnNudgeDoesNotPerturbObservationRepeatCount(t *testing.T) {
+	// Same invariant for churn: the third identical edit_file error trips the churn
+	// hint, but the repeat detector still counts the raw edit observation as #3.
+	call := structuredCall("e", "edit_file", map[string]any{"path": "f.txt", "old": "missing", "new": "x"})
+	turns := [][]llm.ContentPart{
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"a"}]`)}, call},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"b"}]`)}, call},
+		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"c"}]`)}, call},
+		{llm.Text("banked after churn nudge")},
+	}
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "a\n"}), Task: "t",
+		MaxIterations: 20, ChurnNudgeRuns: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered", res.Outcome, res.Reason)
+	}
+	finalReq := ns.calls[len(ns.calls)-1]
+	if !requestTextContains(finalReq, "rewrite the whole file") {
+		t.Fatal("final request missing churn nudge")
+	}
+	if !requestTextContains(finalReq, escalatingRepeatNudge(3)) {
+		t.Fatal("final request missing count-3 escalating repeat nudge; churn nudge may have polluted the repeat fingerprint")
+	}
+}
+
+func TestRunNativeEscalatingRepeatNudgesLetModelBankBeforeKill(t *testing.T) {
+	turns := repeatedStableRunTurns(5)
+	turns = append(turns, []llm.ContentPart{llm.Text("final: tests are green and the patch is banked")})
+	sb := sbWith(t, nil)
+	ns := &nativeScript{turns: turns}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("Outcome = %q (%s), want Answered before KilledRepeat", res.Outcome, res.Reason)
+	}
+	finalReq := ns.calls[len(ns.calls)-1]
+	for _, count := range []int{3, 4, 5} {
+		if !requestTextContains(finalReq, escalatingRepeatNudge(count)) {
+			t.Fatalf("final request missing escalating repeat nudge for count %d", count)
+		}
+	}
+}
+
+func TestRunNativeEscalatingRepeatNudgesIgnoredStillKillAtSix(t *testing.T) {
+	sb := sbWith(t, nil)
+	ns := &nativeScript{turns: repeatedStableRunTurns(6)}
+	res, err := RunNative(context.Background(), Config{
+		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != KilledRepeat {
+		t.Fatalf("Outcome = %q (%s), want KilledRepeat at the raw observation-repeat ceiling", res.Outcome, res.Reason)
+	}
+	if res.Iterations != 6 {
+		t.Fatalf("Iterations = %d, want 6 identical observed turns before kill", res.Iterations)
+	}
+	for _, count := range []int{3, 4, 5} {
+		if !scriptSawMessage(ns, escalatingRepeatNudge(count)) {
+			t.Fatalf("script never saw escalating repeat nudge for count %d", count)
+		}
+	}
+}

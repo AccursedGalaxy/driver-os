@@ -325,6 +325,11 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 		}
 
+		// The observation-repeat detector keys on RAW external state, not on the
+		// hints we may append below. If count-varying nudges were included here, the
+		// counter would reset before the count-6 KilledRepeat safety stop could fire.
+		rawObservationFP := verb + " " + arg + "\nOBSERVATION:\n" + observation
+
 		// (P3) Churn nudge, appended to whatever the current observation is so the
 		// model reads it next turn.
 		if tr.churnNudge() {
@@ -346,17 +351,20 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 
 		// Observation-repeat hard stop: if the SAME tool call keeps producing the
-		// SAME observation, reasoning-token churn is not progress. This runs after
-		// observation augmentation so it keys on exactly what the next turn would read;
+		// SAME raw observation, reasoning-token churn is not progress. Hints appended
+		// above are deliberately excluded so escalation cannot mask the count-6 kill;
 		// the action-only detector above still owns the earlier no-reasoning kill and
 		// its message shape.
-		if kill, count := tr.observeToolObservation(verb + " " + arg + "\nOBSERVATION:\n" + observation); kill {
+		repeatNudge := ""
+		if kill, count := tr.observeToolObservation(rawObservationFP); kill {
 			res.Outcome = KilledRepeat
 			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", verb+" "+arg, count)
 			step.Observation = observation
 			res.Steps = append(res.Steps, step)
 			cfg.Obs.Observation(observation)
 			return gs.upgradeIfVerified(ctx, res), nil
+		} else {
+			repeatNudge = escalatingRepeatNudge(count)
 		}
 
 		// Record the step with the FINAL observation — after every augmentation —
@@ -369,6 +377,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// the model sees (P2, P4). It is REAL external state, our anchor.
 		cfg.Obs.Observation(observation)
 		messages = append(messages, llm.User("OBSERVATION:\n"+observation))
+		if repeatNudge != "" {
+			messages = append(messages, llm.User(repeatNudge))
+		}
 	}
 
 	// ---- Principle 5: if we fall out of the loop, WE stop it. Never trust the model to. ----
@@ -396,6 +407,19 @@ const churnNudge = "\n\n[hint: the tests have failed several times. If you've be
 // two-threshold detector).
 const greenRepeatNudgeText = "\n\n[harness: the same command has now passed 3 times with no file changes in between — " +
 	"re-running it gains nothing; either finish (answer) or take a genuinely new action.]"
+
+func escalatingRepeatNudge(count int) string {
+	switch count {
+	case 3:
+		return "[harness: you have produced the identical tool result 3 times. If you are just confirming a green state, stop and either finish or take a genuinely different action.]"
+	case 4:
+		return "[harness: this is now 4 identical tool-result turns; repeating it again will not change the outcome. Finish if the work is done, or take a genuinely different action.]"
+	case 5:
+		return "[harness: this is the 5th identical tool-result turn; the next identical turn ENDS the run. Write your FINAL answer / bank your patch NOW.]"
+	default:
+		return ""
+	}
+}
 
 // finishNudgeText / finishNudgeNative are HP-4's one-time near-cap finisher hint
 // (see Config.FinishNudgeWindow): injected once a session is within the window of the

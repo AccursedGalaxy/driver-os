@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -44,10 +45,10 @@ func TestGreenRepeatNudgeResetsOnMutation(t *testing.T) {
 	green := "exit 0 (5ms)\nstdout:\nok"
 
 	// Two greens, then a mutating action, then a third green.
-	tr.observeRun(green) // count=1
-	tr.observeRun(green) // count=2
+	tr.observeRun(green)              // count=1
+	tr.observeRun(green)              // count=2
 	tr.observeAction(1, "write_file") // mutation resets -> 0
-	tr.observeRun(green) // count=1 (restarted)
+	tr.observeRun(green)              // count=1 (restarted)
 	if tr.greenRepeat != 1 {
 		t.Fatalf("greenRepeat = %d, want 1 after mutation reset", tr.greenRepeat)
 	}
@@ -157,5 +158,59 @@ func TestGreenRepeatNudgeDoesNotInterfereWithStagnant(t *testing.T) {
 	}
 	if tr.stagnant != 1 {
 		t.Errorf("stagnant = %d, want 1", tr.stagnant)
+	}
+}
+func TestEscalatingRepeatNudgeText(t *testing.T) {
+	got := map[int]string{}
+	for _, count := range []int{0, 1, 2, 3, 4, 5, 6, 7} {
+		got[count] = escalatingRepeatNudge(count)
+	}
+	for _, count := range []int{0, 1, 2, 6, 7} {
+		if got[count] != "" {
+			t.Errorf("escalatingRepeatNudge(%d) = %q, want empty", count, got[count])
+		}
+	}
+	checks := map[int][]string{
+		3: {"[harness:", "identical", "3", "finish", "genuinely different action"},
+		4: {"[harness:", "4 identical", "will not change the outcome"},
+		5: {"[harness:", "5th identical", "next identical turn ENDS the run", "FINAL answer", "NOW"},
+	}
+	for count, wants := range checks {
+		if got[count] == "" {
+			t.Fatalf("escalatingRepeatNudge(%d) returned empty", count)
+		}
+		for _, want := range wants {
+			if !strings.Contains(got[count], want) {
+				t.Errorf("escalatingRepeatNudge(%d) = %q, missing %q", count, got[count], want)
+			}
+		}
+	}
+	if got[3] == got[4] || got[4] == got[5] || got[3] == got[5] {
+		t.Fatalf("nudges at 3/4/5 must be distinct: %#v", got)
+	}
+}
+
+func TestToolObservationRepeatCountIgnoresDecoratingNudges(t *testing.T) {
+	tr := newTurnTracker(Config{}, 20)
+	raw := "run {\"command\":\"go test ./...\"}\nOBSERVATION:\nexit 0 (1ms)\nstdout:\nok"
+	decorated := raw + churnNudge + greenRepeatNudgeText + escalatingRepeatNudge(3)
+	for want := 1; want <= 3; want++ {
+		kill, got := tr.observeToolObservation(raw)
+		if kill {
+			t.Fatalf("observeToolObservation killed at count %d", got)
+		}
+		if got != want {
+			t.Fatalf("raw repeat count = %d, want %d", got, want)
+		}
+	}
+	if decorated == raw {
+		t.Fatal("test setup failed: decorated fingerprint did not change")
+	}
+	// The loop must feed observeToolObservation the same raw string even on turns
+	// where churn/green/escalating nudges are sent to the model. If it fed the
+	// decorated observation instead, this next call would reset the counter to 1.
+	_, got := tr.observeToolObservation(raw)
+	if got != 4 {
+		t.Fatalf("repeat count after a decorated model observation = %d, want 4 (fingerprint stayed raw)", got)
 	}
 }
