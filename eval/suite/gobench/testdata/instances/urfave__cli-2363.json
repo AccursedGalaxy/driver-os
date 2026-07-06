@@ -1,0 +1,70 @@
+{
+  "schema_version": "gobench.instance.v1",
+  "instance_id": "urfave__cli-2363",
+  "repo": "urfave/cli",
+  "repo_id": 0,
+  "pr_number": 2363,
+  "issue_url": "",
+  "base_commit": "2c38e7b6c7e3b25df239997b37111e639cb26b0f",
+  "gold_commit": "183b3a2c640e0f3b4e9a084b65f1cea9acd79fb1",
+  "merge_method": "",
+  "go_version": "",
+  "module_path": "",
+  "module_dir": ".",
+  "problem_statement": "This is the urfave/cli repository (Go, v3 — the module root package `cli`). There\nis a logic bug to fix in the command lifecycle hooks.\n\nBug: there is an imbalance between the `Before` and `After` hooks when help is\nshown. When `--help` is passed to a subcommand (e.g. running `app sub --help`),\nthe parent command's `After` hook still fires — even though the parent's `Before`\nhook was never called. Displaying help causes an early exit that skips `Before`,\nbut the `After` hook (registered earlier as a deferred call) still runs.\n\nThe invariant that must hold: a command's `After` hook runs only if its `Before`\nhook also ran. In other words, `After` must NOT be called when the command exits\nearly just to display help. This must hold both when `--help` is parsed normally\nand when a parse error results in help being shown.\n\nNormal subcommand execution (e.g. `app sub` without `--help`) must still call\n`After` exactly as it does today. Do not change the public API.\n\nLocate the relevant code, implement the fix, and make sure `go build ./...` and\n`go test .` still pass. Do not weaken or delete existing tests.\n",
+  "hints_text": "",
+  "oracle_files": [
+    "command_test.go"
+  ],
+  "FAIL_TO_PASS": [
+    {
+      "package": ".",
+      "name": "TestCommand_AfterNotCalledOnSubcommandHelp",
+      "run_regex": "^TestCommand_AfterNotCalledOnSubcommandHelp$"
+    },
+    {
+      "package": ".",
+      "name": "TestCommand_AfterStillCalledOnNormalSubcommand",
+      "run_regex": "^TestCommand_AfterStillCalledOnNormalSubcommand$"
+    }
+  ],
+  "PASS_TO_PASS": {
+    "packages": [
+      "."
+    ]
+  },
+  "exec": {
+    "cwd": ".",
+    "argv": [
+      "go",
+      "test"
+    ]
+  },
+  "test_timeout": "10m",
+  "validation": {
+    "red_at_base_runs": null,
+    "gold_green_runs": null,
+    "flake_runs": 0,
+    "created_at": "",
+    "leak_screen": {
+      "method": "",
+      "ngram_size": 0,
+      "tokenization": "",
+      "passed": false,
+      "score": 0,
+      "threshold": 0,
+      "diff_range": "",
+      "statement_hash": "",
+      "gold_diff_hash": "",
+      "tool_version": "",
+      "screened_at": ""
+    },
+    "validator_version": ""
+  },
+  "mined_by": "hand-built-migration/0.1.0",
+  "validated_at": "",
+  "license_note": "",
+  "aliases": [
+    "urfave-2363"
+  ]
+}

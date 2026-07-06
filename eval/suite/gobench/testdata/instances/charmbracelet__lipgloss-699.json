@@ -1,0 +1,65 @@
+{
+  "schema_version": "gobench.instance.v1",
+  "instance_id": "charmbracelet__lipgloss-699",
+  "repo": "charmbracelet/lipgloss",
+  "repo_id": 0,
+  "pr_number": 699,
+  "issue_url": "",
+  "base_commit": "40ec0e6f53f006e98e24e69e28b529889aa57c88",
+  "gold_commit": "b00306c8392bdb3d00a618cb7fbe0350221ef0da",
+  "merge_method": "",
+  "go_version": "",
+  "module_path": "",
+  "module_dir": ".",
+  "problem_statement": "This is the charmbracelet/lipgloss repository (Go). There is a crash bug to fix.\n\nBug: the `WrapWriter` type panics with a nil pointer dereference if it is written\nto AFTER it has been closed. Closing a `WrapWriter` releases its internal ANSI\nparser (it is returned to a sync.Pool and the reference is cleared), but a\nsubsequent call to its `Write` method still uses that parser, causing a panic.\n\nThis shows up in real usage when nested writer chains tear down out of order:\nclosing an outer writer can flush a trailing style/link reset back through a\nwriter that was already closed, crashing the program.\n\nExpected behavior: writing to a `WrapWriter` after it has been closed must NOT\npanic. Writes before close must behave exactly as they do today, and the public\nAPI must not change. Keep the fix minimal and idiomatic.\n\nLocate the relevant code, implement the fix, and make sure `go build ./...` and\n`go test .` still pass. Do not weaken or delete existing tests.\n",
+  "hints_text": "",
+  "oracle_files": [
+    "wrap_test.go"
+  ],
+  "FAIL_TO_PASS": [
+    {
+      "package": ".",
+      "name": "TestWrapWriterWriteAfterClose",
+      "run_regex": "^TestWrapWriterWriteAfterClose$"
+    }
+  ],
+  "PASS_TO_PASS": {
+    "packages": [
+      "."
+    ]
+  },
+  "exec": {
+    "cwd": ".",
+    "argv": [
+      "go",
+      "test"
+    ]
+  },
+  "test_timeout": "10m",
+  "validation": {
+    "red_at_base_runs": null,
+    "gold_green_runs": null,
+    "flake_runs": 0,
+    "created_at": "",
+    "leak_screen": {
+      "method": "",
+      "ngram_size": 0,
+      "tokenization": "",
+      "passed": false,
+      "score": 0,
+      "threshold": 0,
+      "diff_range": "",
+      "statement_hash": "",
+      "gold_diff_hash": "",
+      "tool_version": "",
+      "screened_at": ""
+    },
+    "validator_version": ""
+  },
+  "mined_by": "hand-built-migration/0.1.0",
+  "validated_at": "",
+  "license_note": "",
+  "aliases": [
+    "lipgloss-699"
+  ]
+}

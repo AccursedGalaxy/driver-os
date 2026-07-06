@@ -1,0 +1,65 @@
+{
+  "schema_version": "gobench.instance.v1",
+  "instance_id": "dolthub__dolt-11215",
+  "repo": "dolthub/dolt",
+  "repo_id": 0,
+  "pr_number": 11215,
+  "issue_url": "",
+  "base_commit": "a16fe3baf64ba4684fed94b2fa194f1633f334b3",
+  "gold_commit": "",
+  "merge_method": "",
+  "go_version": "",
+  "module_path": "",
+  "module_dir": "go",
+  "problem_statement": "This is the dolthub/dolt repository (Go; the module lives under the `go/`\ndirectory, so build and test from there).\n\nBug: inserting large JSON values (roughly larger than ~4KB) that contain certain\nbackslash `\\u` escape sequences corrupts the stored value — the tail of the JSON\ngets mangled, and in some cases the value is silently stored as NULL. Smaller\nvalues, or large values without those escapes, round-trip fine.\n\nThe corruption is in the code path that unescapes / compacts JSON string content\nin place while building large blob values (the prolly-tree blob builder). Certain\n`\\uXXXX` escape sequences are mishandled, and a truncated escape at the very end\nof the buffer is not guarded.\n\nDiagnose and fix the in-place unescape logic so that large JSON values containing\nany `\\uXXXX` escape sequences round-trip correctly, and a truncated escape at the\nend of the buffer cannot cause an out-of-bounds read. Do not change unrelated\nbehavior.\n\nBuild and test the affected package (from `go/`:\n`go build ./store/prolly/tree/... \u0026\u0026 go test ./store/prolly/tree/`). Do not\nweaken or delete existing tests.\n",
+  "hints_text": "",
+  "oracle_files": [
+    "go/store/prolly/tree/blob_builder_unescape_test.go"
+  ],
+  "FAIL_TO_PASS": [
+    {
+      "package": "./store/prolly/tree",
+      "name": "TestUnescapeHTMLCodepoints",
+      "run_regex": "^TestUnescapeHTMLCodepoints$"
+    }
+  ],
+  "PASS_TO_PASS": {
+    "packages": [
+      "./store/prolly/tree"
+    ]
+  },
+  "exec": {
+    "cwd": "go",
+    "argv": [
+      "go",
+      "test"
+    ]
+  },
+  "test_timeout": "10m",
+  "validation": {
+    "red_at_base_runs": null,
+    "gold_green_runs": null,
+    "flake_runs": 0,
+    "created_at": "",
+    "leak_screen": {
+      "method": "",
+      "ngram_size": 0,
+      "tokenization": "",
+      "passed": false,
+      "score": 0,
+      "threshold": 0,
+      "diff_range": "",
+      "statement_hash": "",
+      "gold_diff_hash": "",
+      "tool_version": "",
+      "screened_at": ""
+    },
+    "validator_version": ""
+  },
+  "mined_by": "hand-built-migration/0.1.0",
+  "validated_at": "",
+  "license_note": "",
+  "aliases": [
+    "dolt-11215"
+  ]
+}

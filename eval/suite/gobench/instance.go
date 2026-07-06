@@ -132,6 +132,65 @@ func LoadInstance(path string) (Instance, error) {
 	return inst, nil
 }
 
+// Validate enforces structural v1 constraints. A stricter release-readiness
+// check (requiring gold_commit and full validation) is deferred to the Phase 3 validator.
+func (i Instance) Validate() error {
+	if i.InstanceID == "" {
+		return fmt.Errorf("instance_id is empty")
+	}
+	if schemaMajor(i.SchemaVersion) != "v1" {
+		return fmt.Errorf("%s: schema_version must be v1, got %q", i.InstanceID, i.SchemaVersion)
+	}
+	if i.Repo == "" {
+		return fmt.Errorf("%s: repo is empty", i.InstanceID)
+	}
+	if i.BaseCommit == "" {
+		return fmt.Errorf("%s: base_commit is empty", i.InstanceID)
+	}
+	if len(i.FailToPass) == 0 {
+		return fmt.Errorf("%s: FAIL_TO_PASS is empty", i.InstanceID)
+	}
+	for _, ot := range i.FailToPass {
+		if ot.Package == "" {
+			return fmt.Errorf("%s: FAIL_TO_PASS entry has empty package", i.InstanceID)
+		}
+		if ot.Name == "" {
+			return fmt.Errorf("%s: FAIL_TO_PASS entry has empty name", i.InstanceID)
+		}
+		if !strings.HasPrefix(ot.RunRegex, "^") || !strings.HasSuffix(ot.RunRegex, "$") {
+			return fmt.Errorf("%s: FAIL_TO_PASS entry run_regex %q must start with ^ and end with $", i.InstanceID, ot.RunRegex)
+		}
+	}
+	for _, p := range i.PassToPass.Packages {
+		if p == "" {
+			return fmt.Errorf("%s: PASS_TO_PASS entry is empty", i.InstanceID)
+		}
+	}
+	if len(i.Exec.Argv) == 0 {
+		return fmt.Errorf("%s: exec.argv is empty", i.InstanceID)
+	}
+	for _, arg := range i.Exec.Argv {
+		if arg == "-run" || strings.HasPrefix(arg, "-run=") {
+			return fmt.Errorf("%s: exec.argv contains forbidden -run", i.InstanceID)
+		}
+		if arg == "-tags" || strings.HasPrefix(arg, "-tags=") {
+			return fmt.Errorf("%s: exec.argv contains forbidden -tags", i.InstanceID)
+		}
+		if strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "/") || strings.Contains(arg, "/") {
+			return fmt.Errorf("%s: exec.argv contains forbidden package pattern %q", i.InstanceID, arg)
+		}
+	}
+	if i.Validation.FlakeRuns > 0 {
+		if len(i.Validation.RedAtBaseRuns) != i.Validation.FlakeRuns {
+			return fmt.Errorf("%s: validation.red_at_base_runs length %d != flake_runs %d", i.InstanceID, len(i.Validation.RedAtBaseRuns), i.Validation.FlakeRuns)
+		}
+		if len(i.Validation.GoldGreenRuns) != i.Validation.FlakeRuns {
+			return fmt.Errorf("%s: validation.gold_green_runs length %d != flake_runs %d", i.InstanceID, len(i.Validation.GoldGreenRuns), i.Validation.FlakeRuns)
+		}
+	}
+	return nil
+}
+
 func schemaMajor(v string) string {
 	parts := strings.Split(v, ".")
 	if len(parts) == 0 {

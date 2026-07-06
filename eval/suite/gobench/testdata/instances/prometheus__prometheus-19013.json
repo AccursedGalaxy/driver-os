@@ -1,0 +1,66 @@
+{
+  "schema_version": "gobench.instance.v1",
+  "instance_id": "prometheus__prometheus-19013",
+  "repo": "prometheus/prometheus",
+  "repo_id": 0,
+  "pr_number": 19013,
+  "issue_url": "",
+  "base_commit": "722334c6cd169d76d785a1bba05712bcf1cbb3de",
+  "gold_commit": "",
+  "merge_method": "",
+  "go_version": "",
+  "module_path": "",
+  "module_dir": ".",
+  "problem_statement": "This is the prometheus/prometheus repository (Go). There is a bug in the TSDB\n(the `tsdb` package) that blocks head truncation.\n\nBug: when there is a steady rate of queries that overlap the head-truncation\nrange AND also touch out-of-order (OOO) data, head truncation gets blocked for a\nlong time (hours). As a result, series and chunks accumulate in the head and\nmemory grows unbounded.\n\nImportant clue: plain in-order queries that overlap the truncation range do NOT\ncause this — they were already made to stop pinning the head across a truncation.\nOnly queries that ALSO overlap OOO data still block truncation. So an\nOOO-overlapping query keeps the head pinned (via its isolation/read registration)\nwhen the equivalent in-order query would not.\n\nDiagnose why queries that overlap OOO data keep blocking head truncation when\nin-order queries do not, and fix it so an OOO-overlapping query blocks truncation\nno longer than the equivalent in-order query does.\n\n`go build ./tsdb/...` must pass. Do not weaken or delete existing tests.\n",
+  "hints_text": "",
+  "oracle_files": [
+    "tsdb/head_test.go",
+    "tsdb/head_append_v2_test.go"
+  ],
+  "FAIL_TO_PASS": [
+    {
+      "package": "./tsdb",
+      "name": "TestQuerierDoesNotBlockHeadTruncation",
+      "run_regex": "^TestQuerierDoesNotBlockHeadTruncation$"
+    }
+  ],
+  "PASS_TO_PASS": {
+    "packages": [
+      "./tsdb"
+    ]
+  },
+  "exec": {
+    "cwd": ".",
+    "argv": [
+      "go",
+      "test"
+    ]
+  },
+  "test_timeout": "10m",
+  "validation": {
+    "red_at_base_runs": null,
+    "gold_green_runs": null,
+    "flake_runs": 0,
+    "created_at": "",
+    "leak_screen": {
+      "method": "",
+      "ngram_size": 0,
+      "tokenization": "",
+      "passed": false,
+      "score": 0,
+      "threshold": 0,
+      "diff_range": "",
+      "statement_hash": "",
+      "gold_diff_hash": "",
+      "tool_version": "",
+      "screened_at": ""
+    },
+    "validator_version": ""
+  },
+  "mined_by": "hand-built-migration/0.1.0",
+  "validated_at": "",
+  "license_note": "",
+  "aliases": [
+    "prom-19013"
+  ]
+}
