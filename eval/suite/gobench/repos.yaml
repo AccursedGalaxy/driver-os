@@ -1,0 +1,697 @@
+# GoBench source-repo pool (R0.2, GOBENCH.md)
+# =============================================================================
+# WHAT THIS IS
+#   A curated pool of Go source repositories from which the GoBench miner
+#   (Phase 2) draws candidate benchmark instances. Each entry is a repo we have
+#   vetted against the R0.2 selection criteria; the miner crawls merged PRs with
+#   linked issues, and the auto-validator (Phase 3) decides which survive.
+#
+# SELECTION CRITERIA (R0.2)
+#   - active: regular merged PRs with linked issues (checked pushed_at 2026-07);
+#   - pure Go or Go-dominant, NO cgo-heavy core (cgo:true entries excluded from
+#     the default mining pool; cgo:partial kept but must avoid cgo packages);
+#   - standard `go test` runnable (testify OK — see the testify trap below);
+#   - non-trivial (real bugs, not typo farms);
+#   - permissive-or-copyleft license that allows REFERENCING commits;
+#   - builds hermetically with a modern Go toolchain (go.mod-pinned);
+#   - full/relevant test suite runnable in <10 min on a single machine (per-repo
+#     we mine PACKAGE-scoped test sets, not repo-wide, so a slow monorepo can
+#     still yield fast instances — typical_ci_min is the repo-wide figure and is
+#     an upper bound, not the per-instance grade cost).
+#
+# DISTRIBUTION MODEL (R0.4, SWE-bench-style — NOT code redistribution)
+#   GoBench ships METADATA + FETCH SCRIPTS, never copies of repo source. An
+#   instance record is: repo URL + base/gold commit SHAs + issue text + test
+#   names + validation metadata. The grader fetches upstream code at run time
+#   from the origin (git). Because we distribute only references and our own
+#   scripts, ANY license that permits referencing public commits is acceptable
+#   here — permissive (MIT/BSD/Apache), weak-copyleft, and strong-copyleft
+#   (GPL/AGPL) source repos are all fine for METADATA. The dataset itself is
+#   planned CC-BY-4.0 (R0.4). Issue-text redistribution is the one live legal
+#   question (GitHub ToS) tracked in R0.4 — not blocked per-repo here.
+#   NOTE: source-available / non-OSI licenses (BUSL-1.1, "Other/NOASSERTION"
+#   that resolves to BUSL) are EXCLUDED below out of caution — they restrict
+#   downstream use in ways we don't want to litigate for a public dataset,
+#   even though pure referencing is likely fine.
+#
+# THE testify TRAP (bake into the miner's F2P name derivation)
+#   With stretchr/testify suites, the runnable test is the top-level
+#   `func TestXxx(t)` that calls `suite.Run(t, &S{})`; individual `(s *S) TestM`
+#   methods are NOT independently addressable by `go test -run TestM`. To target
+#   one method you need `-run 'TestXxx/TestM'` (the suite func name is the
+#   REQUIRED prefix). A naive `-run Method` regex silently matches nothing and
+#   exits 0 = FALSE PASS. Any repo tagged `testify-suite` in notes needs the
+#   validator's "verify the named tests actually RAN" check (grader contract
+#   1.2, Phase 3 step 2) or it will mint false-green oracles. Plain
+#   `assert`/`require` (no suite.Run) does NOT have this problem — only the
+#   suite pattern does.
+#
+# FIELDS
+#   repo            owner/name
+#   license         SPDX id (verified via GitHub license API 2026-07-06)
+#   test_framework  stdlib | testify | testify-suite | other (+ notes)
+#   typical_ci_min  rough repo-wide test wall-clock estimate (single machine);
+#                   "unknown" where not measured. Per-instance grade cost is
+#                   package-scoped and usually far lower.
+#   cgo             false | true | partial
+#   status          proven | candidate | low-yield
+#   notes           traps, linked-issue discipline, expected yield, rationale
+#
+# See the REJECTED CANDIDATES block at the bottom for repos considered and
+# dropped, with reasons (this feeds the release's rejected-candidates log).
+# =============================================================================
+
+repos:
+  # --- PROVEN SEED SET (hand-built instances exist in
+  #     docs/findings/harness-bench/swe-instances/) --------------------------
+  - repo: open-policy-agent/opa
+    license: Apache-2.0
+    test_framework: testify        # mix of stdlib + testify assert/require
+    typical_ci_min: 8              # topdown/ast packages dominate; scoped mining fast
+    cgo: false
+    status: proven
+    notes: >
+      Proven (opa-8781). Policy engine, dense pure-Go logic, excellent
+      linked-issue discipline. High-signal real bugs in evaluation/parsing.
+      Some WASM build tags — miner must skip build-tag-only code paths.
+
+  - repo: dolthub/dolt
+    license: Apache-2.0
+    test_framework: testify        # + go-mysql-server enginetests
+    typical_ci_min: 40             # LARGE monorepo; mine package-scoped only
+    cgo: false
+    status: proven
+    notes: >
+      Proven (dolt-11215). SOURCE of the grader test-name-collision artifact
+      (HARNESS-VS-BIG3 gotcha #8) — the '*_test.go' reset in the grader is
+      MANDATORY here. go/ is the module root. Repo-wide tests are slow; mine
+      individual packages (libraries/doltcore/...). Bats/integration tests
+      excluded — Go unit packages only.
+
+  - repo: prometheus/prometheus
+    license: Apache-2.0
+    test_framework: testify
+    typical_ci_min: 20
+    cgo: false
+    status: proven
+    notes: >
+      Proven (prom-19013). Strong issue->PR linkage, real observability bugs
+      (tsdb, promql, scrape). Some tests use testify suite in tsdb — apply the
+      testify-suite -run prefix check there. go.mod pins a recent toolchain.
+
+  - repo: charmbracelet/lipgloss
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: proven
+    notes: >
+      Proven (lipgloss-699). Small, fast, pure-Go rendering lib. Lower absolute
+      PR volume than infra repos — expect modest but clean yield. Golden-file
+      style tests; watch for terminal-width/env-dependent assertions.
+
+  - repo: urfave/cli
+    license: MIT
+    test_framework: testify        # assert/require, no suite
+    typical_ci_min: 2
+    cgo: false
+    status: proven
+    notes: >
+      Proven (urfave-2363). CLI-parsing library, self-contained bugs, fast
+      tests. v2 and v3 maintained on separate branches/dirs — pin the module
+      path per instance (v3 is the active line).
+
+  # --- INFRASTRUCTURE / SERVERS (high PR volume, high yield expected) -------
+  - repo: caddyserver/caddy
+    license: Apache-2.0
+    test_framework: stdlib         # some testify
+    typical_ci_min: 6
+    cgo: false
+    status: candidate
+    notes: >
+      Web server, very active, good issue discipline. Mostly pure Go. Some
+      tests spin up listeners on ephemeral ports (may flake under parallelism)
+      — flake-quarantine (Phase 3 step 4) should catch these. Expect solid yield.
+
+  - repo: nats-io/nats-server
+    license: Apache-2.0
+    test_framework: stdlib
+    typical_ci_min: 25             # many tests bring up a server + cluster
+    cgo: false
+    status: candidate
+    notes: >
+      Messaging server. Real distributed-systems bugs but MANY tests are
+      timing/cluster-based and flaky — heavy flake-quarantine expected to prune.
+      Mine the pure-logic packages (server parsing, jetstream state) over the
+      cluster integration tests.
+
+  - repo: etcd-io/etcd
+    license: Apache-2.0
+    test_framework: testify + stdlib
+    typical_ci_min: 30             # integration suite is long; unit packages fast
+    cgo: false
+    status: candidate
+    notes: >
+      Distributed KV. Multi-module repo (server/, client/, pkg/, raft is now
+      separate). Pin module path carefully. Integration tests slow/flaky — mine
+      unit packages (raft log, mvcc, wal). Good real bugs, moderate yield after
+      flake pruning.
+
+  - repo: vitessio/vitess
+    license: Apache-2.0
+    test_framework: testify
+    typical_ci_min: 60             # HUGE; repo-wide untenable, package-scope only
+    cgo: false
+    status: low-yield
+    notes: >
+      Massive DB sharding system. Rich bugs but tests are heavy (many need a
+      MySQL instance / endtoend tags). Restrict mining to pure-Go unit packages
+      (go/vt/sqlparser, go/mysql protocol) that need no external DB. Expect low
+      yield-per-effort due to test env requirements; keep for the parser subset.
+
+  - repo: temporalio/temporal
+    license: MIT
+    test_framework: testify-suite  # heavy suite usage
+    typical_ci_min: 45
+    cgo: false
+    status: low-yield
+    notes: >
+      Workflow engine. HEAVY testify-suite usage -> the -run prefix trap is
+      acute here; validator MUST verify named tests ran. Many tests need a
+      persistence backend (functional tests) — mine the pure in-memory
+      packages only. Moderate-to-low yield after env filtering.
+
+  - repo: helm/helm
+    license: Apache-2.0
+    test_framework: stdlib + testify
+    typical_ci_min: 8
+    cgo: false
+    status: candidate
+    notes: >
+      Kubernetes package manager. Mostly pure Go, golden-file heavy (cmd/helm
+      testdata). Watch for golden files that must be regenerated — a fix may
+      touch testdata, which the miner should treat as a test change. Good yield.
+
+  - repo: grpc/grpc-go
+    license: Apache-2.0
+    test_framework: stdlib
+    typical_ci_min: 20             # many tests dial real localhost servers
+    cgo: false
+    status: candidate
+    notes: >
+      RPC framework. Real protocol bugs but lots of network/timing tests prone
+      to flake; heavy flake-quarantine. Mine transport/encoding/resolver unit
+      packages. Some testdata is generated protobuf — skip generated-file churn.
+
+  - repo: distribution/distribution
+    license: Apache-2.0
+    test_framework: stdlib + testify
+    typical_ci_min: 10
+    cgo: false
+    status: candidate
+    notes: >
+      OCI registry (the Docker registry). Pure Go, decent issue discipline.
+      Some storage-driver tests need S3/GCS creds — mine the reference/manifest/
+      inmemory packages. Moderate yield.
+
+  - repo: moby/buildkit
+    license: Apache-2.0
+    test_framework: stdlib + testify
+    typical_ci_min: 30
+    cgo: false
+    status: low-yield
+    notes: >
+      Build engine. Many integration tests require a running buildkitd daemon /
+      containers — NOT hermetic. Restrict to pure-Go unit packages (solver,
+      frontend/dockerfile parser). Human double-check on which packages are
+      daemon-free. Low yield; keep for the dockerfile-parser subset.
+
+  # --- WEB FRAMEWORKS / HTTP (self-contained, fast tests, good yield) -------
+  - repo: gin-gonic/gin
+    license: MIT
+    test_framework: testify        # assert/require, no suite
+    typical_ci_min: 2
+    cgo: false
+    status: candidate
+    notes: >
+      Popular HTTP framework. Fast self-contained tests, good real bugs
+      (routing, binding, render). High expected yield. httptest-based, hermetic.
+
+  - repo: labstack/echo
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 2
+    cgo: false
+    status: candidate
+    notes: >
+      HTTP framework, similar profile to gin. Fast hermetic tests. Good yield.
+
+  - repo: gofiber/fiber
+    license: MIT
+    test_framework: stdlib + testify
+    typical_ci_min: 3
+    cgo: false
+    status: candidate
+    notes: >
+      fasthttp-based framework. Very active. Fast tests. Uses its own require
+      helper in places — confirm F2P names resolve. Good yield.
+
+  - repo: go-chi/chi
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      Lightweight router. Small, fast, pure-Go. Lower PR volume -> modest but
+      clean yield. Routing-tree bugs are exactly the non-trivial-but-scoped
+      kind we want.
+
+  - repo: valyala/fasthttp
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 3
+    cgo: false
+    status: candidate
+    notes: >
+      High-perf HTTP. Some tests are timing/benchmark sensitive; flake-screen
+      the networked ones. Real low-level parsing bugs. Moderate yield.
+
+  - repo: traefik/traefik
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 15
+    cgo: false
+    status: candidate
+    notes: >
+      Reverse proxy / edge router. Active, real bugs. Some integration tests
+      need Docker (integration/ dir, build-tagged) — miner must skip build-tag-
+      gated code and mine pkg/ unit packages. Moderate yield.
+
+  - repo: go-playground/validator
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      Struct validation lib. Fast, hermetic, self-contained validation-rule
+      bugs. Good clean yield despite modest PR volume.
+
+  # --- CLI TOOLS / TUI (self-contained, good linked-issue discipline) -------
+  - repo: cli/cli
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 5
+    cgo: false
+    status: candidate
+    notes: >
+      GitHub CLI. Very active, excellent issue->PR discipline, httpmock-based
+      hermetic tests. Some tests use golden fixtures. Good yield.
+
+  - repo: jesseduffield/lazygit
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 6
+    cgo: false
+    status: candidate
+    notes: >
+      Git TUI. Active. Has integration tests that shell out to git (need git on
+      PATH — usually available, but note as an env dep). Mine pkg/ unit tests.
+      Moderate yield.
+
+  - repo: junegunn/fzf
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 3
+    cgo: false
+    status: candidate
+    notes: >
+      Fuzzy finder (the fzf-adjacent seed suggestion — this IS fzf). Core is
+      pure Go now. Some tests are TTY/terminal-interaction (tmux-based, in
+      test/ ruby) — mine the Go src/ unit packages (algo, matcher) only.
+      Modest yield from the algorithm packages.
+
+  - repo: goreleaser/goreleaser
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 6
+    cgo: false
+    status: candidate
+    notes: >
+      Release automation. Active, good issue discipline. Some pipe tests need
+      external tools (docker, git) — mine the pure pipeline-logic packages.
+      Moderate yield.
+
+  - repo: spf13/cobra
+    license: Apache-2.0
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      CLI framework. KEPT per brief but EXPECT LOW YIELD — already produced a
+      REJECTED candidate in prior work (green-at-base / no-gate failure mode,
+      GOBENCH.md R0.2). Bugs tend to be tiny or doc-ish; many PRs lack a
+      test-changing linked-issue fix. Low PR cadence (last push 2026-04).
+
+  - repo: charmbracelet/bubbletea
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      TUI framework (same org as proven lipgloss). Small, fast, pure Go.
+      Event-loop/rendering bugs. Modest but clean yield.
+
+  - repo: charmbracelet/glamour
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Markdown TUI renderer. Golden-file heavy, lower PR volume. Include as a
+      lipgloss-adjacent small clean source; low yield expected.
+
+  # --- DATA / DB / ORM / SERIALIZATION -------------------------------------
+  - repo: go-gorm/gorm
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 8              # dialect tests hit real DBs; core is mockable
+    cgo: false
+    status: candidate
+    notes: >
+      ORM. Core (clause building, schema) is pure Go and hermetic; dialect
+      integration tests (tests/ submodule) need MySQL/Postgres — EXCLUDE those,
+      mine the core module. Good yield from the query-builder logic.
+
+  - repo: ent/ent
+    license: Apache-2.0
+    test_framework: testify + stdlib
+    typical_ci_min: 6
+    cgo: false
+    status: candidate
+    notes: >
+      Entity framework / codegen. Codegen and dialect/sql packages are pure Go
+      and hermetic; integration tests need DBs. Watch for generated files (skip
+      generated-file churn). Moderate yield from codegen + sql builder bugs.
+
+  - repo: sqlc-dev/sqlc
+    license: MIT
+    test_framework: stdlib + testify
+    typical_ci_min: 5
+    cgo: false
+    status: candidate
+    notes: >
+      SQL->code generator. Pure Go parsing/codegen, golden-file endtoend tests
+      (testdata). A fix often touches testdata golden output — treat as test
+      change. Good yield from the SQL-parsing / codegen bugs.
+
+  - repo: influxdata/telegraf
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 20             # huge plugin tree; mine per-plugin package
+    cgo: false
+    status: candidate
+    notes: >
+      Metrics agent. HUGE plugin monorepo — mine per-plugin packages (each
+      plugin's tests are self-contained and fast). Some plugins need network
+      services; flake/env screen prunes those. High absolute PR volume ->
+      good yield if scoped per-plugin.
+
+  - repo: tidwall/gjson
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      JSON path query lib. Fast, hermetic, pure Go. Self-contained parsing
+      bugs. Lower PR volume -> modest clean yield.
+
+  - repo: goccy/go-json
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 2
+    cgo: false
+    status: low-yield
+    notes: >
+      High-perf JSON codec. Pure Go, fast tests, real encoding bugs. Lower
+      recent activity (last push 2026-03) -> low yield. Keep as a serialization
+      source.
+
+  - repo: klauspost/compress
+    license: NOASSERTION           # DOUBLE-CHECK: multi-license (BSD-3 + Apache-2.0 + BSD-2 vendored); all permissive
+    test_framework: stdlib
+    typical_ci_min: 4
+    cgo: false
+    status: candidate
+    notes: >
+      Compression suite (zstd, flate, s2). GitHub reports Other/NOASSERTION
+      because multiple LICENSE files (BSD-3 root + Apache-2.0 + BSD-2 vendored
+      from Go stdlib) — ALL permissive; HUMAN LICENSE DOUBLE-CHECK before
+      release, but referencing commits is unproblematic. Pure Go, fast,
+      real codec bugs. Good yield.
+
+  - repo: pocketbase/pocketbase
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 6
+    cgo: false                     # uses modernc.org/sqlite (pure-Go sqlite) by default -> no cgo
+    status: candidate
+    notes: >
+      Backend-as-a-service. Uses PURE-GO sqlite (modernc) by default so tests
+      are hermetic and cgo-free. Active, good issue discipline. Real DB/API
+      bugs. Good yield. (Confirm no CGO_ENABLED=1 test path is required.)
+
+  # --- LIBRARIES / UTILITIES (fast, hermetic, clean bugs) -------------------
+  - repo: spf13/afero
+    license: Apache-2.0
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      Filesystem abstraction. Fast pure-Go tests, self-contained FS-semantics
+      bugs. Modest yield.
+
+  - repo: spf13/viper
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Config library. Clean hermetic tests but LOW recent activity (last push
+      2026-01) -> low yield. Keep as a config-parsing source.
+
+  - repo: knadh/koanf
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 1
+    cgo: false
+    status: candidate
+    notes: >
+      Config library (viper alternative, more active). Fast hermetic tests,
+      clean parsing/merge bugs. Modest clean yield.
+
+  - repo: samber/lo
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Generics utility (Lodash-style). Fast tests but functions are small ->
+      bugs tend to be trivial (typo-farm risk). Include with a HIGH non-
+      triviality bar in the miner. Low yield of NON-trivial instances.
+
+  - repo: fatih/color
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      ANSI color lib. Small, low PR volume, mostly trivial. Low yield; keep as
+      a tiny clean source only.
+
+  - repo: sirupsen/logrus
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Logging lib, largely in maintenance mode -> low PR/bug cadence. Fast
+      hermetic tests. Low yield; keep for occasional formatting/hook bugs.
+
+  - repo: rs/zerolog
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Zero-alloc logger. Fast tests, moderate activity. Bugs tend small. Low
+      yield; keep as a logging source.
+
+  - repo: uber-go/zap
+    license: MIT
+    test_framework: testify + stdlib
+    typical_ci_min: 2
+    cgo: false
+    status: low-yield
+    notes: >
+      Structured logger. Well-tested, but mature/low bug cadence (last push
+      2026-04). Hermetic tests. Low yield.
+
+  - repo: swaggo/swag
+    license: MIT
+    test_framework: testify
+    typical_ci_min: 3
+    cgo: false
+    status: candidate
+    notes: >
+      Swagger/OpenAPI generator from Go annotations. Pure-Go AST parsing,
+      golden-file tests. Real parsing bugs, active. Moderate yield.
+
+  - repo: google/go-cmp
+    license: BSD-3-Clause
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      Deep-equality lib. Very stable/mature, low bug cadence, but exceptionally
+      clean hermetic tests. Low yield; keep as a high-quality small source.
+
+  - repo: pelletier/go-toml
+    license: NOASSERTION           # DOUBLE-CHECK: v2 is MIT (root LICENSE); GitHub can't auto-detect
+    test_framework: testify
+    typical_ci_min: 2
+    cgo: false
+    status: candidate
+    notes: >
+      TOML parser (v2). GitHub reports Other/NOASSERTION but the LICENSE is
+      MIT — HUMAN LICENSE DOUBLE-CHECK before release. Fast hermetic parser
+      tests, real encoding/decoding bugs. Fuzz-corpus driven. Moderate yield.
+
+  - repo: tsenart/vegeta
+    license: MIT
+    test_framework: stdlib
+    typical_ci_min: 2
+    cgo: false
+    status: low-yield
+    notes: >
+      HTTP load tester. Moderate activity, some networked tests (flake-screen).
+      Modest yield from the pure attack/report logic.
+
+  - repo: gorilla/mux
+    license: BSD-3-Clause
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      HTTP router. STALE (last push 2024-08) -> essentially frozen, near-zero
+      fresh instances after any recent cutoff. Keep ONLY for historical
+      instances; excluded from rolling/fresh-cutoff mining. Clean tests though.
+
+  - repo: gorilla/websocket
+    license: BSD-2-Clause
+    test_framework: stdlib
+    typical_ci_min: 1
+    cgo: false
+    status: low-yield
+    notes: >
+      WebSocket lib. Low activity (last push 2025-03). Networked tests need
+      flake-screening. Low yield; historical instances mostly.
+
+  # --- SOURCE TOOLING (copyleft OK for referencing) -------------------------
+  - repo: golangci/golangci-lint
+    license: GPL-3.0
+    test_framework: testify + stdlib
+    typical_ci_min: 8
+    cgo: false
+    status: candidate
+    notes: >
+      Meta-linter. GPL-3.0 copyleft — FINE for metadata/referencing (we ship no
+      code). Golden/testdata-heavy (analyzer output). A fix often edits testdata
+      -> treat as test change. Active, real analyzer bugs. Moderate yield.
+
+  - repo: gohugoio/hugo
+    license: Apache-2.0
+    test_framework: testify + stdlib
+    typical_ci_min: 12
+    cgo: false                     # core is pure Go; WITHDEPLOY/extended (libsass) build tags are cgo — SKIP those
+    status: candidate
+    notes: >
+      Static site generator. Core is pure Go; the "extended" build (SCSS via
+      libsass) is cgo BUT build-tag gated — miner must skip cgo/extended build
+      tags and mine the pure-Go packages (markup, tpl, hugolib). Very active,
+      good yield from the non-extended packages.
+
+  - repo: go-git/go-git
+    license: Apache-2.0
+    test_framework: stdlib         # historically gopkg.in/check.v1 (gocheck) in older code
+    typical_ci_min: 6
+    cgo: false
+    status: low-yield
+    notes: >
+      Pure-Go git implementation. KEPT per brief but EXPECT LOW YIELD — already
+      produced a REJECTED candidate in prior work (GOBENCH.md R0.2). TRAP: older
+      tests use gopkg.in/check.v1 (gocheck) suites, NOT go test funcs — those
+      are not addressable by -run and the F2P-name derivation will mis-handle
+      them; validator must detect gocheck-style tests. Newer tests are stdlib.
+      Some tests hit real repos over network (flake). Low yield.
+
+  - repo: air-verse/air
+    license: GPL-3.0
+    test_framework: testify + stdlib
+    typical_ci_min: 2
+    cgo: false
+    status: low-yield
+    notes: >
+      Live-reload tool. GPL-3.0 (fine for referencing). Small tool, tests shell
+      out / watch files (some env-dependent). Low yield.
+
+# =============================================================================
+# REJECTED CANDIDATES (considered, dropped — feeds the release rejected log)
+# =============================================================================
+# minio/minio         REJECT: ARCHIVED (2026-04) + AGPL-3.0. Archived = no fresh
+#                     merged PRs, so zero rolling yield regardless of license.
+# hashicorp/consul    REJECT: license "Other/NOASSERTION" = BUSL-1.1 (Business
+# hashicorp/vault     Source License), source-available not OSI. Excluded out of
+#                     caution for a public dataset even though referencing is
+#                     likely fine. Revisit only if R0.4 clears BUSL referencing.
+# cockroachdb/cockroach REJECT: BUSL-1.1/CCL (Other/NOASSERTION) + enormous, very
+#                     slow tests (>>10 min, needs a running cluster). Two strikes.
+# grafana/grafana     REJECT: AGPL-3.0 acceptable for referencing BUT repo is
+#                     TypeScript-DOMINANT (primary language TS); Go is a minority
+#                     subset and hard to scope cleanly. Poor Go-instance yield.
+# mattn/go-sqlite3    REJECT: cgo core (primary language C) — not hermetic
+#                     without a C toolchain; violates the no-cgo-core rule.
+#                     (Pure-Go sqlite need is covered by pocketbase/modernc.)
+# ollama/ollama       REJECT: cgo-heavy core (bundles llama.cpp / C++); not
+#                     hermetic. (Not re-fetched; known cgo profile.)
+# kubernetes/minikube REJECT: tests need a hypervisor/VM/container runtime — not
+#                     hermetic on a single CI machine.
+# go-yaml/yaml        REJECT: ARCHIVED (2025-04). No fresh PRs.
+# json-iterator/go    REJECT: ARCHIVED (2024-05). No fresh PRs.
+# jmoiron/sqlx        REJECT: STALE (last push 2024-08), near-zero fresh yield;
+#                     many tests need a real DB. Not worth pool slot.
+# stretchr/testify    NOT A SOURCE: it's the test framework itself; meta-buggy
+#                     to mine (its own tests test assertion behavior). Skip.
+#
+# NEEDS HUMAN DOUBLE-CHECK before release:
+#   - klauspost/compress : multi-LICENSE (NOASSERTION) — confirm all permissive.
+#   - pelletier/go-toml  : NOASSERTION but LICENSE reads MIT — confirm SPDX.
+#   - typical_ci_min values are ROUGH estimates from repo knowledge, NOT
+#     measured; the mining-yield probe (R0.3) and validator time-box (Phase 3
+#     step 6) will produce real per-package numbers.
+#   - pocketbase/pocketbase : confirm no CGO_ENABLED=1 test path (default is
+#     pure-Go modernc sqlite, but verify).
+# =============================================================================
