@@ -79,6 +79,7 @@ var Pricing = map[string]Price{
 	"x-ai/grok-4.3":               {InPerM: 1.25, OutPerM: 2.50},
 	"x-ai/grok-4.20":              {InPerM: 1.25, OutPerM: 2.50},
 	"z-ai/glm-5":                  {InPerM: 0.60, OutPerM: 1.92, CacheReadPerM: 0.12},
+	"z-ai/glm-5.2":                {InPerM: 0.909, OutPerM: 2.856, CacheReadPerM: 0.169},
 	"openai/gpt-5.4":              {InPerM: 2.50, OutPerM: 15.00},
 	"openai/gpt-5.2-codex":        {InPerM: 1.75, OutPerM: 14.00},
 	"anthropic/claude-sonnet-4.6": {InPerM: 3.00, OutPerM: 15.00},
