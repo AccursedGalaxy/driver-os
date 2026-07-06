@@ -52,6 +52,14 @@ prior holds — only a real signal justifies the Stage-1 build.
 
 ## Staged design — cheapest kill gate first
 
+> **Stage 0 micro-probe RUN 2026-07-06** (docs/findings/PARALLEL-DISPATCH-AND-CODEACT-PROBE.md
+> §2): 2 greenfield Go tasks × {baseline, code-as-action steer} × 1 trial, cheap solver.
+> All 4 passed; the steer cut iterations −64% and cost −55%. DIRECTIONAL ONLY — n=2, no
+> CI, and greenfield file-creation is the shape MOST favorable to CodeAct (one heredoc vs
+> N write_files) and least like edit-in-large-repo SWE-bench. Efficiency signal, not
+> resolve. Verdict: promising-enough-to-not-kill → the real decision still needs the
+> Stage-1 spine screen below with resolve as the metric.
+
 ### Stage 0 — prompt-only code-as-action probe (do this first; ~1 arm)
 
 driver-os already ships a capable code executor: `run` (`sh -c`, pipes, `&&`,
