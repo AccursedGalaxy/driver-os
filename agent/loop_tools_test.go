@@ -1595,3 +1595,69 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 		t.Fatalf("Outcome = %q (%s), want Answered — FinishToolTrustsCaller skips completion verification", res.Outcome, res.Reason)
 	}
 }
+
+func TestCacheStats(t *testing.T) {
+	cs := &cacheStats{}
+
+	// Turn 1: expected=0 (no previous turn).
+	exp, act, miss := cs.observe(100, 0)
+	if exp != 0 {
+		t.Errorf("turn 1: expected = %d, want 0", exp)
+	}
+	if miss != 0 {
+		t.Errorf("turn 1: miss = %d, want 0", miss)
+	}
+
+	// Turn 2: prompt grows, expected = min(100, 150) = 100, actual=80, miss=20.
+	exp, act, miss = cs.observe(150, 80)
+	if exp != 100 {
+		t.Errorf("turn 2: expected = %d, want 100", exp)
+	}
+	if act != 80 {
+		t.Errorf("turn 2: actual = %d, want 80", act)
+	}
+	if miss != 20 {
+		t.Errorf("turn 2: miss = %d, want 20", miss)
+	}
+
+	// Turn 3: prompt SHRINKS (e.g. after eviction), expected = min(150, 120) = 120, actual=120, miss=0.
+	exp, act, miss = cs.observe(120, 120)
+	if exp != 120 {
+		t.Errorf("turn 3: expected = %d, want 120 (min of prev=150 and this=120)", exp)
+	}
+	if miss != 0 {
+		t.Errorf("turn 3: miss = %d, want 0", miss)
+	}
+
+	// Turn 4: actual > expected (provider reports more cache than expected), miss clamps to 0.
+	exp, act, miss = cs.observe(200, 150)
+	if exp != 120 {
+		t.Errorf("turn 4: expected = %d, want 120 (min of prev=120 and this=200)", exp)
+	}
+	if miss != 0 {
+		t.Errorf("turn 4: miss = %d, want 0 (actual 150 > expected 120, miss clamped to 0)", miss)
+	}
+
+	// Verify accumulated totals.
+	if cs.SumExpectedCached != 0+100+120+120 {
+		t.Errorf("SumExpectedCached = %d, want 340", cs.SumExpectedCached)
+	}
+	if cs.SumActualCached != 0+80+120+150 {
+		t.Errorf("SumActualCached = %d, want 350", cs.SumActualCached)
+	}
+	if cs.CacheMiss != 0+20+0+0 {
+		t.Errorf("CacheMiss = %d, want 20", cs.CacheMiss)
+	}
+
+	// hitPct: 100 * 350 / 340 ≈ 102.94
+	pct := cs.hitPct()
+	if pct < 102.9 || pct > 103.0 {
+		t.Errorf("hitPct = %.2f, want ~102.94", pct)
+	}
+
+	// Zero expected: hitPct returns 0.
+	cs2 := &cacheStats{}
+	if cs2.hitPct() != 0 {
+		t.Errorf("empty stats hitPct = %f, want 0", cs2.hitPct())
+	}
+}

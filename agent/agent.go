@@ -280,6 +280,18 @@ type RunResult struct {
 	autoVerifyVerifyContinue     bool
 	autoVerifySkipVerifyBaseline bool
 
+	// CacheSumExpectedCached is the run-level sum of expected cached tokens per
+	// the prefix-cache model (Measurement 3 in eval/scripts/read_dup_pass.py):
+	// turn 1 expected=0; turn i>1 expected=min(P_{i-1}, P_i).
+	CacheSumExpectedCached int `json:"sum_expected_cached,omitempty"`
+	// CacheSumCached is the run-level sum of actual cached tokens across turns.
+	CacheSumCached int `json:"sum_cached,omitempty"`
+	// CacheMiss is the run-level sum of cache misses (expected − actual, clamped >= 0).
+	CacheMiss int `json:"cache_miss,omitempty"`
+	// CacheHitPct is the run-level cache-hit percentage: 100 * sum_cached / sum_expected_cached,
+	// or 0 when sum_expected_cached is 0.
+	CacheHitPct float64 `json:"cache_hit_pct,omitempty"`
+
 	// memDone closes when the post-answer memory store finishes; nil when no
 	// store was started. Unexported (a process handle, not run data) — await it
 	// through AwaitMemory.

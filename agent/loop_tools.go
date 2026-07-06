@@ -47,6 +47,45 @@ type prefetchResult struct {
 	dur   time.Duration // real dispatch wall-time of THIS call (see ToolMs requirement)
 }
 
+// cacheStats accumulates per-turn prompt-cache efficiency metrics over a run.
+// It matches the formula in eval/scripts/read_dup_pass.py Measurement 3 exactly:
+// for turn i with prompt P_i and actual cached C_i:
+//
+//	expected_i = (i == 1) ? 0 : min(P_{i-1}, P_i)
+//	miss_i     = max(0, expected_i − C_i)
+//
+// The struct tracks the previous turn's P for the next expected calculation.
+type cacheStats struct {
+	prevPromptTokens  int
+	SumExpectedCached int
+	SumActualCached   int
+	CacheMiss         int
+}
+
+// observe records one turn and returns the per-turn (expected, actual, miss).
+func (cs *cacheStats) observe(promptTokens, cachedTokens int) (expected, actual, miss int) {
+	expected = 0
+	if cs.prevPromptTokens > 0 {
+		expected = min(cs.prevPromptTokens, promptTokens)
+	}
+	actual = cachedTokens
+	miss = max(0, expected-actual)
+	cs.SumExpectedCached += expected
+	cs.SumActualCached += actual
+	cs.CacheMiss += miss
+	cs.prevPromptTokens = promptTokens
+	return
+}
+
+// hitPct returns the run-level cache-hit percentage, or 0 when no expected
+// cached tokens have been accumulated.
+func (cs *cacheStats) hitPct() float64 {
+	if cs.SumExpectedCached == 0 {
+		return 0
+	}
+	return 100.0 * float64(cs.SumActualCached) / float64(cs.SumExpectedCached)
+}
+
 // prefetchLeadingReadOnly dispatches the maximal LEADING prefix of parallel-safe
 // calls concurrently and returns their results indexed by position plus the
 // prefix length k. It prefetches only when k >= 2 AND the leading call would not
@@ -211,6 +250,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}
 
 	var costBudgetMissingNoted bool
+	cs := &cacheStats{} // prompt-cache efficiency instrumentation per Measurement 3
 
 	for i := 1; i <= maxIter; i++ {
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -287,6 +327,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
 		ctxTok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 		notifyUsage(cfg.Obs, res.Usage, ctxTok)
+
+		// Prompt-cache efficiency tracking (Measurement 3).
+		cs.observe(resp.Usage.PromptTokens, resp.Usage.CachedTokens)
+		res.CacheSumExpectedCached = cs.SumExpectedCached
+		res.CacheSumCached = cs.SumActualCached
+		res.CacheMiss = cs.CacheMiss
+		res.CacheHitPct = cs.hitPct()
 
 		// (P5) Hidden-reasoning progress for THIS turn, computed once: it selects the
 		// tight-loop threshold below AND is recorded on every Step of the turn so a
