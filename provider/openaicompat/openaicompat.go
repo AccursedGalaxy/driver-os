@@ -65,17 +65,16 @@ type Provider struct {
 	caps   llm.Capabilities
 	cache  bool // PromptCache: emit cache_control breakpoints (Anthropic-via-OpenRouter).
 
-	// Provider pinning for OpenRouter Gemini encrypted-thought-signature
-	// portability (see docs/backlog.md 2026-07-03). Gemini's
-	// `reasoning_details` with format "google-gemini-v1" are encrypted
-	// per-upstream: a signature minted by "Google AI Studio" fails on
-	// "Google" (Vertex) with INVALID_ARGUMENT "Corrupted thought signature".
-	// OpenRouter hops providers between turns under load, so the stickiness
-	// must live in the adapter itself, not in the agent loop.
+	// Provider pinning for OpenRouter stops upstream-hopping between turns,
+	// which busts the upstream implicit prompt cache (measured 31-80%
+	// cache-miss rate). Every SSE chunk and response carries the serving
+	// upstream; we pin to whoever served turn 1 for the lifetime of the
+	// provider. The OPENROUTER_PIN_PROVIDER env var pre-sets the pin from
+	// turn 1 (bypassing the response-based rule).
 	//
-	// Set by the first response that carries such a signature, then injected
-	// into every subsequent request via OpenRouter's `provider` routing
-	// field: `{"order":["<slug>"],"allow_fallbacks":false}`.
+	// Set by the first response/streamed chunk that carries a provider
+	// field, then injected into every subsequent request via OpenRouter's
+	// `provider` routing field: `{"order":["<slug>"],"allow_fallbacks":false}`.
 	mu             sync.Mutex
 	pinnedProvider string // empty = not yet pinned
 	isOpenRouter   bool   // gate: only engage for the OpenRouter constructor
@@ -126,10 +125,10 @@ func New(cfg Config) *Provider {
 		caps = *cfg.Capabilities
 	}
 
-	// OpenRouter-specific: Gemini encrypted-thought-signature portability.
-	// When OPENROUTER_PIN_PROVIDER is set (e.g. "google-vertex"), every
-	// request pins to that upstream from turn 1; the sticky response-based
-	// rule below then never needs to fire.
+	// OpenRouter-specific: sticky provider pinning. When
+	// OPENROUTER_PIN_PROVIDER is set (e.g. "google-vertex"), every
+	// request pins to that upstream from turn 1; the response-based
+	// rule in maybePin then never needs to fire.
 	isOR := cfg.Name == "openrouter"
 	var pinned string
 	if isOR {
@@ -195,15 +194,12 @@ func (p *Provider) Generate(ctx context.Context, req llm.Request) (*llm.Response
 		return nil, p.classify(err)
 	}
 
-	// Sticky provider pinning: if the response carried Gemini encrypted
-	// reasoning, record the responding upstream for subsequent turns.
+	// Sticky provider pinning: record the responding upstream so every
+	// subsequent request uses the same one (avoids OpenRouter shuffling
+	// upstreams turn-to-turn, which busts the upstream implicit prompt cache).
 	if p.isOpenRouter {
 		providerRaw := json.RawMessage(cc.JSON.ExtraFields["provider"].Raw())
-		var reasoningRaw json.RawMessage
-		if len(cc.Choices) > 0 {
-			reasoningRaw = json.RawMessage(cc.Choices[0].Message.JSON.ExtraFields["reasoning_details"].Raw())
-		}
-		p.maybePin(providerRaw, reasoningRaw)
+		p.maybePin(providerRaw)
 	}
 
 	return toResponse(cc), nil
@@ -276,12 +272,11 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ch
 			return
 		}
 
-		// Sticky provider pinning: if the stream carried Gemini encrypted
-		// reasoning, record the responding upstream for subsequent turns.
+		// Sticky provider pinning: record the responding upstream from
+		// the first streamed chunk (every SSE chunk carries a top-level
+		// `provider` field on OpenRouter).
 		if p.isOpenRouter {
-			if raw, _ := reasoning.raw(); raw != nil {
-				p.maybePin(providerRaw, raw)
-			}
+			p.maybePin(providerRaw)
 		}
 
 		// The reassembled reasoning trace, surfaced like a tool call: once,
@@ -808,16 +803,40 @@ func isContextLength(msg string) bool {
 }
 
 // pinProviderName maps OpenRouter's display name for an upstream to the routing
-// slug expected by the `provider.order` request field. An unknown name returns
-// "" (fail open — do not pin).
+// slug expected by the `provider.order` request field (e.g. "OpenAI" → "openai",
+// "DeepInfra" → "deepinfra"). The algorithmic default — lowercase with spaces
+// replaced by hyphens — is correct for most of the 90 registered providers.
+// The override map covers the few where that transform does NOT match the real
+// slug. Ground truth pulled live from https://openrouter.ai/api/v1/providers.
 func pinProviderName(display string) string {
+	// Overrides: display names whose real slug differs from the
+	// lowercase+hyphenate algorithmic default.
 	switch display {
-	case "Google AI Studio":
-		return "google-ai-studio"
+	case "Z.AI":
+		return "z-ai"
+	case "Moonshot AI":
+		return "moonshotai"
+	case "Mancer 2":
+		return "mancer"
+	case "InferenceNet":
+		return "inference-net"
+	case "AionLabs":
+		return "aion-labs"
+	case "FakeProvider":
+		return "fake-provider"
+	case "AtlasCloud":
+		return "atlas-cloud"
 	case "Google":
 		return "google-vertex"
+	case "OpenInference":
+		return "open-inference"
+	case "Sakana AI":
+		return "sakana"
 	}
-	return ""
+	// Algorithmic default: lowercase + spaces→hyphens.
+	// Correct for openai, deepseek, deepinfra, novita, together, fireworks,
+	// baseten, anthropic, google-ai-studio, and the rest.
+	return strings.ReplaceAll(strings.ToLower(display), " ", "-")
 }
 
 // hasEncryptedReasoning returns true when raw JSON contains any
@@ -839,30 +858,26 @@ func hasEncryptedReasoning(raw json.RawMessage) bool {
 	return false
 }
 
-// maybePin is the response-side of the sticky-provider rule. After a
-// (successful) Generate or Stream turn that carried encrypted reasoning,
-// record the responding upstream so every subsequent request uses the same one.
+// maybePin is the response-side of the sticky-provider rule. After the first
+// successful Generate or Stream turn on OpenRouter, record the responding
+// upstream so every subsequent request uses the same one. This stops OpenRouter
+// from shuffling upstreams turn-to-turn, which busts the upstream implicit
+// prompt cache (measured 31-80% cache-miss rate on OpenRouter models).
 // Does nothing for non-OpenRouter providers, when already pinned, or when the
-// provider name can't be mapped.
-func (p *Provider) maybePin(providerField json.RawMessage, reasoningRaw json.RawMessage) {
+// provider field is missing/empty.
+func (p *Provider) maybePin(providerField json.RawMessage) {
 	if !p.isOpenRouter {
-		return
-	}
-	if !hasEncryptedReasoning(reasoningRaw) {
 		return
 	}
 
 	var name string
 	if json.Unmarshal(providerField, &name) != nil || name == "" {
-		return
-	}
-	slug := pinProviderName(name)
-	if slug == "" {
 		if os.Getenv("DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "openaicompat: OpenRouter responded via unknown provider %q, not pinning\n", name)
+			fmt.Fprintf(os.Stderr, "openaicompat: OpenRouter response missing provider field, not pinning\n")
 		}
 		return
 	}
+	slug := pinProviderName(name)
 
 	p.mu.Lock()
 	if p.pinnedProvider == "" {
