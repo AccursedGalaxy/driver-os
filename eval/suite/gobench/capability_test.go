@@ -12,6 +12,11 @@ func TestToolchainEnv(t *testing.T) {
 	}{
 		{"1.25.7", []string{"GOTOOLCHAIN=go1.25.7"}},
 		{"go1.25.7", []string{"GOTOOLCHAIN=go1.25.7"}},
+		{"1.25.0", []string{"GOTOOLCHAIN=go1.25.0"}},
+		// Bare major.minor (a go.mod language version) must gain a patch: go1.22
+		// is rejected by GOTOOLCHAIN as a language version, go1.22.0 is valid.
+		{"1.22", []string{"GOTOOLCHAIN=go1.22.0"}},
+		{"go1.22", []string{"GOTOOLCHAIN=go1.22.0"}},
 		{"", nil},
 	}
 	for _, tt := range tests {

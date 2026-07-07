@@ -85,15 +85,18 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 
 // ToolchainEnv returns the GOTOOLCHAIN env override for a pinned Go version,
 // or nil when goVersion is empty. A leading "go" in goVersion is tolerated.
+// A bare major.minor (a go.mod language version like "1.22") is normalized to a
+// toolchain version ("go1.22.0"): GOTOOLCHAIN rejects "go1.22" as a language
+// version, not a toolchain.
 func ToolchainEnv(goVersion string) []string {
 	if goVersion == "" {
 		return nil
 	}
-	v := goVersion
-	if !strings.HasPrefix(v, "go") {
-		v = "go" + v
+	v := strings.TrimPrefix(goVersion, "go")
+	if strings.Count(v, ".") == 1 {
+		v += ".0"
 	}
-	return []string{"GOTOOLCHAIN=" + v}
+	return []string{"GOTOOLCHAIN=go" + v}
 }
 
 type commandResult struct {
