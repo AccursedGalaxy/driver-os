@@ -166,6 +166,21 @@ work; on a fresh repo batch, human audit of 10 random accepts + 10 random reject
 finds ≥9/10 correct each direction; yield vs the R0.3 estimate reported; the
 slow-tier vs reject decision (stage 6) made.
 
+**G3 expectation update (live smoke 2026-07-07, post-Slice-3):** the G1-era
+"urfave-2363 ACCEPTS" expectation is STALE. Re-validating the mined
+urfave__cli-2363 now rejects `no-gate` on
+`TestCommand_AfterStillCalledOnNormalSubcommand` — CORRECTLY: that F2P entry
+is a guard test (asserts pre-existing behavior, passes at base); only
+`TestCommand_AfterNotCalledOnSubcommandHelp` gates the bug. The old accept
+predates the red-at-base strict per-test invariant. Consequences: (a) G3
+part (a) must RE-DERIVE expected verdicts under the strict invariant, not
+compare against G1-era accepts; (b) the canonical testdata instance (same
+F2P shape) needs its guard test moved F2P→P2P; (c) miner refinement: gold
+PRs routinely add guard tests alongside the bug test — the miner's F2P
+extraction should either probe each added test at base or leave demotion to
+a validator sub-stage that moves base-passing added tests to P2P instead of
+rejecting the instance outright (design call at G3).
+
 ## Live smoke-test 2026-07-07 — pipeline PROVEN, two gaps found
 
 First end-to-end live run of the `mine → validate` pipeline (no driver-os; ran the
@@ -230,7 +245,15 @@ The public-launch plan (`docs/specs/GOBENCH-LAUNCH.md`, council run
 20260707-195325-c18f08) added validator-relevant requirements beyond the
 slices above. None block Slice 3 as specced; they are the next increments:
 
-- **`statement_mode` (schema addition, post-Slice-3):** exactly two values —
+- **`statement_mode` (schema addition, post-Slice-3) — now has a CONCRETE
+  driver:** Slice 3's cmd wiring scrubs only via `gh issue view inst.IssueURL`;
+  an instance with no issue_url (the hand-built canonicals, and any future
+  authored-summary instance) either rejects `fetch-issue-failed` or must run
+  `-no-scrub`, which also skips the leak-screen — violating the launch-plan
+  rule that BOTH statement modes pass the same leak-screen. Fix shape: split
+  the flags — scrub is per-instance (skipped for authored statements), the
+  leak-screen is unconditional for any instance that ships. Found dry, before
+  the live smoke even ran. Two values —
   `verbatim-scrubbed` (only where redistribution rights are demonstrably
   clear) and `authored-summary` (DEFAULT under rights uncertainty: a
   GoBench-authored statement, CC-BY-4.0, no third-party text). Both modes
