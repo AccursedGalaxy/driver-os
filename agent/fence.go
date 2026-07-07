@@ -319,13 +319,9 @@ func (f *fenceState) driftCheck(ctx context.Context, sb sandbox.Sandbox) ([]stri
 	return out, nil
 }
 
-// violation renders drift as the closing-gate reason ("" = clean). It is the
-// exact string the plan names: the run is Unverified with the files listed.
-func (f *fenceState) violation(ctx context.Context, sb sandbox.Sandbox) string {
-	reason, _ := f.violationCheck(ctx, sb)
-	return reason
-}
-
+// violationCheck renders drift as the closing-gate reason ("" = clean) or the
+// error that made the fence unverifiable. The reason is the exact string the
+// plan names: the run is Unverified with the files listed.
 func (f *fenceState) violationCheck(ctx context.Context, sb sandbox.Sandbox) (string, error) {
 	changed, err := f.driftCheck(ctx, sb)
 	if err != nil {
