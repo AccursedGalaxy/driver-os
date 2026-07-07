@@ -20,7 +20,7 @@ const defaultTestTimeout = 10 * time.Minute
 // oracleDir must already exist locally.
 func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 	v := Verdict{
-		InstanceID:     inst.InstanceID,
+		InstanceID:    inst.InstanceID,
 		GraderVersion: GraderVersion,
 	}
 
@@ -34,17 +34,9 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 		timeout = parsed
 	}
 
-	// 1. Reset the agent's test edits before overlay. These commands are allowed
-	// to fail when there is nothing to reset or clean.
-	_ = runGit(context.Background(), checkoutDir, "checkout", "--", "*_test.go")
-	_ = runGit(context.Background(), checkoutDir, "clean", "-fq", "--", "*_test.go")
-
-	// 2. Overlay the held-out oracle files.
-	for _, p := range inst.OracleFiles {
-		if err := copyFile(filepath.Join(oracleDir, p), filepath.Join(checkoutDir, p)); err != nil {
-			v.GraderError = fmt.Sprintf("overlay oracle failed: %s: %v", p, err)
-			return v, err
-		}
+	if err := overlayOracle(checkoutDir, oracleDir, inst.OracleFiles); err != nil {
+		v.GraderError = fmt.Sprintf("overlay oracle failed: %v", err)
+		return v, err
 	}
 
 	moduleDir := filepath.Join(checkoutDir, inst.ModuleDir)
