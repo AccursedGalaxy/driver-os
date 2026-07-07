@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/eval/suite/gobench"
+	"github.com/AccursedGalaxy/driver-os/provider/openaicompat"
 )
 
 func main() {
@@ -28,6 +30,9 @@ func run(ctx context.Context, args []string) int {
 	flakeRuns := fs.Int("flake-runs", 5, "number of flake check runs")
 	idsFlag := fs.String("ids", "", "optional comma-separated instance_id filter")
 	testTimeoutStr := fs.String("test-timeout", "10m", "per-run test timeout duration")
+	scrubModel := fs.String("scrub-model", "deepseek/deepseek-v4-flash", "OpenRouter model for problem-statement scrub")
+	leakThreshold := fs.Float64("leak-threshold", gobench.DefaultLeakThreshold, "n-gram overlap threshold for leak-screen")
+	noScrub := fs.Bool("no-scrub", false, "skip LLM scrub and leak-screen; output keeps raw statement and empty leak_screen.method")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -67,6 +72,10 @@ func run(ctx context.Context, args []string) int {
 	var acceptedCount int
 	var totalCount int
 	now := time.Now().Format(time.RFC3339)
+	var scrubber gobench.Scrubber
+	if !*noScrub {
+		scrubber = gobench.LLMScrubber{Provider: openaicompat.OpenRouter(*scrubModel), Model: *scrubModel}
+	}
 
 	for _, path := range matches {
 		id := strings.TrimSuffix(filepath.Base(path), ".json")
@@ -87,12 +96,26 @@ func run(ctx context.Context, args []string) int {
 			continue
 		}
 
+		if !*noScrub {
+			raw, err := fetchIssueBody(ctx, inst.IssueURL)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "fetch issue body for %s: %v\n", inst.InstanceID, err)
+				rejections = append(rejections, &gobench.Rejection{InstanceID: inst.InstanceID, Repo: inst.Repo, PR: inst.PRNumber, Stage: "scrub", Reason: "fetch-issue-failed", Detail: err.Error()})
+				continue
+			}
+			inst.ProblemStatement = raw
+		}
+
 		opts := gobench.ValidateOpts{
-			OracleDir:   filepath.Join(*oraclesRoot, inst.InstanceID),
-			CacheDir:    *cacheDir,
-			FlakeRuns:   *flakeRuns,
-			Now:         now,
-			TestTimeout: testTimeout,
+			OracleDir:     filepath.Join(*oraclesRoot, inst.InstanceID),
+			CacheDir:      *cacheDir,
+			FlakeRuns:     *flakeRuns,
+			Now:           now,
+			TestTimeout:   testTimeout,
+			Scrubber:      scrubber,
+			ScrubOutDir:   *outDir,
+			LeakThreshold: *leakThreshold,
+			NoScrub:       *noScrub,
 		}
 
 		fmt.Printf("Validating %s...\n", inst.InstanceID)
@@ -201,4 +224,16 @@ func printSummary(total, accepted int, rejections []*gobench.Rejection) {
 		fmt.Fprintf(tw, "  - %s\t%d\n", k, reasons[k])
 	}
 	tw.Flush()
+}
+
+func fetchIssueBody(ctx context.Context, issueURL string) (string, error) {
+	if issueURL == "" {
+		return "", fmt.Errorf("issue_url is empty")
+	}
+	cmd := exec.CommandContext(ctx, "gh", "issue", "view", issueURL, "--json", "body", "--jq", ".body")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(out), "\n"), nil
 }

@@ -28,6 +28,11 @@ type ValidateOpts struct {
 	Now          string
 	BuildTimeout time.Duration
 	TestTimeout  time.Duration
+
+	Scrubber      Scrubber
+	ScrubOutDir   string
+	LeakThreshold float64
+	NoScrub       bool
 }
 
 type redRun struct {
@@ -93,6 +98,15 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	}
 
 	out := inst
+	if !opts.NoScrub {
+		raw := out.ProblemStatement
+		if err := scrubProblemStatement(ctx, &out, raw, opts.Scrubber, opts.ScrubOutDir); err != nil {
+			return inst, nil, err
+		}
+		if rej := leakScreenInstance(ctx, &out, goldDir, opts.LeakThreshold, opts.Now); rej != nil {
+			return out, rej, nil
+		}
+	}
 	out.Validation.RedAtBaseRuns = redResults
 	out.Validation.GoldGreenRuns = goldResults
 	out.Validation.FlakeRuns = k
