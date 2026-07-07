@@ -30,22 +30,9 @@ func CheckoutBase(ctx context.Context, repoURL, baseCommit, destDir, cacheDir st
 		return fmt.Errorf("cacheDir is empty")
 	}
 
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("create cache dir %s: %w", cacheDir, err)
-	}
-
-	mirrorPath := filepath.Join(cacheDir, repoSlug(repoURL)+".git")
-	if _, err := os.Stat(mirrorPath); err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("stat mirror %s: %w", mirrorPath, err)
-		}
-		if _, err := runGitCaptured(ctx, "", "clone", "--bare", repoURL, mirrorPath); err != nil {
-			return fmt.Errorf("create bare mirror for %s at %s: %w", repoURL, mirrorPath, err)
-		}
-	} else {
-		if _, err := runGitCaptured(ctx, mirrorPath, "fetch", "--all", "--prune"); err != nil {
-			return fmt.Errorf("refresh bare mirror %s for %s: %w", mirrorPath, repoURL, err)
-		}
+	mirrorPath, err := EnsureBareMirror(ctx, repoURL, cacheDir)
+	if err != nil {
+		return err
 	}
 
 	if !gitHasCommit(ctx, mirrorPath, baseCommit) {
@@ -67,6 +54,33 @@ func CheckoutBase(ctx context.Context, repoURL, baseCommit, destDir, cacheDir st
 		return fmt.Errorf("checkout base commit %s in %s: %w", baseCommit, destDir, err)
 	}
 	return nil
+}
+
+// EnsureBareMirror creates or refreshes the bare mirror used by GoBench git operations.
+func EnsureBareMirror(ctx context.Context, repoURL, cacheDir string) (string, error) {
+	if repoURL == "" {
+		return "", fmt.Errorf("repoURL is empty")
+	}
+	if cacheDir == "" {
+		return "", fmt.Errorf("cacheDir is empty")
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return "", fmt.Errorf("create cache dir %s: %w", cacheDir, err)
+	}
+	mirrorPath := filepath.Join(cacheDir, repoSlug(repoURL)+".git")
+	if _, err := os.Stat(mirrorPath); err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("stat mirror %s: %w", mirrorPath, err)
+		}
+		if _, err := runGitCaptured(ctx, "", "clone", "--bare", repoURL, mirrorPath); err != nil {
+			return "", fmt.Errorf("create bare mirror for %s at %s: %w", repoURL, mirrorPath, err)
+		}
+	} else {
+		if _, err := runGitCaptured(ctx, mirrorPath, "fetch", "--all", "--prune"); err != nil {
+			return "", fmt.Errorf("refresh bare mirror %s for %s: %w", mirrorPath, repoURL, err)
+		}
+	}
+	return mirrorPath, nil
 }
 
 func gitHasCommit(ctx context.Context, mirrorPath, commit string) bool {
