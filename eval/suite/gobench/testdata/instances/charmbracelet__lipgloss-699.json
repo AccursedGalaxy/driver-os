@@ -8,7 +8,7 @@
   "base_commit": "40ec0e6f53f006e98e24e69e28b529889aa57c88",
   "gold_commit": "b00306c8392bdb3d00a618cb7fbe0350221ef0da",
   "merge_method": "",
-  "go_version": "",
+  "go_version": "1.25.0",
   "module_path": "",
   "module_dir": ".",
   "problem_statement": "This is the charmbracelet/lipgloss repository (Go). There is a crash bug to fix.\n\nBug: the `WrapWriter` type panics with a nil pointer dereference if it is written\nto AFTER it has been closed. Closing a `WrapWriter` releases its internal ANSI\nparser (it is returned to a sync.Pool and the reference is cleared), but a\nsubsequent call to its `Write` method still uses that parser, causing a panic.\n\nThis shows up in real usage when nested writer chains tear down out of order:\nclosing an outer writer can flush a trailing style/link reset back through a\nwriter that was already closed, crashing the program.\n\nExpected behavior: writing to a `WrapWriter` after it has been closed must NOT\npanic. Writes before close must behave exactly as they do today, and the public\nAPI must not change. Keep the fix minimal and idiomatic.\n\nLocate the relevant code, implement the fix, and make sure `go build ./...` and\n`go test .` still pass. Do not weaken or delete existing tests.\n",
