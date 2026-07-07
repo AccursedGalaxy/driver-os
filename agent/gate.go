@@ -486,7 +486,13 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 
 func (g *gates) verifyFinish(ctx context.Context, lastRunFailed bool, trusted bool) (outcome Outcome, reason string, noContinue bool) {
 	outcome, reason, noContinue = g.verifySafety(ctx)
-	if reason != "" || trusted {
+	if reason != "" {
+		return outcome, reason, noContinue
+	}
+	if trusted {
+		if out, reason, stop := g.requireDiffFailure(ctx); reason != "" {
+			return out, reason, stop
+		}
 		return outcome, reason, noContinue
 	}
 	return g.verifyCompletion(ctx, lastRunFailed)

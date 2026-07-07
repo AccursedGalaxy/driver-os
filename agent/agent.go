@@ -770,8 +770,9 @@ type Config struct {
 	// (a finish while the build is red is Unverified, not a false Answered — the
 	// harness review's FinishTool hole). Set this true when the finish IS the
 	// deliverable and there is nothing to re-verify — a conversational caller whose
-	// whole turn is "send a message". Even then, the test fence, diff scope,
-	// caller-cancel check, empty-answer guard, and grounded-memory policy still run.
+	// whole turn is "send a message". Even then, RequireDiff, the test fence,
+	// diff scope, caller-cancel check, empty-answer guard, and grounded-memory
+	// policy still run.
 	// Default false.
 	FinishToolTrustsCaller bool
 }
