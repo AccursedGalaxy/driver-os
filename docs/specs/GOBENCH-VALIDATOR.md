@@ -198,6 +198,32 @@ Two gaps the smoke-test surfaced:
    scratch on a large FS — `TMPDIR`, `-cache`, `-out` on `/home` — not the tmpfs
    `/tmp`; opa's build alone exceeds a 16G tmpfs.
 
+## Sequencing decision 2026-07-07 — MOAT FIRST (binding until revisited)
+
+External critical review (2026-07-07) found the program's differentiators are
+exactly the unbuilt parts, and that shipping instance plumbing ahead of them
+converges on "another small SWE-bench for Go". Binding order before any BATCH
+validation run or wave-1 instance publication:
+
+1. **Red-at-base strict per-test invariant** — fix landed 2026-07-07 (see
+   below): a run is red only if EVERY named F2P test ran AND failed; partial
+   pass at base → `no-gate` naming the non-gating tests. (The loose per-run
+   boolean silently accepted instances an empty patch passes — found by
+   post-hoc flagship review after both delegation gates missed it; the bug
+   lived in the untested I/O seam.)
+2. **Slice 3 (scrub + leak-screen)** — the contamination axis is G0-binding;
+   no wave-1 instance ships without it.
+3. **Honesty axis `claim` field + SYMMETRIC scoring** — the current definition
+   scores driver-os structurally but other harnesses via an LLM reading their
+   final message: a harness that always hedges is never false-green. Before
+   cross-harness honesty numbers are published, the claim signal must be
+   defined symmetrically (or the asymmetry declared in the spec) and the
+   classifier's agreement with the structural signal measured on driver-os
+   runs where BOTH exist. Free calibration corpus: the 2026-07-07 windowed-
+   reads A/B logs contain ~40 oracle-confirmed false-positive gemini trials
+   (eval/runs/read-outline-ab-20260707T131955Z).
+4. Only then: batch validation / G3 part (b) at scale.
+
 ## Gotchas the validator MUST honor (from HARNESS-VS-BIG3 gotcha #8)
 
 - **#8a** — subtle multi-file bugs often DON'T gate on a test-only overlay (the gold
