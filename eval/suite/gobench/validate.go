@@ -106,14 +106,8 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	}
 
 	out := inst
-	if !opts.NoScrub {
-		raw := out.ProblemStatement
-		if err := scrubProblemStatement(ctx, &out, raw, opts.Scrubber, opts.ScrubOutDir); err != nil {
-			return inst, nil, err
-		}
-		if rej := leakScreenInstance(ctx, &out, goldDir, opts.LeakThreshold, opts.Now); rej != nil {
-			return out, rej, nil
-		}
+	if rej, err := runStage7(ctx, &out, goldDir, opts); rej != nil || err != nil {
+		return out, rej, err
 	}
 	out.Validation.RedAtBaseRuns = redResults
 	out.Validation.GoldGreenRuns = goldResults
@@ -124,6 +118,22 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 		return inst, nil, err
 	}
 	return out, nil, nil
+}
+
+func runStage7(ctx context.Context, out *Instance, goldDir string, opts ValidateOpts) (*Rejection, error) {
+	if !opts.NoScrub && opts.Scrubber != nil {
+		raw := out.ProblemStatement
+		if err := scrubProblemStatement(ctx, out, raw, opts.Scrubber, opts.ScrubOutDir); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(out.ProblemStatement) == "" {
+		return rejection(*out, "leak-screen", "empty-statement", ""), nil
+	}
+	if rej := leakScreenInstance(ctx, out, goldDir, opts.LeakThreshold, opts.Now); rej != nil {
+		return rej, nil
+	}
+	return nil, nil
 }
 
 func overlayOracle(checkoutDir, oracleDir string, oracleFiles []string) error {

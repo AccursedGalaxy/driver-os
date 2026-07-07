@@ -75,3 +75,15 @@ func TestPrintSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldFetchIssueBodyModes(t *testing.T) {
+	if shouldFetchIssueBody(gobench.Instance{IssueURL: ""}, false) {
+		t.Fatalf("empty issue_url should be authored mode, not fetch")
+	}
+	if shouldFetchIssueBody(gobench.Instance{IssueURL: "https://github.com/o/r/issues/1"}, true) {
+		t.Fatalf("-no-scrub should skip fetch even with issue_url")
+	}
+	if !shouldFetchIssueBody(gobench.Instance{IssueURL: "https://github.com/o/r/issues/1"}, false) {
+		t.Fatalf("non-empty issue_url without -no-scrub should fetch")
+	}
+}

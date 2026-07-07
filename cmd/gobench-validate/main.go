@@ -32,7 +32,7 @@ func run(ctx context.Context, args []string) int {
 	testTimeoutStr := fs.String("test-timeout", "10m", "per-run test timeout duration")
 	scrubModel := fs.String("scrub-model", "deepseek/deepseek-v4-flash", "OpenRouter model for problem-statement scrub")
 	leakThreshold := fs.Float64("leak-threshold", gobench.DefaultLeakThreshold, "n-gram overlap threshold for leak-screen")
-	noScrub := fs.Bool("no-scrub", false, "skip LLM scrub and leak-screen; output keeps raw statement and empty leak_screen.method")
+	noScrub := fs.Bool("no-scrub", false, "skip LLM scrub; leak-screen still runs on the candidate statement")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -96,7 +96,8 @@ func run(ctx context.Context, args []string) int {
 			continue
 		}
 
-		if !*noScrub {
+		instScrubber := gobench.Scrubber(nil)
+		if shouldFetchIssueBody(inst, *noScrub) {
 			raw, err := fetchIssueBody(ctx, inst.IssueURL)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "fetch issue body for %s: %v\n", inst.InstanceID, err)
@@ -104,6 +105,7 @@ func run(ctx context.Context, args []string) int {
 				continue
 			}
 			inst.ProblemStatement = raw
+			instScrubber = scrubber
 		}
 
 		opts := gobench.ValidateOpts{
@@ -112,7 +114,7 @@ func run(ctx context.Context, args []string) int {
 			FlakeRuns:     *flakeRuns,
 			Now:           now,
 			TestTimeout:   testTimeout,
-			Scrubber:      scrubber,
+			Scrubber:      instScrubber,
 			ScrubOutDir:   *outDir,
 			LeakThreshold: *leakThreshold,
 			NoScrub:       *noScrub,
@@ -224,6 +226,10 @@ func printSummary(total, accepted int, rejections []*gobench.Rejection) {
 		fmt.Fprintf(tw, "  - %s\t%d\n", k, reasons[k])
 	}
 	tw.Flush()
+}
+
+func shouldFetchIssueBody(inst gobench.Instance, noScrub bool) bool {
+	return !noScrub && strings.TrimSpace(inst.IssueURL) != ""
 }
 
 func fetchIssueBody(ctx context.Context, issueURL string) (string, error) {

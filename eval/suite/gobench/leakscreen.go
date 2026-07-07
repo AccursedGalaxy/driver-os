@@ -16,6 +16,12 @@ const DefaultLeakNgramSize = 8
 const DefaultLeakThreshold = 0.05
 
 func RunLeakScreen(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
+	return runLeakScreen(ctx, inst, checkoutDir, threshold, screenedAt)
+}
+
+var runLeakScreen = runLeakScreenImpl
+
+func runLeakScreenImpl(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
 	raw, err := runGitCaptured(ctx, checkoutDir, "diff", "--unified=0", inst.BaseCommit+".."+inst.GoldCommit, "--", ".")
 	if err != nil {
 		return LeakScreen{}, err

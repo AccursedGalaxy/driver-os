@@ -1,6 +1,7 @@
 package gobench
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -268,5 +269,89 @@ func TestClassifyGoldGreen(t *testing.T) {
 				t.Fatalf("classifyGoldGreen() = (%v, %q), want (%v, %q)", gotOK, gotReason, tt.wantOK, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestStage7AuthoredModeSkipsScrubAndPopulatesLeakScreen(t *testing.T) {
+	old := runLeakScreen
+	t.Cleanup(func() { runLeakScreen = old })
+	var screened string
+	runLeakScreen = func(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
+		screened = inst.ProblemStatement
+		return LeakScreen{Method: "ngram-overlap", Passed: true, Threshold: threshold, ScreenedAt: screenedAt}, nil
+	}
+
+	inst := Instance{InstanceID: "authored", ProblemStatement: "human authored symptom"}
+	rej, err := runStage7(context.Background(), &inst, "gold", ValidateOpts{Now: "2026-01-02T03:04:05Z", LeakThreshold: 0.12})
+	if err != nil || rej != nil {
+		t.Fatalf("runStage7 err=%v rej=%v", err, rej)
+	}
+	if screened != "human authored symptom" {
+		t.Fatalf("screened statement=%q", screened)
+	}
+	if inst.Validation.LeakScreen.Method == "" {
+		t.Fatalf("leak screen not populated")
+	}
+}
+
+func TestStage7NoScrubStillPopulatesLeakScreen(t *testing.T) {
+	old := runLeakScreen
+	t.Cleanup(func() { runLeakScreen = old })
+	called := false
+	runLeakScreen = func(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
+		called = true
+		if inst.ProblemStatement != "raw issue text" {
+			t.Fatalf("statement was scrubbed: %q", inst.ProblemStatement)
+		}
+		return LeakScreen{Method: "ngram-overlap", Passed: true}, nil
+	}
+
+	inst := Instance{InstanceID: "noscrub", ProblemStatement: "raw issue text"}
+	rej, err := runStage7(context.Background(), &inst, "gold", ValidateOpts{NoScrub: true, Scrubber: fakeScrubber{"scrubbed"}})
+	if err != nil || rej != nil {
+		t.Fatalf("runStage7 err=%v rej=%v", err, rej)
+	}
+	if !called || inst.Validation.LeakScreen.Method == "" {
+		t.Fatalf("leak screen not populated; called=%v receipt=%+v", called, inst.Validation.LeakScreen)
+	}
+}
+
+func TestStage7RejectsEmptyStatementBeforeLeakScreen(t *testing.T) {
+	old := runLeakScreen
+	t.Cleanup(func() { runLeakScreen = old })
+	runLeakScreen = func(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
+		t.Fatalf("leak screen should not run for empty statement")
+		return LeakScreen{}, nil
+	}
+
+	inst := Instance{InstanceID: "empty", ProblemStatement: " \t\n"}
+	rej, err := runStage7(context.Background(), &inst, "gold", ValidateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rej == nil || rej.Stage != "leak-screen" || rej.Reason != "empty-statement" {
+		t.Fatalf("rejection=%+v", rej)
+	}
+}
+
+func TestStage7ScrubbedPathScreensScrubbedStatement(t *testing.T) {
+	old := runLeakScreen
+	t.Cleanup(func() { runLeakScreen = old })
+	var screened string
+	runLeakScreen = func(ctx context.Context, inst Instance, checkoutDir string, threshold float64, screenedAt string) (LeakScreen, error) {
+		screened = inst.ProblemStatement
+		return LeakScreen{Method: "ngram-overlap", Passed: true}, nil
+	}
+
+	inst := Instance{InstanceID: "scrubbed", ProblemStatement: "raw fix hint"}
+	rej, err := runStage7(context.Background(), &inst, "gold", ValidateOpts{Scrubber: fakeScrubber{"verbatim symptom"}})
+	if err != nil || rej != nil {
+		t.Fatalf("runStage7 err=%v rej=%v", err, rej)
+	}
+	if inst.ProblemStatement != "verbatim symptom" || screened != "verbatim symptom" {
+		t.Fatalf("statement=%q screened=%q", inst.ProblemStatement, screened)
+	}
+	if inst.Validation.LeakScreen.Method == "" {
+		t.Fatalf("leak screen not populated")
 	}
 }
