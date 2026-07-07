@@ -71,6 +71,7 @@ type gates struct {
 	fence      *fenceState
 	scope      *scopeState
 	review     *reviewState
+	repro      *reproState
 
 	verifyBaselineRed      bool
 	verifyBaselineOut      string
@@ -154,13 +155,16 @@ func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates
 // configured (the only path the guard affects). A failed snapshot leaves
 // runBaseTree empty — the upgrade path degrades to the historical behavior.
 func (g *gates) captureRunBaseTree(ctx context.Context) error {
-	if (!g.cfg.RequireDiff && g.cfg.VerifyCmd == "") || g.cfg.Root == "" {
+	if (!g.cfg.RequireDiff && !g.cfg.ReproFirst && g.cfg.VerifyCmd == "") || g.cfg.Root == "" {
 		if g.cfg.RequireDiff {
 			return setupErr("require_diff", "require-diff needs a git workspace root to define an empty diff")
 		}
 		return nil
 	}
-	if g.cfg.RequireDiff && !vcs.IsRepo(ctx, g.cfg.Root) {
+	if (g.cfg.RequireDiff || g.cfg.ReproFirst) && !vcs.IsRepo(ctx, g.cfg.Root) {
+		if g.cfg.ReproFirst {
+			return setupErr("repro_first", "repro-first needs a git repository to validate the base tree")
+		}
 		return setupErr("require_diff", "require-diff needs a git repository to define an empty diff")
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
@@ -517,6 +521,12 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
 	}
 	if skipped || err != nil || isRunFailure(out) {
+		return res
+	}
+	if fb, detail := g.reproFinish(ctx); fb != "" {
+		g.cfg.Obs.Note("upgrade blocked — " + detail)
+		res.Outcome = Unverified
+		res.Reason = detail
 		return res
 	}
 	// Execution is green; the review gate has the final word on the upgrade.

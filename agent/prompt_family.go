@@ -107,6 +107,13 @@ func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 		}
 		note += "code-as-action mode ON"
 	}
+	if cfg.ReproFirst {
+		prompt += reproFirstAddendum
+		if note != "" {
+			note += "; "
+		}
+		note += "repro-first enforcement ON"
+	}
 	if cfg.ReproGate {
 		prompt += reproGateAddendum
 		if note != "" {
@@ -135,3 +142,6 @@ const reproGateAddendum = "\n\nTRACE-THE-PRODUCER, THEN REPRODUCE\n" +
 	"- REPRODUCE EVERY BRANCH: before editing production code, write a check that FAILS on the unmodified code and that exercises EACH producer branch you enumerated (every distinct input regime — e.g. boundary-straddling, entirely-inside, entirely-outside), not a single happy-path example. Run it and confirm it is RED. If you cannot make it fail, you do not yet understand the bug — keep tracing, do NOT start fixing.\n" +
 	"- CONFIRM RED->GREEN: after fixing, re-run your reproduction across all branches, confirm it now PASSES, and confirm you did not break neighboring behavior.\n" +
 	"- Only THEN answer, naming which producer(s) you traced, every branch you checked, and why your reproduction covers them. If you skipped any step, say so explicitly and why."
+
+const reproFirstAddendum = "\n\nREPRO-FIRST ENFORCEMENT\n" +
+	"Before your fix can be accepted, write a NEW test file that reproduces the bug, then call declare_repro with {path, cmd}. Use a TARGETED command such as `go test -run TestX ./pkg`, not the full suite. The harness will run that command on the pristine base tree with your repro file injected; it must fail as a TEST failure, not a build/setup failure. After validation the repro file is locked. Your final answer is accepted only after the same command passes on the fixed tree. If the task genuinely cannot be reproduced by an executable test, call skip_repro with a non-empty reason and say so in your answer."

@@ -251,6 +251,8 @@ type RunResult struct {
 	// Reviewer was configured; populated on every loop exit when one was, even
 	// if the gate never fired (Skipped says why).
 	Review *ReviewReport
+	// Repro is the repro-first gate report. nil unless ReproFirst was enabled.
+	Repro *ReproReport
 	// Plan is the plan-stage record — the plan the solver was handed (or why
 	// there was none) and the planner's own token cost, kept OUT of Usage so
 	// per-role spend stays attributable. nil when no Planner was configured.
@@ -431,6 +433,12 @@ type Config struct {
 	// and verify changes — rather than issuing many discrete file-tool calls.
 	// An A/B experiment knob (docs/specs/CODEACT-SCREEN.md); arms differ in it alone.
 	CodeAct bool
+
+	// ReproFirst enforces a red-at-base/green-after-fix reproduction test in the
+	// native tool protocol. The solver must write a new test file and call
+	// declare_repro before answering, unless it explicitly skip_repro's with a
+	// reason.
+	ReproFirst bool
 
 	// ReproGate, when true, appends a reproduction-first disposition to the solver system prompt.
 	ReproGate bool

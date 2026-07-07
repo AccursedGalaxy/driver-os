@@ -77,6 +77,18 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 		g.cfg.Obs.Note(prefix + " — " + reason)
 		return stopWith(outcome, reason, in.answer)
 	}
+	if fb, detail := g.reproFinish(ctx); fb != "" {
+		// repro_missing is a protocol step (declare_repro or skip_repro), not
+		// a red gate: feed it back whenever the loop can continue, even
+		// without -verify-continue — otherwise the first answer attempt dies
+		// before the model gets the nudge. repro_red mirrors verify-red.
+		if in.canContinue && (detail == "repro_missing" || g.cfg.VerifyContinue) {
+			g.cfg.Obs.Note("finish rejected (repro-first) — continuing")
+			return continueWith("OBSERVATION:\nNot finished — " + fb + "\nKeep working: satisfy the repro-first gate before answering.")
+		}
+		g.cfg.Obs.Note("answer not verified — " + detail)
+		return stopWith(Unverified, detail, in.answer)
+	}
 	if strings.TrimSpace(in.answer) == "" {
 		g.cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
 		return stopWith(Unverified, "empty final answer — the model stopped without producing an answer", in.answer)

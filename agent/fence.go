@@ -50,6 +50,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -355,11 +356,26 @@ func fenceRefusal(p string, globs []string) error {
 // never mutated) and is a no-op for an empty fence, keeping the fence-off
 // behavior byte-identical. Only the two known mutation tools are wrapped —
 // `run`-mediated writes are the closing re-hash's job.
-func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox) map[string]Tool {
+func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox, cfgs ...Config) map[string]Tool {
 	if len(globs) == 0 || tools == nil {
 		return tools
 	}
 	alias := sandboxAlias(sb)
+	var cfg Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
+	allowReproNew := func(p string) bool {
+		if !cfg.ReproFirst || cfg.Root == "" {
+			return false
+		}
+		rel := cleanRel(fenceRelPath(alias, p))
+		if rel == "" || strings.HasPrefix(rel, "../") {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(cfg.Root, filepath.FromSlash(rel)))
+		return os.IsNotExist(err)
+	}
 	out := make(map[string]Tool, len(tools))
 	for k, v := range tools {
 		out[k] = v
@@ -377,7 +393,7 @@ func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox) m
 				if i := strings.IndexAny(arg, " \t"); i >= 0 {
 					p = arg[:i]
 				}
-				if matchesFence(globs, fenceRelPath(alias, p)) {
+				if matchesFence(globs, fenceRelPath(alias, p)) && !allowReproNew(p) {
 					return "", fenceRefusal(p, globs)
 				}
 				return run(ctx, arg)
@@ -389,7 +405,7 @@ func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox) m
 					Path string `json:"path"`
 				}
 				if json.Unmarshal(raw, &a) == nil && a.Path != "" &&
-					matchesFence(globs, fenceRelPath(alias, a.Path)) {
+					matchesFence(globs, fenceRelPath(alias, a.Path)) && !allowReproNew(a.Path) {
 					return "", fenceRefusal(a.Path, globs)
 				}
 				return runJSON(ctx, raw)

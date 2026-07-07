@@ -88,7 +88,7 @@ func wrapTools(cfg Config, runTimeout time.Duration) map[string]Tool {
 	// Diff-scope wraps FIRST, test-fence LAST, so the fence wins for fenced
 	// in-scope paths (the refusal names whichever mechanism refused).
 	tools = applyDiffScope(tools, cfg.DiffScope, cfg.Sandbox)
-	tools = applyTestFence(tools, cfg.TestFence, cfg.Sandbox)
+	tools = applyTestFence(tools, cfg.TestFence, cfg.Sandbox, cfg)
 	return tools
 }
 

@@ -164,6 +164,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Tools = gs.addReproTools(cfg.Tools)
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
 	// that can't have left work half-done, so a forced "stop and answer" can't mask an
@@ -187,6 +188,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	defer func() {
 		if out != nil {
 			out.Review = gs.reviewReport()
+			out.Repro = gs.reproReport()
 		}
 	}()
 
