@@ -266,6 +266,35 @@ func TestRestoreTreeRestoresModifiedDeletedAndAddedFiles(t *testing.T) {
 	}
 }
 
+// RestoreTree must remove added files even when dir is a SUBDIRECTORY of the
+// work tree (module_dir runs): git reports diff names relative to the repo
+// toplevel, so joining them against dir silently skips every removal — the
+// bug that made declare_repro reject genuinely new files on dolt-11215.
+func TestRestoreTreeFromModuleSubdirRemovesAddedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := initRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "go", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "go/pkg/a.txt", "base\n")
+	sub := filepath.Join(root, "go")
+	base, err := WriteTree(ctx, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "go/pkg/new_test.go", "package pkg\n")
+	write(t, root, "go/pkg/a.txt", "changed\n")
+	if err := RestoreTree(ctx, sub, base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go", "pkg", "new_test.go")); !os.IsNotExist(err) {
+		t.Fatalf("added file survived subdir RestoreTree (err=%v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "go", "pkg", "a.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("a.txt = %q err=%v, want restored to base", got, err)
+	}
+}
+
 // RestoreTree must remove ignored artifacts left by a prior attempt, so each
 // escalation rung starts from an exact baseline. WriteTree respects .gitignore,
 // so a tree it restores never includes ignored files; without a clean step the

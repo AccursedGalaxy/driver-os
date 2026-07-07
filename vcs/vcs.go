@@ -171,15 +171,28 @@ func RestoreTree(ctx context.Context, dir, tree string) error {
 	if err != nil {
 		return err
 	}
+	// git reports diff names relative to the repo TOPLEVEL, not dir. When dir
+	// is a subdirectory of the work tree (module_dir runs), joining against
+	// dir silently misses every removal — the "restore" then leaves added
+	// files in place. checkout-index below is unaffected (index paths resolve
+	// against the work tree), so only removals need the toplevel anchor.
+	top := dir
+	if len(added) > 0 {
+		out, err := run(ctx, dir, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return err
+		}
+		top = strings.TrimSpace(out)
+	}
 	for _, name := range added {
-		path, ok := safeTreePath(dir, name)
+		path, ok := safeTreePath(top, name)
 		if !ok {
 			return fmt.Errorf("refusing to remove unsafe git path %q", name)
 		}
 		if err := os.RemoveAll(path); err != nil {
 			return err
 		}
-		pruneEmptyParents(dir, name)
+		pruneEmptyParents(top, name)
 	}
 
 	// The index path must not pre-exist; see WriteTree for the same git quirk.
