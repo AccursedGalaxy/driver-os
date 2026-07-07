@@ -235,17 +235,18 @@ type RunResult struct {
 	ID string
 	// StartedAt/EndedAt bound the run's wall-clock (stamped by the loop). Distinct from
 	// the per-step ModelMs/ToolMs, which sum only time spent IN model calls and tools.
-	StartedAt  time.Time
-	EndedAt    time.Time
-	Task       string
-	Root       string  // the dir the sandbox was rooted at (Config.Root).
-	Outcome    Outcome // how the run ended.
-	Answer     string  // the final answer, set iff Outcome == Answered.
-	Reason     string  // human explanation for a non-Answered outcome (kept so the CLI prints the old message verbatim).
-	Steps      []Step  // the full trace.
-	Iterations int     // turns taken.
-	Usage      llm.Usage
-	Err        error // set iff Outcome == ProviderErr.
+	StartedAt   time.Time
+	EndedAt     time.Time
+	Task        string
+	Root        string  // the dir the sandbox was rooted at (Config.Root).
+	Outcome     Outcome // how the run ended.
+	RescuedFrom Outcome // pre-upgrade Outcome when upgradeIfVerified rescued this run to Answered. Outcome == Answered && RescuedFrom != "" means the model never itself claimed completion — the harness gates proved the work complete after a cap/kill exit.
+	Answer      string  // the final answer, set iff Outcome == Answered.
+	Reason      string  // human explanation for a non-Answered outcome (kept so the CLI prints the old message verbatim).
+	Steps       []Step  // the full trace.
+	Iterations  int     // turns taken.
+	Usage       llm.Usage
+	Err         error // set iff Outcome == ProviderErr.
 	// Review is the review-gate record — rounds, every finding with its fate,
 	// and the reviewer's token cost (the calibration telemetry). nil when no
 	// Reviewer was configured; populated on every loop exit when one was, even

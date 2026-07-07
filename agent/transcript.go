@@ -23,7 +23,9 @@ import (
 //	     both shapes for backward-compat with v1-era records).
 //	v3 = RunRecord carries Messages, the continuation seam for resuming a
 //	     conversation into agent.Session.
-const TranscriptSchemaVersion = "3"
+//	v4 = RunRecord carries RescuedFrom, preserving the pre-upgrade outcome for
+//	     cap/kill/deadline/budget runs rescued by harness gates.
+const TranscriptSchemaVersion = "4"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -82,6 +84,7 @@ type RunRecord struct {
 	Model         string    `json:"model,omitempty"` // the caller's provider label (the loop doesn't know it).
 	Task          string    `json:"task"`
 	Outcome       Outcome   `json:"outcome"`
+	RescuedFrom   Outcome   `json:"rescued_from,omitempty"`
 	Answer        string    `json:"answer,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 	Iterations    int       `json:"iterations"`
@@ -112,6 +115,7 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Model:         model,
 		Task:          res.Task,
 		Outcome:       res.Outcome,
+		RescuedFrom:   res.RescuedFrom,
 		Answer:        res.Answer,
 		Reason:        res.Reason,
 		Iterations:    res.Iterations,
@@ -203,6 +207,7 @@ type runIndexEntry struct {
 	EndedAt     string    `json:"ended_at,omitempty"`
 	Model       string    `json:"model,omitempty"`
 	Outcome     Outcome   `json:"outcome"`
+	RescuedFrom Outcome   `json:"rescued_from,omitempty"`
 	Iterations  int       `json:"iterations"`
 	Usage       llm.Usage `json:"usage"`
 	TaskPreview string    `json:"task_preview,omitempty"`
@@ -210,7 +215,7 @@ type runIndexEntry struct {
 
 func appendRunIndex(path string, rec RunRecord) error {
 	line, err := json.Marshal(runIndexEntry{
-		ID: rec.ID, EndedAt: rec.EndedAt, Model: rec.Model, Outcome: rec.Outcome,
+		ID: rec.ID, EndedAt: rec.EndedAt, Model: rec.Model, Outcome: rec.Outcome, RescuedFrom: rec.RescuedFrom,
 		Iterations: rec.Iterations, Usage: rec.Usage, TaskPreview: taskPreview(rec.Task),
 	})
 	if err != nil {

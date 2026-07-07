@@ -615,7 +615,9 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		g.cfg.Obs.Note("upgrade blocked — " + blockReason)
 		return res
 	}
-	res.Reason = fmt.Sprintf("completed despite %s — %q passed", res.Outcome, g.cfg.VerifyCmd)
+	originalOutcome := res.Outcome
+	res.Reason = fmt.Sprintf("completed despite %s — %q passed", originalOutcome, g.cfg.VerifyCmd)
+	res.RescuedFrom = originalOutcome
 	res.Outcome = Answered
 	if res.Answer == "" {
 		res.Answer = fmt.Sprintf("task verified complete (%q passed)", g.cfg.VerifyCmd)
