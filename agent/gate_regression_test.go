@@ -21,7 +21,10 @@ func TestNewGateSkipVerifyBaseline(t *testing.T) {
 
 	// 1. Construct NewGate.
 	ctx := context.Background()
-	g := NewGate(ctx, cfg)
+	g, err := NewGate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("NewGate: %v", err)
+	}
 	if g == nil {
 		t.Fatal("NewGate returned nil")
 	}
@@ -68,7 +71,7 @@ func TestBaselinePreamble(t *testing.T) {
 			VerifyCmd: "true",
 		}
 		ctx := context.Background()
-		gs := newGates(ctx, cfg, defaultRunTimeout)
+		gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
 		if pre := gs.baselinePreamble(); pre != "" {
 			t.Errorf("baselinePreamble() = %q, want empty on green", pre)
 		}
@@ -80,7 +83,7 @@ func TestBaselinePreamble(t *testing.T) {
 			VerifyCmd: "false",
 		}
 		ctx := context.Background()
-		gs := newGates(ctx, cfg, defaultRunTimeout)
+		gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
 		if !gs.verifyBaselineRed {
 			t.Fatal("verifyBaselineRed is false, test setup failed — 'false' should be red")
 		}
@@ -106,7 +109,7 @@ func TestBaselinePreamble(t *testing.T) {
 			SkipVerifyBaseline: true,
 		}
 		ctx := context.Background()
-		gs := newGates(ctx, cfg, defaultRunTimeout)
+		gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
 		if pre := gs.baselinePreamble(); pre != "" {
 			t.Errorf("baselinePreamble() = %q, want empty when skipped", pre)
 		}
@@ -158,7 +161,7 @@ func TestUpgradeIfVerifiedRefusesEmptyDiff(t *testing.T) {
 		VerifyCmd: "true",
 		Obs:       nopObserver{},
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree == "" {
 		t.Fatal("runBaseTree is empty — baseline tree was not captured")
 	}
@@ -185,7 +188,7 @@ func TestUpgradeIfVerifiedUpgradesWithDiff(t *testing.T) {
 		VerifyCmd: "true",
 		Obs:       nopObserver{},
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree == "" {
 		t.Fatal("runBaseTree is empty — baseline tree was not captured")
 	}
@@ -207,7 +210,7 @@ func TestUpgradeIfVerifiedDegradesWithoutBaseline(t *testing.T) {
 		VerifyCmd: "true",
 		Obs:       nopObserver{},
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree != "" {
 		t.Fatal("runBaseTree should be empty when Root is empty")
 	}
@@ -231,7 +234,7 @@ func TestUpgradeIfVerifiedSideEffectingVerifyDoesNotUpgrade(t *testing.T) {
 		VerifyCmd: `sh -c 'printf x >> verify-artifact.txt'`,
 		Obs:       nopObserver{},
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree == "" {
 		t.Fatal("runBaseTree is empty — baseline tree was not captured")
 	}

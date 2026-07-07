@@ -68,7 +68,7 @@ func TestVerifyTerminationTimeoutAndBaselineGrace(t *testing.T) {
 		Sandbox:        sb,
 	}
 
-	g := newGates(context.Background(), cfg, 0)
+	g := mustNewGates(t, context.Background(), cfg, 0)
 	if !g.verifyBaselineRed {
 		t.Fatal("verifyBaselineRed = false, want true (baseline should be red)")
 	}
@@ -146,7 +146,7 @@ func TestTimedOutBaselineIsNoSignal(t *testing.T) {
 		Sandbox:   sb,
 	}
 
-	g := newGates(context.Background(), cfg, 0)
+	g := mustNewGates(t, context.Background(), cfg, 0)
 	if g.verifyBaselineRed {
 		t.Error("verifyBaselineRed = true, want false (timed-out baseline is no signal)")
 	}

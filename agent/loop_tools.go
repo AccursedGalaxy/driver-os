@@ -160,7 +160,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	cfg.Tools = wrapTools(cfg, runTimeout)
-	gs := newGates(ctx, cfg, runTimeout)
+	gs, err := newGates(ctx, cfg, runTimeout)
+	if err != nil {
+		return nil, err
+	}
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
 	// that can't have left work half-done, so a forced "stop and answer" can't mask an

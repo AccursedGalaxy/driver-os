@@ -171,13 +171,16 @@ func TestGateContextReviewerFailOpenIntegration(t *testing.T) {
 	// errReviewer returns an error on every Review call.
 	errReviewer := &fakeReviewer{err: errors.New("review infrastructure fault")}
 
-	g := NewGate(context.Background(), Config{
+	g, err := NewGate(context.Background(), Config{
 		Obs:      nopObserver{},
 		Task:     "fix it",
 		Root:     root,
 		Sandbox:  sb,
 		Reviewer: errReviewer,
 	})
+	if err != nil {
+		t.Fatalf("NewGate: %v", err)
+	}
 
 	// Mutate the workspace so the diff is non-empty, ensuring the reviewer
 	// path is reached (not the "no changes" early return).

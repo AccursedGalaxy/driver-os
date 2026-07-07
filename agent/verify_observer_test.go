@@ -74,7 +74,7 @@ func TestVerifyObserverSeesUpgradeCheck(t *testing.T) {
 		VerifyCmd: "true",
 		Obs:       spy,
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree == "" {
 		t.Fatal("runBaseTree is empty — baseline tree was not captured")
 	}
@@ -97,7 +97,7 @@ func TestVerifyObserverSilentOnUserCancel(t *testing.T) {
 	cancel() // user cancel — the check never runs, so nothing must be reported.
 	spy := &verifySpy{}
 	cfg := Config{Sandbox: sbWith(t, nil), VerifyCmd: "true", Obs: spy}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	gs.upgradeIfVerified(ctx, &RunResult{Outcome: HitCap})
 	verifyTermination(ctx, cfg, false, time.Second)
 	if len(spy.oks) != 0 {

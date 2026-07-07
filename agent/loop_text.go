@@ -37,7 +37,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	cfg.Tools = wrapTools(cfg, runTimeout)
-	gs := newGates(ctx, cfg, runTimeout)
+	gs, err := newGates(ctx, cfg, runTimeout)
+	if err != nil {
+		return nil, err
+	}
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	recordAutoVerifyResolution(res, cfg)

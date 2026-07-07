@@ -21,7 +21,7 @@ func TestVerifyCompletionSkipsVerifyRunOnUnchangedGreenBaseline(t *testing.T) {
 		VerifyCmd: "test ! -f " + shellSingleQuote(tripwire),
 		Obs:       obs,
 	}
-	gs := newGates(ctx, cfg, defaultRunTimeout)
+	gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
 	if gs.verifyBaselineRed {
 		t.Fatal("verifyBaselineRed = true, want green baseline before tripwire exists")
 	}
@@ -59,7 +59,7 @@ func TestVerifyCompletionUnchangedRedBaselinePreservesFailureAndSkipsRun(t *test
 		VerifyCmd: `sh -c 'printf x >> verify-count.txt; exit 1'`,
 		Obs:       &noteSpy{},
 	}
-	gs := newGates(ctx, cfg, defaultRunTimeout)
+	gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
 	if !gs.verifyBaselineRed {
 		t.Fatal("verifyBaselineRed = false, want true from failing baseline")
 	}

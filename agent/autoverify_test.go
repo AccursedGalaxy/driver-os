@@ -146,7 +146,7 @@ func TestAutoVerifySoftAcceptsAfterFeedback(t *testing.T) {
 		VerifyContinue:     true,
 		Obs:                nopObserver{},
 	}
-	g := newGates(context.Background(), cfg, time.Second)
+	g := mustNewGates(t, context.Background(), cfg, time.Second)
 	in := finishInput{answer: "done", canContinue: true, verifyContinuePhrase: "you said done"}
 	for i := 0; i < autoVerifyMaxFeedback; i++ {
 		if d := g.finish(context.Background(), in); d.kind != finishContinue {
@@ -166,7 +166,7 @@ func TestExplicitVerifyStillUnverified(t *testing.T) {
 		VerifyContinue:     true,
 		Obs:                nopObserver{},
 	}
-	g := newGates(context.Background(), cfg, time.Second)
+	g := mustNewGates(t, context.Background(), cfg, time.Second)
 	d := g.finish(context.Background(), finishInput{answer: "done", canContinue: false})
 	if d.kind != finishStop || d.outcome != Unverified {
 		t.Fatalf("explicit failing verify = kind %v outcome %v, want stop/unverified", d.kind, d.outcome)

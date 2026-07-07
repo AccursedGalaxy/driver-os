@@ -109,39 +109,54 @@ type gates struct {
 // solver's diff will be taken against (slice 1a). It also measures the
 // VerifyCmd baseline (pre-flight) when configured, and captures the run-start
 // git tree for the upgradeIfVerified empty-diff guard.
-func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) *gates {
+func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates, error) {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
+	}
+	review, err := newReviewState(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
 	g := &gates{
 		cfg:        cfg,
 		runTimeout: runTimeout,
 		fence:      newFenceState(ctx, cfg),
 		scope:      newScopeState(ctx, cfg),
-		review:     newReviewState(ctx, cfg),
+		review:     review,
 	}
 	g.measureVerifyBaseline(ctx)
-	g.captureRunBaseTree(ctx)
+	if err := g.captureRunBaseTree(ctx); err != nil {
+		return nil, err
+	}
 	g.captureStandingBaseTree(ctx)
-	return g
+	return g, nil
 }
 
 // captureRunBaseTree snapshots the run-start git tree for the
 // upgradeIfVerified empty-diff guard. It only runs when VerifyCmd is
 // configured (the only path the guard affects). A failed snapshot leaves
 // runBaseTree empty — the upgrade path degrades to the historical behavior.
-func (g *gates) captureRunBaseTree(ctx context.Context) {
-	if g.cfg.VerifyCmd == "" || g.cfg.Root == "" {
-		return
+func (g *gates) captureRunBaseTree(ctx context.Context) error {
+	if (!g.cfg.RequireDiff && g.cfg.VerifyCmd == "") || g.cfg.Root == "" {
+		if g.cfg.RequireDiff {
+			return setupErr("require_diff", "require-diff needs a git workspace root to define an empty diff")
+		}
+		return nil
+	}
+	if g.cfg.RequireDiff && !vcs.IsRepo(ctx, g.cfg.Root) {
+		return setupErr("require_diff", "require-diff needs a git repository to define an empty diff")
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
 	tree, err := vcs.WriteTree(gctx, g.cfg.Root)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("upgrade guard: baseline tree snapshot failed (" + err.Error() + ") — upgrade will not check diff")
-		return
+		if g.cfg.RequireDiff {
+			return setupErr("require_diff", "require-diff could not capture the run baseline: "+err.Error())
+		}
+		return nil
 	}
 	g.runBaseTree = tree
+	return nil
 }
 
 func (g *gates) captureStandingBaseTree(ctx context.Context) {
@@ -340,7 +355,27 @@ func (g *gates) verifySafety(ctx context.Context) (outcome Outcome, reason strin
 	return "", "", false
 }
 
+func (g *gates) unchangedRunTree(ctx context.Context) bool {
+	if g.runBaseTree == "" {
+		return false
+	}
+	gctx, cancel := gateContext(ctx, gateDiffTimeout)
+	curTree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	cancel()
+	return err == nil && curTree == g.runBaseTree
+}
+
+func (g *gates) requireDiffFailure(ctx context.Context) (Outcome, string, bool) {
+	if g.cfg.RequireDiff && g.unchangedRunTree(ctx) {
+		return Unverified, "require-diff: run completed with no changes", true
+	}
+	return "", "", false
+}
+
 func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
+	if out, reason, stop := g.requireDiffFailure(ctx); reason != "" {
+		return out, reason, stop
+	}
 	if g.runBaseTree != "" && !g.cfg.SkipVerifyBaseline && g.verifyBaselineMeasured {
 		gctx, cancel := gateContext(ctx, gateDiffTimeout)
 		curTree, err := vcs.WriteTree(gctx, g.cfg.Root)
@@ -433,6 +468,11 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		g.cfg.Obs.Note("upgrade blocked — " + sReason)
 		res.Outcome = ScopeViolation
 		res.Reason = sReason
+		return res
+	}
+	if out, reason, _ := g.requireDiffFailure(ctx); reason != "" {
+		res.Outcome = out
+		res.Reason = reason
 		return res
 	}
 	if g.cfg.VerifyCmd == "" {
@@ -924,8 +964,11 @@ type GateReport struct {
 
 // NewGate snapshots the workspace's gate baseline. Config needs Sandbox, Root,
 // Task, and whichever gate knobs apply (TestFence, VerifyCmd, Reviewer,
-// RunTimeout); Model is not used — there is no solver.
-func NewGate(ctx context.Context, cfg Config) *Gate {
+// RunTimeout); Model is not used — there is no solver. A setup failure (e.g.
+// reviewer armed on a tree the review gate cannot baseline) is returned,
+// never swallowed: a silently review-less verdict is exactly the fail-open
+// the 2026-07-07 fail-closed change exists to prevent.
+func NewGate(ctx context.Context, cfg Config) (*Gate, error) {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
@@ -935,7 +978,11 @@ func NewGate(ctx context.Context, cfg Config) *Gate {
 	if rt <= 0 {
 		rt = defaultRunTimeout
 	}
-	return &Gate{g: newGates(ctx, cfg, rt)}
+	g, err := newGates(ctx, cfg, rt)
+	if err != nil {
+		return nil, err
+	}
+	return &Gate{g: g}, nil
 }
 
 // Check runs the composed closing gate once and reports every stage's verdict.

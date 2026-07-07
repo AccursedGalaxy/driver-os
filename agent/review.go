@@ -226,14 +226,26 @@ type reviewState struct {
 	usage      llm.Usage
 }
 
+// SetupError is a typed pre-solver configuration failure. Callers should report
+// it as a setup error rather than as a model/provider run result.
+type SetupError struct {
+	Kind string
+	Msg  string
+}
+
+func (e *SetupError) Error() string { return e.Msg }
+
+func setupErr(kind, msg string) error { return &SetupError{Kind: kind, Msg: msg} }
+
 // newReviewState captures the diff BASELINE at run start: a git tree object of
 // the whole working tree (tracked + untracked, gitignore-respected) written
 // through a TEMPORARY index — the workspace's real index and HEAD are never
 // touched, and a dirty tree is fine (the diff is vs the recorded start state,
-// not vs HEAD). A non-git workspace records a skip reason and never blocks.
-func newReviewState(ctx context.Context, cfg Config) *reviewState {
+// not vs HEAD). A non-git workspace records a skip reason only when review is
+// optional; otherwise an armed-but-inoperable gate is a setup error.
+func newReviewState(ctx context.Context, cfg Config) (*reviewState, error) {
 	if cfg.Reviewer == nil {
-		return nil
+		return nil, nil
 	}
 	// sessionKey is a fresh nonce per run (not the run ID — the state exists
 	// before the result is stamped); its only contract is same-run stability.
@@ -255,12 +267,15 @@ func newReviewState(ctx context.Context, cfg Config) *reviewState {
 		}
 	}
 	if rv.skip != "" {
+		if !cfg.ReviewOptional {
+			return nil, setupErr("review_unavailable", rv.skip+" (review gate was armed; pass -review-optional to skip and continue)")
+		}
 		rv.status = ReviewUnavailable
 		if cfg.Obs != nil {
 			cfg.Obs.Note(rv.skip)
 		}
 	}
-	return rv
+	return rv, nil
 }
 
 // report renders the terminal ReviewReport (nil when the gate was off). Any

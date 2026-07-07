@@ -441,7 +441,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo.
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv})
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewOptional: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestReviewRequiredSkipNoRootYieldsUnverified(t *testing.T) {
 	ns := &nativeScript{turns: editThenAnswer()}
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: "", Task: "fix calc",
-		Reviewer: rv, ReviewRequired: true,
+		Reviewer: rv, ReviewRequired: true, ReviewOptional: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -538,7 +538,7 @@ func TestReviewRequiredSkipNonGitYieldsUnverified(t *testing.T) {
 	root := t.TempDir() // NOT a git repo.
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
-		Reviewer: rv, ReviewRequired: true,
+		Reviewer: rv, ReviewRequired: true, ReviewOptional: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -566,7 +566,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 	root := t.TempDir() // NOT a git repo → skip.
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "t",
-		Reviewer: rv, ReviewRequired: false,
+		Reviewer: rv, ReviewRequired: false, ReviewOptional: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1257,5 +1257,59 @@ func TestReportSummaryCounts(t *testing.T) {
 	}
 	if res.Review.UnconfirmedBlockers != 1 {
 		t.Errorf("UnconfirmedBlockers = %d, want 1", res.Review.UnconfirmedBlockers)
+	}
+}
+
+func TestReviewArmedNonRepoFailsSetupUnlessOptional(t *testing.T) {
+	root := t.TempDir()
+	sb, err := local.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sb.Close() })
+
+	cfg := Config{Model: &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}, Sandbox: sb, Root: root, Task: "x", Reviewer: &fakeReviewer{}}
+	res, err := RunNative(context.Background(), cfg)
+	if err == nil {
+		t.Fatalf("err = nil, res=%#v; want setup error", res)
+	}
+	var serr *SetupError
+	if !errors.As(err, &serr) || serr.Kind != "review_unavailable" {
+		t.Fatalf("err = %T %[1]v, want review_unavailable SetupError", err)
+	}
+
+	cfg.ReviewOptional = true
+	res, err = RunNative(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("optional RunNative err: %v", err)
+	}
+	if res.Outcome != Answered {
+		t.Fatalf("optional outcome = %s reason %q, want answered", res.Outcome, res.Reason)
+	}
+	if res.Review == nil || res.Review.Status != ReviewUnavailable || !strings.Contains(res.Review.Skipped, "not a git workspace") {
+		t.Fatalf("optional review report = %#v, want unavailable skip", res.Review)
+	}
+}
+
+func TestRequireDiffEmptyAndChangedCompletion(t *testing.T) {
+	res := reviewedRun(t, nil, Config{RequireDiff: true}, [][]llm.ContentPart{{llm.Text("done")}})
+	if res.Outcome != Unverified || !strings.Contains(res.Reason, "require-diff: run completed with no changes") {
+		t.Fatalf("empty-diff result = %s %q, want unverified require-diff", res.Outcome, res.Reason)
+	}
+
+	res = reviewedRun(t, nil, Config{RequireDiff: true}, editThenAnswer())
+	if res.Outcome != Answered {
+		t.Fatalf("changed result = %s %q, want answered", res.Outcome, res.Reason)
+	}
+}
+
+func TestRequireDiffHooksUnchangedTreeVerifyShortCircuit(t *testing.T) {
+	ctx := context.Background()
+	sb, root := setupGitRepo(t, map[string]string{"go.mod": "module x\n"})
+	cfg := Config{Sandbox: sb, Root: root, VerifyCmd: "true", RequireDiff: true, Obs: &noteSpy{}}
+	gs := mustNewGates(t, ctx, cfg, defaultRunTimeout)
+	outcome, reason, noContinue := gs.verifyCompletion(ctx, false)
+	if outcome != Unverified || !noContinue || !strings.Contains(reason, "require-diff: run completed with no changes") {
+		t.Fatalf("verifyCompletion = (%s, %q, %v), want require-diff unverified before unchanged-tree shortcut", outcome, reason, noContinue)
 	}
 }

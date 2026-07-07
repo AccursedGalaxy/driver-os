@@ -18,7 +18,7 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	_, root := gitWorkspace(t, map[string]string{"a.txt": "old\n"})
 	ctx := context.Background()
 	cfg := Config{Root: root, StandingContext: true, VerifyCmd: "go test ./...", SkipVerifyBaseline: true, Obs: nopObserver{}}
-	gs := newGates(ctx, cfg, 0)
+	gs := mustNewGates(t, ctx, cfg, 0)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestStandingDirtyBaselineScopesToModelChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{Root: root, StandingContext: true, Obs: nopObserver{}}
-	gs := newGates(ctx, cfg, 0)
+	gs := mustNewGates(t, ctx, cfg, 0)
 	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("model change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

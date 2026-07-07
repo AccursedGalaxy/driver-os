@@ -627,6 +627,17 @@ type Config struct {
 	// keep their normal behavior; caller cancellation still cancels the run.
 	ReviewRequired bool
 
+	// ReviewOptional restores fail-open review-gate arming for interactive or
+	// non-repository use. By default, configuring Reviewer but failing to capture
+	// the review baseline is a setup error, because a silently skipped armed gate
+	// corrupts headless measurements.
+	ReviewOptional bool
+
+	// RequireDiff makes an empty final workspace diff a failed completion rather
+	// than an answer. It requires a git baseline at startup and is opt-in because
+	// some tasks are legitimate no-ops.
+	RequireDiff bool
+
 	// ReviewRounds caps the reviewer↔solver repair cycles (0 =
 	// DefaultReviewRounds). Bounded on purpose: refine-loop gains concentrate in
 	// round 1, and unbounded review loops flip correct patches to wrong.

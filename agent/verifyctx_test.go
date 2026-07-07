@@ -33,7 +33,7 @@ func TestVerifyGatesSkipOnUserCancel(t *testing.T) {
 	cancel() // the user asked us to stop — spend nothing more.
 	exec := &countingExecSandbox{}
 	cfg := Config{VerifySandbox: exec, VerifyCmd: "true", SkipVerifyBaseline: true}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	res := gs.upgradeIfVerified(ctx, &RunResult{Outcome: HitCap})
 	if res.Outcome != HitCap {
 		t.Errorf("a user-canceled run must not be upgraded; got %q", res.Outcome)
@@ -58,7 +58,7 @@ func TestVerifyGatesRunDetachedPastDeadline(t *testing.T) {
 		Root:      root,
 		VerifyCmd: "true",
 	}
-	gs := newGates(context.Background(), cfg, defaultRunTimeout)
+	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	if gs.runBaseTree == "" {
 		t.Fatal("runBaseTree is empty — baseline tree was not captured")
 	}

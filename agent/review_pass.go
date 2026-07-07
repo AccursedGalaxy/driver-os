@@ -39,7 +39,10 @@ func reviewExistingWorkspacePass(ctx context.Context, cfg Config, runTimeout tim
 	// changes" to baseline, so skip the pre-flight VerifyCmd execution
 	// (same pattern as NewGate).
 	cfg.SkipVerifyBaseline = true
-	gs := newGates(ctx, cfg, runTimeout)
+	gs, err := newGates(ctx, cfg, runTimeout)
+	if err != nil {
+		return "", err.Error(), nil
+	}
 	if gs.review != nil {
 		if opts.BaseTree != "" {
 			gs.review.baseTree = opts.BaseTree
