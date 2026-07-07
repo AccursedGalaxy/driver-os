@@ -40,6 +40,7 @@ type redRun struct {
 	red         bool
 	passing     []string
 	missing     []string
+	infraDetail string
 }
 
 // Validate runs the in-package GoBench candidate validation pipeline.
@@ -78,7 +79,11 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	}
 	redResults, redRuns := runRedAtBase(inst, baseDir, testTimeout, k)
 	if ok, reason, detail := classifyRedAtBase(redRuns); !ok {
-		rej := rejection(inst, "red-at-base", reason, detail)
+		stage := "red-at-base"
+		if reason == "error" {
+			stage = "environment"
+		}
+		rej := rejection(inst, stage, reason, detail)
 		return inst, rej, nil
 	}
 
@@ -86,9 +91,12 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	if err := CheckoutBase(ctx, repoURL(inst.Repo), inst.GoldCommit, goldDir, opts.CacheDir); err != nil {
 		return inst, nil, err
 	}
-	goldResults, err := runGoldGreen(inst, goldDir, opts.OracleDir, testTimeout, k)
+	goldResults, infraDetail, err := runGoldGreen(inst, goldDir, opts.OracleDir, testTimeout, k)
 	if err != nil {
 		return inst, nil, err
+	}
+	if infraDetail != "" {
+		return inst, rejection(inst, "environment", "error", infraDetail), nil
 	}
 	if ok, reason := classifyGoldGreen(goldResults); !ok {
 		return inst, rejection(inst, "gold-green", reason, ""), nil
@@ -144,9 +152,50 @@ func validateEnvironment(inst Instance, checkoutDir string, timeout time.Duratio
 	spec := withToolchain(inst.Exec, inst.GoVersion)
 	res := runGoTest(checkoutDir, moduleDir, spec, timeout, []string{"go", "build", "./..."})
 	if res.err != nil {
-		return rejection(inst, "environment", "broken-base", head(nonEmpty(res.stderr, res.stdout), 1000))
+		detail := head(nonEmpty(res.stderr, res.stdout), 1000)
+		if infraDetail := classifyBuildFailure(res.stderr + "\n" + res.stdout); infraDetail != "" {
+			return rejection(inst, "environment", "error", infraDetail)
+		}
+		return rejection(inst, "environment", "broken-base", detail)
 	}
 	return nil
+}
+
+var buildFailureInfraSignatures = []string{
+	"disk quota exceeded",
+	"no space left on device",
+	"cannot find module",
+	"connection refused",
+	"connection reset",
+	"i/o timeout",
+	"tls handshake timeout",
+	"temporary failure in name resolution",
+	"cannot allocate memory",
+	"signal: killed",
+	"invalid toolchain",
+	"toolchain not available",
+	"dial tcp",
+}
+
+func classifyBuildFailure(output string) string {
+	lowerOutput := strings.ToLower(output)
+	for _, sig := range buildFailureInfraSignatures {
+		if idx := strings.Index(lowerOutput, sig); idx >= 0 {
+			return firstMatchedLine(output, idx)
+		}
+	}
+	return ""
+}
+
+func firstMatchedLine(output string, matchIdx int) string {
+	start := strings.LastIndex(output[:matchIdx], "\n") + 1
+	end := strings.Index(output[matchIdx:], "\n")
+	if end < 0 {
+		end = len(output)
+	} else {
+		end = matchIdx + end
+	}
+	return strings.TrimSpace(output[start:end])
 }
 
 func validateIsolation(inst Instance, checkoutDir, oracleDir string, timeout time.Duration) *Rejection {
@@ -207,6 +256,9 @@ func runRedAtBase(inst Instance, checkoutDir string, timeout time.Duration, k in
 			}
 			if res.err != nil {
 				allPassed = false
+				if infraDetail := classifyBuildFailure(res.stderr + "\n" + res.stdout); infraDetail != "" && rr.infraDetail == "" {
+					rr.infraDetail = infraDetail
+				}
 			}
 		}
 		results = append(results, RunResult{Passed: allRan && allPassed, RanTests: ran, DurationS: time.Since(start).Seconds()})
@@ -246,29 +298,38 @@ func mergeRedRuns(parts []redRun) redRun {
 		}
 		r.passing = append(r.passing, part.passing...)
 		r.missing = append(r.missing, part.missing...)
+		if r.infraDetail == "" {
+			r.infraDetail = part.infraDetail
+		}
 	}
 	sort.Strings(r.passing)
 	sort.Strings(r.missing)
 	return r
 }
 
-func runGoldGreen(inst Instance, checkoutDir, oracleDir string, timeout time.Duration, k int) ([]RunResult, error) {
+func runGoldGreen(inst Instance, checkoutDir, oracleDir string, timeout time.Duration, k int) ([]RunResult, string, error) {
 	results := make([]RunResult, 0, k)
 	for i := 0; i < k; i++ {
 		start := time.Now()
 		v, err := GradeWithTimeout(checkoutDir, oracleDir, inst, timeout)
 		if err != nil {
-			return nil, err
+			return nil, "", err
+		}
+		if infraDetail := classifyBuildFailure(v.GraderError); infraDetail != "" {
+			return results, infraDetail, nil
 		}
 		results = append(results, RunResult{Passed: v.Resolved, RanTests: v.RanTests, DurationS: time.Since(start).Seconds()})
 	}
-	return results, nil
+	return results, "", nil
 }
 
 func classifyRedAtBase(runs []redRun) (ok bool, reason string, detail string) {
 	allRed, allNonRed := true, true
 	var passing []string
 	for _, r := range runs {
+		if r.infraDetail != "" {
+			return false, "error", r.infraDetail
+		}
 		if !r.allNamedRan {
 			return false, "f2p-did-not-run", strings.Join(r.missing, "; ")
 		}

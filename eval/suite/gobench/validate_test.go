@@ -132,6 +132,90 @@ func TestClassifyRedAtBase(t *testing.T) {
 	}
 }
 
+func TestClassifyBuildFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantInfra  bool
+		wantDetail string
+	}{
+		{
+			name:       "disk quota",
+			output:     "go: creating work dir: mkdir /tmp/go-build: disk quota exceeded\n",
+			wantInfra:  true,
+			wantDetail: "disk quota exceeded",
+		},
+		{
+			name:       "no space",
+			output:     "write /tmp/cache: no space left on device\n",
+			wantInfra:  true,
+			wantDetail: "no space left on device",
+		},
+		{
+			name:       "module fetch",
+			output:     "go: github.com/acme/lib: cannot find module providing package github.com/acme/lib\n",
+			wantInfra:  true,
+			wantDetail: "cannot find module",
+		},
+		{
+			name:       "network timeout",
+			output:     "Get \"https://proxy.golang.org/mod\": dial tcp 10.0.0.1:443: i/o timeout\n",
+			wantInfra:  true,
+			wantDetail: "dial tcp",
+		},
+		{
+			name:       "network dns",
+			output:     "lookup proxy.golang.org: temporary failure in name resolution\n",
+			wantInfra:  true,
+			wantDetail: "temporary failure in name resolution",
+		},
+		{
+			name:       "oom allocate",
+			output:     "runtime: cannot allocate memory\n",
+			wantInfra:  true,
+			wantDetail: "cannot allocate memory",
+		},
+		{
+			name:       "oom killed",
+			output:     "compile: signal: killed\n",
+			wantInfra:  true,
+			wantDetail: "signal: killed",
+		},
+		{
+			name:       "toolchain",
+			output:     "go: invalid toolchain: go1.99.0\n",
+			wantInfra:  true,
+			wantDetail: "invalid toolchain",
+		},
+		{
+			name:   "compile error stays code failure",
+			output: "./foo.go:12:2: undefined: bar\n",
+		},
+		{
+			name:   "empty output stays code failure",
+			output: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyBuildFailure(tt.output)
+			if (got != "") != tt.wantInfra {
+				t.Fatalf("classifyBuildFailure() = %q, want infra=%v", got, tt.wantInfra)
+			}
+			if tt.wantDetail != "" && !strings.Contains(strings.ToLower(got), tt.wantDetail) {
+				t.Fatalf("detail %q does not contain %q", got, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestClassifyRedAtBaseInfraError(t *testing.T) {
+	ok, reason, detail := classifyRedAtBase([]redRun{{infraDetail: "compile: signal: killed"}})
+	if ok || reason != "error" || !strings.Contains(detail, "signal: killed") {
+		t.Fatalf("classifyRedAtBase() = (%v, %q, %q), want error with OOM detail", ok, reason, detail)
+	}
+}
+
 func TestValidatorTestTimeoutPrecedence(t *testing.T) {
 	inst := Instance{TestTimeout: "10m"}
 	got, err := validatorTestTimeout(inst, ValidateOpts{TestTimeout: 2 * time.Minute})
@@ -140,6 +224,17 @@ func TestValidatorTestTimeoutPrecedence(t *testing.T) {
 	}
 	if got != 2*time.Minute {
 		t.Fatalf("validatorTestTimeout() = %v, want 2m", got)
+	}
+}
+
+func TestClassifyGoldGreenInfraStaysOutOfGoldRed(t *testing.T) {
+	detail := classifyBuildFailure("testbuild failed: ./pkg: go: toolchain not available")
+	if !strings.Contains(detail, "toolchain not available") {
+		t.Fatalf("classifyBuildFailure() = %q, want toolchain infra detail", detail)
+	}
+	ok, reason := classifyGoldGreen([]RunResult{{Passed: false}, {Passed: false}})
+	if ok || reason != "gold-red" {
+		t.Fatalf("classifyGoldGreen() = (%v, %q), want gold-red for genuine test failure", ok, reason)
 	}
 }
 
