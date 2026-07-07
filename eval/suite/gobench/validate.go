@@ -32,7 +32,9 @@ type ValidateOpts struct {
 
 type redRun struct {
 	allNamedRan bool
-	allPassed   bool
+	red         bool
+	passing     []string
+	missing     []string
 }
 
 // Validate runs the in-package GoBench candidate validation pipeline.
@@ -70,8 +72,8 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 		return inst, rej, nil
 	}
 	redResults, redRuns := runRedAtBase(inst, baseDir, testTimeout, k)
-	if ok, reason := classifyRedAtBase(redRuns); !ok {
-		rej := rejection(inst, "red-at-base", reason, "")
+	if ok, reason, detail := classifyRedAtBase(redRuns); !ok {
+		rej := rejection(inst, "red-at-base", reason, detail)
 		return inst, rej, nil
 	}
 
@@ -79,7 +81,7 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	if err := CheckoutBase(ctx, repoURL(inst.Repo), inst.GoldCommit, goldDir, opts.CacheDir); err != nil {
 		return inst, nil, err
 	}
-	goldResults, err := runGoldGreen(inst, goldDir, opts.OracleDir, k)
+	goldResults, err := runGoldGreen(inst, goldDir, opts.OracleDir, testTimeout, k)
 	if err != nil {
 		return inst, nil, err
 	}
@@ -169,11 +171,14 @@ func runRedAtBase(inst Instance, checkoutDir string, timeout time.Duration, k in
 		start := time.Now()
 		allRan, allPassed := true, true
 		var ran []TestID
+		var runParts []redRun
 		for _, pkg := range pkgs {
 			tests := byPkg[pkg]
 			sort.Slice(tests, func(i, j int) bool { return testIDLess(tests[i].TestID, tests[j].TestID) })
 			res := runGoTest(checkoutDir, moduleDir, spec, timeout, f2pArgs(spec, combinedRunRegex(tests), pkg))
 			parsed := parseGoTestVerbose(res.stdout + res.stderr)
+			rr := reduceRedAtBaseRun(tests, parsed)
+			runParts = append(runParts, rr)
 			for _, ot := range tests {
 				st := parsed[fullTestName(ot.TestID)]
 				if st.ran {
@@ -191,16 +196,53 @@ func runRedAtBase(inst Instance, checkoutDir string, timeout time.Duration, k in
 			}
 		}
 		results = append(results, RunResult{Passed: allRan && allPassed, RanTests: ran, DurationS: time.Since(start).Seconds()})
-		classRuns = append(classRuns, redRun{allNamedRan: allRan, allPassed: allRan && allPassed})
+		classRuns = append(classRuns, mergeRedRuns(runParts))
 	}
 	return results, classRuns
 }
 
-func runGoldGreen(inst Instance, checkoutDir, oracleDir string, k int) ([]RunResult, error) {
+func reduceRedAtBaseRun(tests []OracleTest, parsed map[string]goTestStatus) redRun {
+	r := redRun{allNamedRan: true, red: true}
+	for _, ot := range tests {
+		name := fullTestName(ot.TestID)
+		st := parsed[name]
+		label := fmt.Sprintf("%s %s", ot.Package, name)
+		if !st.ran {
+			r.allNamedRan = false
+			r.red = false
+			r.missing = append(r.missing, label)
+			continue
+		}
+		if !st.failed {
+			r.red = false
+			r.passing = append(r.passing, label)
+		}
+	}
+	return r
+}
+
+func mergeRedRuns(parts []redRun) redRun {
+	r := redRun{allNamedRan: true, red: true}
+	for _, part := range parts {
+		if !part.allNamedRan {
+			r.allNamedRan = false
+		}
+		if !part.red {
+			r.red = false
+		}
+		r.passing = append(r.passing, part.passing...)
+		r.missing = append(r.missing, part.missing...)
+	}
+	sort.Strings(r.passing)
+	sort.Strings(r.missing)
+	return r
+}
+
+func runGoldGreen(inst Instance, checkoutDir, oracleDir string, timeout time.Duration, k int) ([]RunResult, error) {
 	results := make([]RunResult, 0, k)
 	for i := 0; i < k; i++ {
 		start := time.Now()
-		v, err := Grade(checkoutDir, oracleDir, inst)
+		v, err := GradeWithTimeout(checkoutDir, oracleDir, inst, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -209,25 +251,43 @@ func runGoldGreen(inst Instance, checkoutDir, oracleDir string, k int) ([]RunRes
 	return results, nil
 }
 
-func classifyRedAtBase(runs []redRun) (ok bool, reason string) {
-	allPassed, allFailed := true, true
+func classifyRedAtBase(runs []redRun) (ok bool, reason string, detail string) {
+	allRed, allNonRed := true, true
+	var passing []string
 	for _, r := range runs {
 		if !r.allNamedRan {
-			return false, "f2p-did-not-run"
+			return false, "f2p-did-not-run", strings.Join(r.missing, "; ")
 		}
-		if r.allPassed {
-			allFailed = false
+		if r.red {
+			allNonRed = false
 		} else {
-			allPassed = false
+			allRed = false
+			passing = append(passing, r.passing...)
 		}
 	}
-	if allFailed {
-		return true, ""
+	if allRed {
+		return true, "", ""
 	}
-	if allPassed {
-		return false, "no-gate"
+	if allNonRed {
+		sort.Strings(passing)
+		return false, "no-gate", strings.Join(uniqueStrings(passing), "; ")
 	}
-	return false, "flaky"
+	return false, "flaky", ""
+}
+
+func uniqueStrings(vals []string) []string {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := vals[:0]
+	var prev string
+	for i, v := range vals {
+		if i == 0 || v != prev {
+			out = append(out, v)
+			prev = v
+		}
+	}
+	return out
 }
 
 func classifyGoldGreen(runs []RunResult) (ok bool, reason string) {

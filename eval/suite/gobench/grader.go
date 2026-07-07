@@ -19,19 +19,24 @@ const defaultTestTimeout = 10 * time.Minute
 // returns the GoBench verdict. It is intentionally offline: checkoutDir and
 // oracleDir must already exist locally.
 func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
-	v := Verdict{
-		InstanceID:    inst.InstanceID,
-		GraderVersion: GraderVersion,
-	}
-
 	timeout := defaultTestTimeout
 	if inst.TestTimeout != "" {
 		parsed, err := time.ParseDuration(inst.TestTimeout)
 		if err != nil {
+			v := Verdict{InstanceID: inst.InstanceID, GraderVersion: GraderVersion}
 			v.GraderError = fmt.Sprintf("invalid test_timeout: %v", err)
 			return v, err
 		}
 		timeout = parsed
+	}
+	return GradeWithTimeout(checkoutDir, oracleDir, inst, timeout)
+}
+
+// GradeWithTimeout is Grade with an explicit already-resolved test timeout.
+func GradeWithTimeout(checkoutDir, oracleDir string, inst Instance, timeout time.Duration) (Verdict, error) {
+	v := Verdict{
+		InstanceID:    inst.InstanceID,
+		GraderVersion: GraderVersion,
 	}
 
 	if err := overlayOracle(checkoutDir, oracleDir, inst.OracleFiles); err != nil {
