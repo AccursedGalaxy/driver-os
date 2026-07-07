@@ -301,13 +301,14 @@ func (g *gates) reviewReport() *ReviewReport { return g.review.report() }
 type scopeState struct {
 	globs   []string
 	base    string // run-start WriteTree hash
-	snapErr error  // non-nil when the snapshot failed — degrade loudly, don't fabricate.
+	snapErr error  // non-nil when the snapshot failed — closing gates fail closed as unverifiable.
 }
 
 // newScopeState snapshots the current workspace as a git tree object so the
 // closing gate can detect changes outside the configured scope. nil when the
-// scope is off (empty globs). A failed snapshot degrades loudly (records a Note)
-// rather than fabricating a violation.
+// scope is off (empty globs). A failed snapshot records a Note; because the
+// armed scope cannot later be re-verified, answer/cap-rescue gates fail closed
+// rather than passing or fabricating a violation.
 func newScopeState(ctx context.Context, cfg Config) *scopeState {
 	if len(cfg.DiffScope) == 0 {
 		return nil
@@ -317,35 +318,42 @@ func newScopeState(ctx context.Context, cfg Config) *scopeState {
 	s.base, s.snapErr = vcs.WriteTree(gctx, cfg.Root)
 	cancel()
 	if s.snapErr != nil && cfg.Obs != nil {
-		cfg.Obs.Note("diff scope: snapshot failed (" + s.snapErr.Error() + ") — closing-gate tree diff disabled, tool-layer refusal still active")
+		cfg.Obs.Note("diff scope: snapshot failed (" + s.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
 	}
 	return s
 }
 
+type gateCheck struct {
+	reason       string
+	unverifiable bool
+}
+
 // scopeCheck compares the current git tree against the run-start snapshot and
-// returns a reason string naming every changed/added/deleted path that is
-// OUTSIDE the configured scope. Returns "" when clean, the scope is off, or
-// the snapshot failed.
-func (g *gates) scopeCheck(ctx context.Context) string {
-	if g.scope == nil || g.scope.snapErr != nil {
-		return ""
+// returns a structured verdict: clean, violation, or unverifiable. Snapshot and
+// git errors fail closed at answer gates without being reported as violations.
+func (g *gates) scopeCheck(ctx context.Context) gateCheck {
+	if g.scope == nil {
+		return gateCheck{}
+	}
+	if g.scope.snapErr != nil {
+		return gateCheck{reason: "diff scope could not be re-verified: run-start snapshot failed (" + g.scope.snapErr.Error() + ")", unverifiable: true}
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
 	cur, err := vcs.WriteTree(gctx, g.cfg.Root)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("diff scope: closing-gate tree snapshot failed (" + err.Error() + ") — skipping scope check")
-		return ""
+		g.cfg.Obs.Note("diff scope: closing-gate tree snapshot failed (" + err.Error() + ") — failing closed")
+		return gateCheck{reason: "diff scope could not be re-verified: closing-gate tree snapshot failed (" + err.Error() + ")", unverifiable: true}
 	}
 	if cur == g.scope.base {
-		return ""
+		return gateCheck{}
 	}
 	gctx, cancel = gateContext(ctx, gateDiffTimeout)
 	changed, err := vcs.DiffTreeNames(gctx, g.cfg.Root, g.scope.base, cur)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("diff scope: tree diff failed (" + err.Error() + ") — skipping scope check")
-		return ""
+		g.cfg.Obs.Note("diff scope: tree diff failed (" + err.Error() + ") — failing closed")
+		return gateCheck{reason: "diff scope could not be re-verified: tree diff failed (" + err.Error() + ")", unverifiable: true}
 	}
 	var out []string
 	for _, p := range changed {
@@ -356,34 +364,41 @@ func (g *gates) scopeCheck(ctx context.Context) string {
 		}
 	}
 	if len(out) == 0 {
-		return ""
+		return gateCheck{}
 	}
 	sort.Strings(out)
 	if len(out) > 20 {
 		out = out[:20]
 	}
-	return fmt.Sprintf("diff scope violated: %s — only paths matching (%s) may be changed",
-		strings.Join(out, ", "), strings.Join(g.scope.globs, ","))
+	return gateCheck{reason: fmt.Sprintf("diff scope violated: %s — only paths matching (%s) may be changed",
+		strings.Join(out, ", "), strings.Join(g.scope.globs, ","))}
 }
 
-// fenceCheck is stage 0 at a closing gate: re-hash the fenced files and name
-// any drift ("" = clean / fence off). It shares verifyRun's cancellation
-// stance implicitly — hashing is read-only and cheap, so it just runs.
-func (g *gates) fenceCheck(ctx context.Context) string {
+// fenceCheck is stage 0 at a closing gate: re-hash the fenced files and report
+// clean, violated, or unverifiable. It shares verifyRun's cancellation stance
+// implicitly — hashing is read-only and cheap, so it just runs.
+func (g *gates) fenceCheck(ctx context.Context) gateCheck {
 	if g.fence == nil {
-		return ""
+		return gateCheck{}
 	}
 	gctx, cancel := gateContext(ctx, fenceWalkTimeout)
 	defer cancel()
-	return g.fence.violation(gctx, g.cfg.Sandbox)
+	reason, err := g.fence.violationCheck(gctx, g.cfg.Sandbox)
+	if err != nil {
+		return gateCheck{reason: "test fence could not be re-verified: " + err.Error(), unverifiable: true}
+	}
+	return gateCheck{reason: reason}
 }
 
 func (g *gates) verifySafety(ctx context.Context) (outcome Outcome, reason string, noContinue bool) {
-	if reason := g.fenceCheck(ctx); reason != "" {
-		return Unverified, reason, true
+	if check := g.fenceCheck(ctx); check.reason != "" {
+		return Unverified, check.reason, true
 	}
-	if sReason := g.scopeCheck(ctx); sReason != "" {
-		return ScopeViolation, sReason, false
+	if check := g.scopeCheck(ctx); check.reason != "" {
+		if check.unverifiable {
+			return Unverified, check.reason, true
+		}
+		return ScopeViolation, check.reason, false
 	}
 	return "", "", false
 }
@@ -490,6 +505,13 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (outc
 	return g.verifyFinish(ctx, lastRunFailed, false)
 }
 
+func appendReason(existing, extra string) string {
+	if existing == "" {
+		return extra
+	}
+	return existing + "; " + extra
+}
+
 // upgradeIfVerified is the kill/cap/deadline/budget exit, gate-composed: the
 // historical VerifyCmd upgrade now ALSO requires a clean fence and a passing
 // review — a cap-rescued run must clear the same bar as an answered one (the
@@ -504,10 +526,14 @@ func (g *gates) verifyTermination(ctx context.Context, lastRunFailed bool) (outc
 // gets no gate-level scope check — scopeCheck must never depend on a verify
 // command being armed).
 func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResult {
-	if sReason := g.scopeCheck(ctx); sReason != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + sReason)
+	if check := g.scopeCheck(ctx); check.reason != "" {
+		g.cfg.Obs.Note("upgrade blocked — " + check.reason)
+		if check.unverifiable {
+			res.Reason = appendReason(res.Reason, "upgrade refused — "+check.reason)
+			return res
+		}
 		res.Outcome = ScopeViolation
-		res.Reason = sReason
+		res.Reason = check.reason
 		return res
 	}
 	if out, reason, _ := g.requireDiffFailure(ctx); reason != "" {
@@ -518,8 +544,9 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	if g.cfg.VerifyCmd == "" {
 		return res
 	}
-	if reason := g.fenceCheck(ctx); reason != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + reason)
+	if check := g.fenceCheck(ctx); check.reason != "" {
+		g.cfg.Obs.Note("upgrade blocked — " + check.reason)
+		res.Reason = appendReason(res.Reason, "upgrade refused — "+check.reason)
 		return res
 	}
 	// Capture the tree BEFORE verify — the verify command itself may have
@@ -1098,7 +1125,8 @@ func NewGate(ctx context.Context, cfg Config) (*Gate, error) {
 // ONLY when the fence and VerifyCmd are green (execution-first).
 func (t *Gate) Check(ctx context.Context) GateReport {
 	rep := GateReport{}
-	if rep.FenceViolation = t.g.fenceCheck(ctx); rep.FenceViolation != "" {
+	if check := t.g.fenceCheck(ctx); check.reason != "" {
+		rep.FenceViolation = check.reason
 		rep.Blocked = true
 	} else if rep.VerifyReason, _ = verifyTermination(ctx, t.g.cfg, false, t.g.runTimeout); rep.VerifyReason != "" {
 		rep.Blocked = true

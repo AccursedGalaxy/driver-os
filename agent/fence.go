@@ -34,10 +34,12 @@ package agent
 //       sed -i, git checkout of a test file) still downgrades the run. For the
 //       diff scope, a git-tree snapshot pair (run-start WriteTree vs gate-time
 //       WriteTree) catches any changed/added/deleted path outside the scope.
-//    3. Degrade loudly: if the run-start snapshot fails (non-git workspace for
-//       the tree, unreadable workspace for the fence walk), a Note is recorded
-//       and tool-layer enforcement alone is active — a violation is never
-//       fabricated from an infrastructure fault (P6).
+//    3. Degrade loudly / fail closed: if the run-start snapshot fails (non-git
+//       workspace for the tree, unreadable workspace for the fence walk), a
+//       Note is recorded and tool-layer refusal remains active. At closing gates
+//       an armed but unverifiable fence/scope blocks an Answered finish (and
+//       cap rescue) without fabricating a violation from an infrastructure fault
+//       (P6).
 //
 //   When BOTH are set: the fence WINS for fenced paths (they are read-only
 //   even when in scope); a refusal message names whichever mechanism refused.
@@ -82,10 +84,9 @@ type fenceState struct {
 	globs []string
 	alias string
 	base  map[string]fencedFile
-	// snapErr records a failed snapshot walk. The fence then degrades LOUDLY to
-	// tool-layer-only enforcement (the closing re-hash is skipped): fabricating a
-	// violation out of an infrastructure fault would fail honest runs (P6), and
-	// silently pretending the snapshot succeeded would fake safety.
+	// snapErr records a failed snapshot walk. Tool-layer refusal still applies,
+	// and closing gates fail closed as unverifiable rather than silently passing or
+	// fabricating a violation out of an infrastructure fault (P6).
 	snapErr error
 }
 
@@ -98,7 +99,7 @@ func newFenceState(ctx context.Context, cfg Config) *fenceState {
 	f := &fenceState{globs: cfg.TestFence, alias: sandboxAlias(cfg.Sandbox)}
 	f.base, f.snapErr = walkFenced(ctx, cfg.Sandbox, cfg.TestFence)
 	if f.snapErr != nil && cfg.Obs != nil {
-		cfg.Obs.Note("test fence: snapshot failed (" + f.snapErr.Error() + ") — closing-gate re-hash disabled, tool-layer refusal still active")
+		cfg.Obs.Note("test fence: snapshot failed (" + f.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
 	}
 	return f
 }
@@ -283,16 +284,24 @@ func walkFenced(ctx context.Context, sb sandbox.Sandbox, globs []string) (map[st
 // the snapshot: modified, deleted, or NEWLY CREATED fenced files (a new
 // _test.go/testdata file also changes what the verification suite means, and
 // the write tools refuse creating one — the gate must agree with the tools).
-// A nil/failed-snapshot fence never reports drift (see snapErr).
+// When the snapshot or re-walk is unavailable, drift reports no paths; closing
+// gates use driftCheck/violationCheck so an armed but unverifiable fence fails
+// closed without fabricating tampering evidence.
 func (f *fenceState) drift(ctx context.Context, sb sandbox.Sandbox) []string {
-	if f == nil || f.snapErr != nil {
-		return nil
+	changed, _ := f.driftCheck(ctx, sb)
+	return changed
+}
+
+func (f *fenceState) driftCheck(ctx context.Context, sb sandbox.Sandbox) ([]string, error) {
+	if f == nil {
+		return nil, nil
+	}
+	if f.snapErr != nil {
+		return nil, f.snapErr
 	}
 	cur, err := walkFenced(ctx, sb, f.globs)
 	if err != nil {
-		// An unreadable workspace at gate time is an infra fault, not evidence of
-		// tampering — same P6 stance as snapErr.
-		return nil
+		return nil, err
 	}
 	var out []string
 	for p, ff := range cur {
@@ -307,18 +316,26 @@ func (f *fenceState) drift(ctx context.Context, sb sandbox.Sandbox) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // violation renders drift as the closing-gate reason ("" = clean). It is the
 // exact string the plan names: the run is Unverified with the files listed.
 func (f *fenceState) violation(ctx context.Context, sb sandbox.Sandbox) string {
-	changed := f.drift(ctx, sb)
+	reason, _ := f.violationCheck(ctx, sb)
+	return reason
+}
+
+func (f *fenceState) violationCheck(ctx context.Context, sb sandbox.Sandbox) (string, error) {
+	changed, err := f.driftCheck(ctx, sb)
+	if err != nil {
+		return "", err
+	}
 	if len(changed) == 0 {
-		return ""
+		return "", nil
 	}
 	return fmt.Sprintf("test fence violated: %s — fenced paths (%s) are read-only for this run and were modified",
-		strings.Join(changed, ", "), strings.Join(f.globs, ","))
+		strings.Join(changed, ", "), strings.Join(f.globs, ",")), nil
 }
 
 // restore rewrites the named fenced paths back to their run-start snapshot —
