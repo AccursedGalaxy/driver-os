@@ -187,6 +187,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// calibration telemetry) — nil when the gate is off.
 	defer func() {
 		if out != nil {
+			gs.applyVerifyInfra(out)
 			out.Review = gs.reviewReport()
 			out.Repro = gs.reproReport()
 		}

@@ -76,6 +76,7 @@ type gates struct {
 	verifyBaselineRed      bool
 	verifyBaselineOut      string
 	verifyBaselineMeasured bool
+	verifyInfraSignature   string
 
 	// runBaseTree is the git tree hash of the workspace at run start,
 	// captured for the upgradeIfVerified empty-diff guard: a killed run
@@ -236,6 +237,11 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
 			return
 		}
+		if sig := infraFaultSignature(out); sig != "" {
+			g.verifyInfraSignature = sig
+			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " hit environment fault (" + sig + ") on the untouched workspace")
+			return
+		}
 		g.verifyBaselineMeasured = true
 		g.verifyBaselineRed = true
 		g.verifyBaselineOut = out
@@ -248,6 +254,12 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 func (g *gates) applyBaseline(res *RunResult) {
 	res.VerifyBaselineRed = g.verifyBaselineRed
 	res.VerifyBaselineOut = g.verifyBaselineOut
+	g.applyVerifyInfra(res)
+}
+
+func (g *gates) applyVerifyInfra(res *RunResult) {
+	res.VerifyInfraSignature = g.verifyInfraSignature
+	res.VerifyInfra = g.verifyInfraSignature != ""
 }
 
 // baselinePreamble returns an environment-preamble block warning the solver
@@ -420,16 +432,23 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 	}
 	if g.cfg.AutoVerifySoft {
 		g.autoVerifyFeedback++
-		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isRunTimeout(verifyOut) {
+		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isRunTimeout(verifyOut) || isInfraFault(verifyOut) {
+			if sig := infraFaultSignature(verifyOut); sig != "" {
+				g.verifyInfraSignature = sig
+			}
 			g.cfg.Obs.Note(fmt.Sprintf("auto-derived verify `%s` did not pass — accepted anyway; supply -verify-cmd to make this authoritative", g.cfg.VerifyCmd))
 			return "", "", false
 		}
 	}
-	// A timed-out verify is INCONCLUSIVE — we could not confirm success,
-	// but we also don't know anything is broken. Suppress VerifyContinue:
-	// feeding "keep working: fix the code" to the model when nothing is
-	// known to be broken is wrong.
+	// A timed-out or infra-failed verify is INCONCLUSIVE — we could not
+	// confirm success, but we also don't know anything is broken. Suppress
+	// VerifyContinue: feeding "keep working: fix the code" to the model when
+	// nothing is known to be broken is wrong.
 	if isRunTimeout(verifyOut) {
+		return Unverified, reason, true
+	}
+	if sig := infraFaultSignature(verifyOut); sig != "" {
+		g.verifyInfraSignature = sig
 		return Unverified, reason, true
 	}
 	if g.verifyBaselineRed && strings.Contains(reason, "did not pass:") {
@@ -520,8 +539,33 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	if !skipped {
 		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
 	}
-	if skipped || err != nil || isRunFailure(out) {
+	if skipped || err != nil {
 		return res
+	}
+	if isRunFailure(out) {
+		if sig := infraFaultSignature(out); sig != "" {
+			g.verifyInfraSignature = sig
+			out, skipped, err = verifyRun(ctx, g.cfg, g.runTimeout)
+			if !skipped {
+				notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
+			}
+			if skipped || err != nil {
+				res.Reason = fmt.Sprintf("%s; verification inconclusive due to environment fault (%s)", res.Reason, sig)
+				g.applyVerifyInfra(res)
+				return res
+			}
+			if isRunFailure(out) {
+				if sig2 := infraFaultSignature(out); sig2 != "" {
+					g.verifyInfraSignature = sig2
+					res.Reason = fmt.Sprintf("%s; verification inconclusive due to environment fault (%s)", res.Reason, sig2)
+					g.applyVerifyInfra(res)
+				}
+				return res
+			}
+			g.verifyInfraSignature = ""
+		} else {
+			return res
+		}
 	}
 	if fb, detail := g.reproFinish(ctx); fb != "" {
 		g.cfg.Obs.Note("upgrade blocked — " + detail)

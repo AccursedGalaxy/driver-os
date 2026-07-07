@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/sandbox"
@@ -99,6 +100,26 @@ func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out s
 	return out, false, err
 }
 
+func infraFaultSignature(out string) string {
+	if strings.Contains(out, "--- FAIL") {
+		return ""
+	}
+	lower := strings.ToLower(out)
+	for _, sig := range []string{
+		"disk quota exceeded",
+		"no space left on device",
+		"cannot allocate memory",
+		"too many open files",
+	} {
+		if strings.Contains(lower, sig) {
+			return sig
+		}
+	}
+	return ""
+}
+
+func isInfraFault(out string) bool { return infraFaultSignature(out) != "" }
+
 // verifyTermination decides whether a model's done-signal actually holds (P5/HP-5)
 // and returns a non-empty reason when it does NOT (so the caller records Unverified
 // instead of Answered). Two checks, in precedence order:
@@ -123,10 +144,24 @@ func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runT
 		if err != nil { // couldn't even start it — we cannot confirm success.
 			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err), ""
 		}
+		if isRunFailure(out) && !isRunTimeout(out) && isInfraFault(out) {
+			// A transient environment fault at the FINAL gate would cost the
+			// whole run's outcome — retry once before conceding. (The
+			// 2026-07-07 incident: tmpfs EDQUOT failed the closing verify;
+			// the identical command re-ran green.)
+			retry, retrySkipped, retryErr := verifyRun(ctx, cfg, runTimeout)
+			if !retrySkipped && retryErr == nil {
+				notifyVerify(cfg.Obs, cfg.VerifyCmd, !isRunFailure(retry))
+				out = retry
+			}
+		}
 		if isRunFailure(out) {
 			if isRunTimeout(out) {
 				bound := verifyTimeout(cfg, runTimeout)
 				return fmt.Sprintf("verification command %q was INCONCLUSIVE (timed out after %s — raise -verify-timeout):\n%s", cfg.VerifyCmd, bound, out), out
+			}
+			if sig := infraFaultSignature(out); sig != "" {
+				return fmt.Sprintf("verification command %q was INCONCLUSIVE (environment fault: %s — disk quota / no space / OOM, not a code failure; retried once):\n%s", cfg.VerifyCmd, sig, out), out
 			}
 			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out), out
 		}

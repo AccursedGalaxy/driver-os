@@ -89,6 +89,14 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 	if t.lastRunPassed {
 		t.editsSinceGreen = 0 // (code-intel slice 1) reaching green clears the stuck count.
 	}
+	if t.lastRunFailed && isInfraFault(obs) {
+		// An environment fault is NO SIGNAL, not progress: don't count it as
+		// a failure (no spiral/churn credit), but don't reset the stagnation
+		// streak either — an intermittent quota blip must not launder a
+		// genuine stall back to zero.
+		t.lastRunFailed = false
+		return false, t.stagnant
+	}
 	if t.lastRunFailed {
 		t.failRuns++
 	}

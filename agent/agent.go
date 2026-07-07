@@ -271,6 +271,11 @@ type RunResult struct {
 	// VerifyBaselineOut is the failing output of the baseline VerifyCmd run,
 	// clipped like other observations. Empty when the baseline was green.
 	VerifyBaselineOut string `json:"verify_baseline_out,omitempty"`
+	// VerifyInfra is true when a closing VerifyCmd failed because the harness
+	// recognized an environment fault rather than a code failure.
+	VerifyInfra bool `json:"verify_infra,omitempty"`
+	// VerifyInfraSignature is the matched environment-fault signature.
+	VerifyInfraSignature string `json:"verify_infra_signature,omitempty"`
 
 	// autoVerify* fields are the Session hand-off for approach (B): Run/RunNative
 	// still resolve lazily inside the loop, then Session persists the resolved base

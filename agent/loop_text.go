@@ -56,6 +56,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// calibration telemetry, recorded from day one) — nil when the gate is off.
 	defer func() {
 		if out != nil {
+			gs.applyVerifyInfra(out)
 			out.Review = gs.reviewReport()
 		}
 	}()
