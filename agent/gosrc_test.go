@@ -53,7 +53,7 @@ func TestReadFileReadsStdlibSource(t *testing.T) {
 	sb := sbWith(t, nil) // an empty workspace — the source is NOT inside it.
 	builder := filepath.Join(goEnvDir(t, "GOROOT"), "src", "strings", "builder.go")
 
-	out, err := readFileOp(context.Background(), sb, builder, 1, 5, true)
+	out, err := readFileOp(context.Background(), sb, builder, 1, 5, true, ReadOptions{})
 	if err != nil {
 		t.Fatalf("readFileOp(%q): %v", builder, err)
 	}

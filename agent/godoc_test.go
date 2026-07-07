@@ -119,7 +119,7 @@ func TestGoDocDependencyEndToEnd(t *testing.T) {
 	if goFile == "" {
 		t.Fatalf("no .go file found in %s", srcDir)
 	}
-	body, err := readFileOp(context.Background(), sbWith(t, nil), goFile, 1, 3, true)
+	body, err := readFileOp(context.Background(), sbWith(t, nil), goFile, 1, 3, true, ReadOptions{})
 	if err != nil {
 		t.Fatalf("read_file %s: %v", goFile, err)
 	}

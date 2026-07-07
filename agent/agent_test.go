@@ -104,7 +104,7 @@ func TestParseReadArg(t *testing.T) {
 
 func TestReadFileBotchedRangeIsRecovery(t *testing.T) {
 	sb := sbWith(t, map[string]string{"f.txt": "a\nb\n"})
-	_, err := toolReadFile(context.Background(), sb, "f.txt:START-100")
+	_, err := toolReadFile(context.Background(), sb, "f.txt:START-100", ReadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "invalid line range") {
 		t.Errorf("botched range err = %v, want an 'invalid line range' recovery message", err)
 	}
@@ -114,7 +114,7 @@ func TestReadFileLineNumbersAndRange(t *testing.T) {
 	sb := sbWith(t, map[string]string{"f.txt": "a\nb\nc\nd\ne\n"})
 	ctx := context.Background()
 
-	whole, err := toolReadFile(ctx, sb, "f.txt")
+	whole, err := toolReadFile(ctx, sb, "f.txt", ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestReadFileLineNumbersAndRange(t *testing.T) {
 	}
 
 	// A range shows ABSOLUTE line numbers, not 1-based-within-range.
-	ranged, err := toolReadFile(ctx, sb, "f.txt:3-4")
+	ranged, err := toolReadFile(ctx, sb, "f.txt:3-4", ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestReadFileLineNumbersAndRange(t *testing.T) {
 
 func TestReadFileOvershootIsRecoverable(t *testing.T) {
 	sb := sbWith(t, map[string]string{"f.txt": "only\ntwo\n"})
-	_, err := toolReadFile(context.Background(), sb, "f.txt:99-100")
+	_, err := toolReadFile(context.Background(), sb, "f.txt:99-100", ReadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "past the end") {
 		t.Errorf("overshoot err = %v, want a 'past the end' recovery message", err)
 	}
@@ -146,7 +146,7 @@ func TestReadFileLineCap(t *testing.T) {
 		sbBody.WriteString("x\n")
 	}
 	sb := sbWith(t, map[string]string{"big.txt": sbBody.String()})
-	out, err := toolReadFile(context.Background(), sb, "big.txt")
+	out, err := toolReadFile(context.Background(), sb, "big.txt", ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestReadFileLineCap(t *testing.T) {
 
 func TestReadFileNotFoundIsRecovery(t *testing.T) {
 	sb := sbWith(t, nil)
-	_, err := toolReadFile(context.Background(), sb, "nope.txt")
+	_, err := toolReadFile(context.Background(), sb, "nope.txt", ReadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "list_dir") {
 		t.Errorf("not-found err = %v, want a message pointing at list_dir", err)
 	}
@@ -259,7 +259,7 @@ func TestWriteFileRoundTrips(t *testing.T) {
 		t.Errorf("confirmation = %q, want path + line count", out)
 	}
 	// read_file sees exactly what write_file wrote — the decode landed real newlines.
-	got, err := toolReadFile(ctx, sb, "notes.txt")
+	got, err := toolReadFile(ctx, sb, "notes.txt", ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestWriteFileOverwrites(t *testing.T) {
 	if _, err := toolWriteFile(context.Background(), sb, "f.txt new"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := toolReadFile(context.Background(), sb, "f.txt")
+	got, _ := toolReadFile(context.Background(), sb, "f.txt", ReadOptions{})
 	if got != "1| new" {
 		t.Errorf("after overwrite read = %q, want the file replaced, not appended", got)
 	}

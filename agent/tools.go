@@ -15,6 +15,26 @@ import (
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
+// ReadOptions tunes read_file's context shaping. Zero value = today's behavior
+// (window = readLineCap, no outline), so existing callers are unaffected.
+type ReadOptions struct {
+	// Window is the max lines a range-less or over-long read returns before it
+	// clips (P1 context bound). <=0 means the default readLineCap.
+	Window int
+	// Outline, when true, appends a compact structure map (top-level symbols +
+	// line numbers) to a CLIPPED read, so the model can request the right range
+	// instead of paging linearly. No outline is added when the whole file fit in
+	// the window (the model already sees everything).
+	Outline bool
+}
+
+func (o ReadOptions) window() int {
+	if o.Window > 0 {
+		return o.Window
+	}
+	return readLineCap
+}
+
 // DefaultTools is the standard toolbox, every tool acting THROUGH the sandbox
 // (P2/P4): file reads and command runs cross the isolation boundary, not the
 // bare host.
@@ -28,7 +48,11 @@ import (
 // longer-running build/test suite; it is interpolated into the `run` Desc below
 // so the model is told the REAL limit it is working against (P2 — the Desc is the
 // API; a stale "30s" would mislead it once the value is configurable).
-func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool {
+func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration, opts ...ReadOptions) map[string]Tool {
+	var ro ReadOptions
+	if len(opts) > 0 {
+		ro = opts[0]
+	}
 	return map[string]Tool{
 		"list_dir": {
 			Name: "list_dir",
@@ -55,7 +79,7 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 			Desc: "read a UTF-8 text file with line numbers. Use AFTER list_dir confirms the path; prefer this over `run cat` for bounded, line-numbered output you can cite. ARG: a path relative to the sandbox root, optionally suffixed with a line range \":<from>-<to>\" (1-based inclusive, e.g. \"main.go:40-80\"; drop <to> as in \"main.go:40-\" to read to end of file) to read part of a large file. It ALSO reads Go dependency / stdlib source read-only via the ABSOLUTE path go_doc prints on its `source:` line (e.g. \"/…/go/pkg/mod/…@v1.2.3/client.go:1-60\"). RETURNS: the lines, each prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
 			// NativeDesc: behavior + selection only; the path/from/to schema fields own the range format.
 			NativeDesc: "Read a UTF-8 text file with line numbers, optionally just a line range (from/to). Use after list_dir confirms the path; prefer it over `run cat` for bounded, citable output. Also reads Go dependency/stdlib source read-only via the absolute path go_doc prints on its `source:` line. Returns the lines prefixed \"<n>| \"; long output is clipped with a note telling you the next range to request.",
-			Run:        func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg) },
+			Run:        func(ctx context.Context, arg string) (string, error) { return toolReadFile(ctx, sb, arg, ro) },
 
 			Schema: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"file path relative to the sandbox root"},` +
@@ -82,7 +106,7 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 				if a.To != nil {
 					hi, hasRange = *a.To, true
 				}
-				return readFileOp(ctx, sb, a.Path, lo, hi, hasRange)
+				return readFileOp(ctx, sb, a.Path, lo, hi, hasRange, ro)
 			},
 		},
 		"run": {
@@ -260,8 +284,8 @@ func DefaultTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool 
 //
 // It derives from DefaultTools by deletion so the kept tools' descriptions and
 // schemas never drift from the canonical set.
-func ReadOnlyTools(sb sandbox.Sandbox, runTimeout time.Duration) map[string]Tool {
-	t := DefaultTools(sb, runTimeout)
+func ReadOnlyTools(sb sandbox.Sandbox, runTimeout time.Duration, opts ...ReadOptions) map[string]Tool {
+	t := DefaultTools(sb, runTimeout, opts...)
 	delete(t, "write_file")
 	delete(t, "edit_file")
 	return t
@@ -328,12 +352,12 @@ func listDirOp(ctx context.Context, sb sandbox.Sandbox, path string) (string, er
 // it never pulls more than maxFileBytes off disk (P4, memory — no OOM on a giant
 // file) and never returns more than readLineCap lines into context (P1 — no window
 // rot), and when it clips it tells the model the exact next range to ask for (P3).
-func toolReadFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
+func toolReadFile(ctx context.Context, sb sandbox.Sandbox, arg string, ro ReadOptions) (string, error) {
 	path, lo, hi, hasRange, badRange := parseReadArg(arg)
 	if badRange != "" { // (P3) teach the fix, don't pretend the file is missing.
 		return "", fmt.Errorf("invalid line range %q — use numbers, e.g. \"main.go:40-80\"", badRange)
 	}
-	return readFileOp(ctx, sb, path, lo, hi, hasRange)
+	return readFileOp(ctx, sb, path, lo, hi, hasRange, ro)
 }
 
 // readFileOp is the parse-free core shared by the text handler (after
@@ -342,7 +366,7 @@ func toolReadFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, 
 // file; hi<=0 with hasRange means "to EOF". It obeys both bounds — never pulls
 // more than maxFileBytes off disk (P4) and never returns more than readLineCap
 // lines (P1) — and tells the model the next range when it clips (P3).
-func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int, hasRange bool) (string, error) {
+func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int, hasRange bool, ro ReadOptions) (string, error) {
 	data, overMem, err := readBounded(ctx, sb, path) // (P4) bounded read; never loads the whole 5 GB.
 	if err != nil {
 		return "", explainPathErr(path, "file", err) // (P3)
@@ -370,10 +394,11 @@ func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int
 		hi = total
 	}
 
+	window := ro.window()
 	clippedLines := 0
-	if hi-lo+1 > readLineCap { // (P1) context bound, distinct from the memory bound above.
-		clippedLines = hi - (lo + readLineCap - 1)
-		hi = lo + readLineCap - 1
+	if hi-lo+1 > window { // (P1) context bound, distinct from the memory bound above.
+		clippedLines = hi - (lo + window - 1)
+		hi = lo + window - 1
 	}
 
 	var b strings.Builder
@@ -383,7 +408,13 @@ func readFileOp(ctx context.Context, sb sandbox.Sandbox, path string, lo, hi int
 	}
 	// Footer: the recovery instructions that make a partial read actionable (P3).
 	if clippedLines > 0 {
-		fmt.Fprintf(&b, "...[%d more line(s) — read `%s:%d-%d` for the next chunk]\n", clippedLines, path, hi+1, hi+readLineCap)
+		fmt.Fprintf(&b, "...[%d more line(s) — read `%s:%d-%d` for the next chunk]\n", clippedLines, path, hi+1, hi+window)
+		if ro.Outline {
+			if outline := fileOutline(path, lines); outline != "" {
+				b.WriteString(outline)
+				b.WriteByte('\n')
+			}
+		}
 	}
 	if overMem {
 		fmt.Fprintf(&b, "...[file exceeds %d KiB; only the first part was read — use line ranges to page through it]\n", maxFileBytes>>10)
