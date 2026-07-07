@@ -166,6 +166,38 @@ work; on a fresh repo batch, human audit of 10 random accepts + 10 random reject
 finds ≥9/10 correct each direction; yield vs the R0.3 estimate reported; the
 slow-tier vs reject decision (stage 6) made.
 
+## Live smoke-test 2026-07-07 — pipeline PROVEN, two gaps found
+
+First end-to-end live run of the `mine → validate` pipeline (no driver-os; ran the
+binaries directly). Mined urfave/cli (20 crawled → 7 survivors) and opa (15 → 3),
+then validated `urfave__cli-2363` — a canonical hand-built instance — with K=2.
+
+**Result: ACCEPTED end-to-end** — toolchain pin (go1.22.0) → `go build ./...` base →
+isolation → red-at-base ×2 (F2P ran and FAILED at base) → gold-green ×2 (Resolved) →
+receipt (`RedAtBaseRuns`/`GoldGreenRuns` populated, `ValidatorVer`/`ValidatedAt`
+stamped). Matches the manual verdict — a live preview of Gate G3 part (a).
+
+Two gaps the smoke-test surfaced:
+
+1. **FIXED (`2a657bb`) — bare major.minor `go_version` broke GOTOOLCHAIN.** urfave's
+   go.mod declares `go 1.22` (a language version), so `ToolchainEnv("1.22")` emitted
+   `GOTOOLCHAIN=go1.22`, which the go tool rejects. `ToolchainEnv` now normalizes a
+   bare major.minor to `major.minor.0`. Unit tests missed it (used 3-part `1.25.7`);
+   only a real 2-part go.mod exposed it — the value of driving the real flow.
+
+2. **OPEN (G3 follow-up) — the `environment` stage conflates infra failure with a
+   genuine broken-base.** The first opa run rejected `broken-base` with detail
+   `disk quota exceeded` (opa's `go build ./...` overflowed a 16G tmpfs `/tmp`). A
+   disk-quota / OOM / network / invalid-toolchain failure is NOT a property of the
+   instance — it should be an infra `error` (retry/abort), not a `broken-base`
+   rejection (same spirit as the grader's testbuild-vs-test-failure split). The
+   `environment` stage should pattern-match known infra-failure signatures
+   (`disk quota exceeded`, `no space left`, `cannot find module`, `invalid toolchain`,
+   network timeouts) and classify them `error`, reserving `broken-base` for a build
+   that fails on the code itself. **Operational note:** run validation with build
+   scratch on a large FS — `TMPDIR`, `-cache`, `-out` on `/home` — not the tmpfs
+   `/tmp`; opa's build alone exceeds a 16G tmpfs.
+
 ## Gotchas the validator MUST honor (from HARNESS-VS-BIG3 gotcha #8)
 
 - **#8a** — subtle multi-file bugs often DON'T gate on a test-only overlay (the gold
