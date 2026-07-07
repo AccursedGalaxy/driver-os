@@ -224,6 +224,35 @@ validation run or wave-1 instance publication:
    (eval/runs/read-outline-ab-20260707T131955Z).
 4. Only then: batch validation / G3 part (b) at scale.
 
+## Council-hardened launch decisions that bind the validator (2026-07-07)
+
+The public-launch plan (`docs/specs/GOBENCH-LAUNCH.md`, council run
+20260707-195325-c18f08) added validator-relevant requirements beyond the
+slices above. None block Slice 3 as specced; they are the next increments:
+
+- **`statement_mode` (schema addition, post-Slice-3):** exactly two values —
+  `verbatim-scrubbed` (only where redistribution rights are demonstrably
+  clear) and `authored-summary` (DEFAULT under rights uncertainty: a
+  GoBench-authored statement, CC-BY-4.0, no third-party text). Both modes
+  pass the same leak-screen. **No live-fetch mode exists**: the canonical
+  prompt is frozen at mine time; the miner records `source_fetched_at` + a
+  content hash of the source issue; validation FAILS any instance whose
+  prompt reconstruction depends on live mutable content.
+- **Provenance fields (validator-enforced, launch-blocking):**
+  `license_spdx`, `statement_source_url`, `statement_mode`, author
+  attribution — missing = reject. CC-BY-4.0 is scoped to GoBench-authored
+  content only; repo code/tests/diffs stay reference-by-SHA.
+- **Outcome taxonomy is grader-decided (resolves item 3 above):** the launch
+  plan pins `answered` as artifact-derived — final patch git-applies cleanly
+  + no machine-readable abstain marker; emitting a patch and stopping IS the
+  claim (closes the always-emit loophole; prose hedging alongside a patch
+  does not demote). This replaces the "LLM reads the final message" plan for
+  cross-harness claim scoring; the LLM classifier survives only as a
+  diagnostic to be calibrated against the structural signal. Five published
+  columns: attempt / resolve / false-green / invalid-patch / abstention.
+- **Infra-vs-broken-base** (already OPEN below) is promoted to
+  launch-blocking by the plan's honesty gates.
+
 ## Gotchas the validator MUST honor (from HARNESS-VS-BIG3 gotcha #8)
 
 - **#8a** — subtle multi-file bugs often DON'T gate on a test-only overlay (the gold
