@@ -79,7 +79,7 @@ func resolveKnobs(cfg Config) loopKnobs {
 func wrapTools(cfg Config, runTimeout time.Duration) map[string]Tool {
 	tools := cfg.Tools
 	if tools == nil {
-		tools = DefaultTools(cfg.Sandbox, runTimeout)
+		tools = DefaultTools(cfg.Sandbox, runTimeout, ReadOptions{Window: cfg.ReadWindow, Outline: cfg.ReadOutline})
 	}
 	// (REVIEW-GATE slice 0) The test fence wraps the mutation tools BEFORE the
 	// system prompt is built from them, and the closing gates snapshot their

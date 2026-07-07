@@ -442,6 +442,15 @@ type Config struct {
 	// (prefetchLeadingReadOnly) can fetch them concurrently. An A/B arm knob.
 	BatchReads bool
 
+	// ReadWindow overrides read_file's line window (max lines a range-less or
+	// over-long read returns before clipping). 0 = the built-in default (150).
+	// Only consulted when Config.Tools is nil and the default toolbox is built.
+	ReadWindow int
+	// ReadOutline, when true, appends a compact file structure map (symbols +
+	// line numbers) to a CLIPPED read_file so the model can jump to the right
+	// range. Only consulted when Config.Tools is nil (default toolbox path).
+	ReadOutline bool
+
 	// MaxWallClock bounds the WHOLE run's wall-clock (P5), checked between turns. It
 	// is the universal backstop for a spiral that dodges every action/observation
 	// detector — the DOGFOOD nano case that emitted ever-changing malformed tool
