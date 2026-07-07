@@ -61,6 +61,7 @@ type OracleTest struct {
 // PassToPass is package-level regression coverage.
 type PassToPass struct {
 	Packages []string `json:"packages"`
+	RunRegex string   `json:"run_regex,omitempty"`
 }
 
 // ExecSpec pins hermetic execution so every grader runs tests identically.

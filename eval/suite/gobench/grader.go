@@ -54,8 +54,13 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 
 	// 3. Compile every package referenced by F2P or P2P. A failure here is a
 	// grader-error signal, not a wrong-answer score.
+	execSpec := inst.Exec
+	if inst.GoVersion != "" {
+		execSpec.Env = append(ToolchainEnv(inst.GoVersion), execSpec.Env...)
+	}
+
 	for _, pkg := range referencedPackages(inst) {
-		res := runGoTest(checkoutDir, moduleDir, inst.Exec, timeout, testbuildArgs(inst.Exec, pkg))
+		res := runGoTest(checkoutDir, moduleDir, execSpec, timeout, testbuildArgs(execSpec, pkg))
 		if res.err != nil {
 			v.TestbuildOK = false
 			v.Resolved = false
@@ -67,7 +72,7 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 
 	// 4. FAIL_TO_PASS: one -v exec per distinct package, and require proof that
 	// every expected test actually emitted an === RUN line.
-	f2pPass, ran, f2pReason := runFailToPass(checkoutDir, moduleDir, inst, timeout)
+	f2pPass, ran, f2pReason := runFailToPass(checkoutDir, moduleDir, inst, execSpec, timeout)
 	v.F2PPass = f2pPass
 	v.RanTests = ran
 	if f2pReason != "" {
@@ -75,7 +80,7 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 	}
 
 	// 5. PASS_TO_PASS: package suites must stay green and are reported separately.
-	p2pPass, p2pReason := runPassToPass(checkoutDir, moduleDir, inst, timeout)
+	p2pPass, p2pReason := runPassToPass(checkoutDir, moduleDir, inst, execSpec, timeout)
 	v.P2PPass = p2pPass
 	if v.GraderError == "" && p2pReason != "" && strings.HasPrefix(p2pReason, "infra") {
 		v.GraderError = p2pReason
@@ -84,6 +89,19 @@ func Grade(checkoutDir, oracleDir string, inst Instance) (Verdict, error) {
 	// 6. Final resolve bit.
 	v.Resolved = v.TestbuildOK && v.F2PPass && v.P2PPass
 	return v, nil
+}
+
+// ToolchainEnv returns the GOTOOLCHAIN env override for a pinned Go version,
+// or nil when goVersion is empty. A leading "go" in goVersion is tolerated.
+func ToolchainEnv(goVersion string) []string {
+	if goVersion == "" {
+		return nil
+	}
+	v := goVersion
+	if !strings.HasPrefix(v, "go") {
+		v = "go" + v
+	}
+	return []string{"GOTOOLCHAIN=" + v}
 }
 
 type commandResult struct {
@@ -98,7 +116,7 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 	return cmd.Run()
 }
 
-func runFailToPass(checkoutDir, moduleDir string, inst Instance, timeout time.Duration) (bool, []TestID, string) {
+func runFailToPass(checkoutDir, moduleDir string, inst Instance, spec ExecSpec, timeout time.Duration) (bool, []TestID, string) {
 	byPkg := map[string][]OracleTest{}
 	for _, ot := range inst.FailToPass {
 		byPkg[ot.Package] = append(byPkg[ot.Package], ot)
@@ -111,7 +129,7 @@ func runFailToPass(checkoutDir, moduleDir string, inst Instance, timeout time.Du
 		tests := byPkg[pkg]
 		sort.Slice(tests, func(i, j int) bool { return testIDLess(tests[i].TestID, tests[j].TestID) })
 		regex := combinedRunRegex(tests)
-		res := runGoTest(checkoutDir, moduleDir, inst.Exec, timeout, f2pArgs(inst.Exec, regex, pkg))
+		res := runGoTest(checkoutDir, moduleDir, spec, timeout, f2pArgs(spec, regex, pkg))
 		parsed := parseGoTestVerbose(res.stdout + res.stderr)
 		for _, ot := range tests {
 			name := fullTestName(ot.TestID)
@@ -139,12 +157,12 @@ func runFailToPass(checkoutDir, moduleDir string, inst Instance, timeout time.Du
 	return allPass, ran, ""
 }
 
-func runPassToPass(checkoutDir, moduleDir string, inst Instance, timeout time.Duration) (bool, string) {
+func runPassToPass(checkoutDir, moduleDir string, inst Instance, spec ExecSpec, timeout time.Duration) (bool, string) {
 	pkgs := append([]string(nil), inst.PassToPass.Packages...)
 	sort.Strings(pkgs)
 	allPass := true
 	for _, pkg := range pkgs {
-		res := runGoTest(checkoutDir, moduleDir, inst.Exec, timeout, p2pArgs(inst.Exec, pkg))
+		res := runGoTest(checkoutDir, moduleDir, spec, timeout, p2pArgs(spec, pkg, inst.PassToPass.RunRegex))
 		if res.err != nil {
 			allPass = false
 		}
@@ -199,10 +217,14 @@ func f2pArgs(spec ExecSpec, regex, pkg string) []string {
 	return args
 }
 
-func p2pArgs(spec ExecSpec, pkg string) []string {
+func p2pArgs(spec ExecSpec, pkg, regex string) []string {
 	args := baseArgv(spec)
 	args = append(args, tagsArgs(spec)...)
-	args = append(args, "-count=1", pkg)
+	args = append(args, "-count=1")
+	if regex != "" {
+		args = append(args, "-run", regex)
+	}
+	args = append(args, pkg)
 	return args
 }
 
