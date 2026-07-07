@@ -110,10 +110,8 @@ func TestReviewAndRepairParseErrorReviewRequiredYieldsUnverified(t *testing.T) {
 	}
 }
 
-func TestReviewAndRepairParseErrorFailOpenStaysAnswered(t *testing.T) {
+func TestReviewAndRepairParseErrorDefaultRequiredYieldsUnverified(t *testing.T) {
 	root, baseTree, sb := initReviewPassGit(t)
-
-	// Simulate solver's change so the review gate has a diff to review.
 	if err := os.WriteFile(filepath.Join(root, "calc.go"), []byte("package calc // patched\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +124,53 @@ func TestReviewAndRepairParseErrorFailOpenStaysAnswered(t *testing.T) {
 		Sandbox:      sb,
 		Reviewer:     rv,
 		ReviewRounds: 1,
-		// ReviewRequired defaults to false → fail-open
+	}, base, ReviewPassOptions{BaseTree: baseTree}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s (%s), want unverified by default", res.Outcome, res.Reason)
+	}
+	if res.Review == nil || res.Review.Status != ReviewParseError {
+		t.Fatalf("review report = %+v, want parse_error status", res.Review)
+	}
+}
+
+func TestReviewFailOpenAndReviewRequiredIsSetupError(t *testing.T) {
+	root, _, sb := initReviewPassGit(t)
+	_, err := NewGate(context.Background(), Config{
+		Root:           root,
+		Sandbox:        sb,
+		Task:           "fix calc",
+		Reviewer:       &errReviewer{},
+		ReviewRequired: true,
+		ReviewFailOpen: true,
+	})
+	if err == nil {
+		t.Fatal("NewGate succeeded, want setup error")
+	}
+	if !strings.Contains(err.Error(), "ReviewFailOpen") || !strings.Contains(err.Error(), "ReviewRequired") {
+		t.Fatalf("error = %v, want conflict message", err)
+	}
+}
+
+func TestReviewAndRepairParseErrorFailOpenStaysAnswered(t *testing.T) {
+	root, baseTree, sb := initReviewPassGit(t)
+
+	// Simulate solver's change so the review gate has a diff to review.
+	if err := os.WriteFile(filepath.Join(root, "calc.go"), []byte("package calc // patched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rv := &errReviewer{parseErr: true}
+	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
+	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+		Task:           "fix calc",
+		Root:           root,
+		Sandbox:        sb,
+		Reviewer:       rv,
+		ReviewRounds:   1,
+		ReviewFailOpen: true,
 	}, base, ReviewPassOptions{BaseTree: baseTree}, nil)
 	if err != nil {
 		t.Fatal(err)

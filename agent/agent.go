@@ -620,12 +620,21 @@ type Config struct {
 	// imports agent, so the reviewer must be injected to avoid the cycle.
 	Reviewer Reviewer
 
-	// ReviewRequired makes review infrastructure honest in automation: when the
-	// reviewer is configured but unavailable, times out, or returns unparseable
-	// output, a would-be Answered finish becomes Unverified instead of silently
-	// passing as reviewed. Semantic reviewer outcomes (clean/advisory/blockers)
-	// keep their normal behavior; caller cancellation still cancels the run.
+	// ReviewRequired forces review infrastructure failures to block even when
+	// Reviewer is nil. It is mainly an explicit assertion for callers and config
+	// files: with Reviewer set, review is required by default. When required,
+	// reviewer unavailability, timeouts, unparseable output, or skipped review
+	// baselines turn a would-be Answered finish into Unverified instead of
+	// silently passing as reviewed. Semantic reviewer outcomes
+	// (clean/advisory/blockers) keep their normal behavior; caller cancellation
+	// still cancels the run. It may not be combined with ReviewFailOpen.
 	ReviewRequired bool
+
+	// ReviewFailOpen explicitly opts out of the library default that an armed
+	// Reviewer is required. Set this for interactive/advisory use where reviewer
+	// infrastructure failures should be recorded but not downgrade an otherwise
+	// verified run. It may not be combined with ReviewRequired.
+	ReviewFailOpen bool
 
 	// ReviewOptional restores fail-open review-gate arming for interactive or
 	// non-repository use. By default, configuring Reviewer but failing to capture

@@ -109,9 +109,26 @@ type gates struct {
 // solver's diff will be taken against (slice 1a). It also measures the
 // VerifyCmd baseline (pre-flight) when configured, and captures the run-start
 // git tree for the upgradeIfVerified empty-diff guard.
+func effectiveReviewRequired(cfg Config) bool {
+	if cfg.ReviewFailOpen {
+		return false
+	}
+	return cfg.ReviewRequired || cfg.Reviewer != nil
+}
+
+func validateReviewRequirementConfig(cfg Config) error {
+	if cfg.ReviewFailOpen && cfg.ReviewRequired {
+		return setupErr("invalid_review_config", "ReviewFailOpen and ReviewRequired cannot both be true")
+	}
+	return nil
+}
+
 func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates, error) {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
+	}
+	if err := validateReviewRequirementConfig(cfg); err != nil {
+		return nil, err
 	}
 	review, err := newReviewState(ctx, cfg)
 	if err != nil {
@@ -532,7 +549,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		return "", ""
 	}
 	if rv.skip != "" {
-		if g.cfg.ReviewRequired {
+		if effectiveReviewRequired(g.cfg) {
 			return "", fmt.Sprintf("review required but review was skipped: %s", rv.skip)
 		}
 		return "", ""
@@ -749,7 +766,7 @@ func isReviewInfrastructureStatus(status ReviewStatus) bool {
 }
 
 func (g *gates) reviewRequiredBlockReason() string {
-	if g.review == nil || !g.cfg.ReviewRequired || !isReviewInfrastructureStatus(g.review.status) {
+	if g.review == nil || !effectiveReviewRequired(g.cfg) || !isReviewInfrastructureStatus(g.review.status) {
 		return ""
 	}
 	return fmt.Sprintf("review required but review status is %s", g.review.status)

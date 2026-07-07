@@ -139,7 +139,7 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *Run
 }
 
 func combinedReviewRequiredBlockReason(cfg Config, report *ReviewReport) string {
-	if !cfg.ReviewRequired || report == nil || !isReviewInfrastructureStatus(report.Status) {
+	if !effectiveReviewRequired(cfg) || report == nil || !isReviewInfrastructureStatus(report.Status) {
 		return ""
 	}
 	return fmt.Sprintf("review required but review status is %s", report.Status)

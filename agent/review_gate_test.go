@@ -441,7 +441,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo.
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewOptional: true})
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewOptional: true, ReviewFailOpen: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 // stays Answered, loudly noted and recorded.
 func TestReviewerErrorFailsOpen(t *testing.T) {
 	rv := &fakeReviewer{err: errors.New("provider melted")}
-	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewFailOpen: true}, editThenAnswer())
 	if res.Outcome != Answered {
 		t.Fatalf("outcome = %s, want answered (fail open)", res.Outcome)
 	}
@@ -566,7 +566,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 	root := t.TempDir() // NOT a git repo → skip.
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "t",
-		Reviewer: rv, ReviewRequired: false, ReviewOptional: true,
+		Reviewer: rv, ReviewFailOpen: true, ReviewOptional: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -588,7 +588,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 
 func TestReviewErrorTimeoutClassification(t *testing.T) {
 	rv := &fakeReviewer{err: context.DeadlineExceeded}
-	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewFailOpen: true}, editThenAnswer())
 	if res.Outcome != Answered {
 		t.Fatalf("outcome = %s, want fail-open answered", res.Outcome)
 	}
@@ -1279,6 +1279,7 @@ func TestReviewArmedNonRepoFailsSetupUnlessOptional(t *testing.T) {
 	}
 
 	cfg.ReviewOptional = true
+	cfg.ReviewFailOpen = true
 	res, err = RunNative(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("optional RunNative err: %v", err)
