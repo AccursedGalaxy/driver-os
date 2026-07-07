@@ -79,7 +79,16 @@ type Validation struct {
 	FlakeRuns     int         `json:"flake_runs"`
 	CreatedAt     string      `json:"created_at"`
 	LeakScreen    LeakScreen  `json:"leak_screen"`
+	Demotions     []Demotion  `json:"demotions,omitempty"`
 	ValidatorVer  string      `json:"validator_version"`
+}
+
+type Demotion struct {
+	Test      TestID `json:"test"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Reason    string `json:"reason"`
+	DemotedAt string `json:"demoted_at"`
 }
 
 type RunResult struct {

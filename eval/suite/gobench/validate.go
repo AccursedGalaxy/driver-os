@@ -78,7 +78,7 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 		return inst, rej, nil
 	}
 	redResults, redRuns := runRedAtBase(inst, baseDir, testTimeout, k)
-	if ok, reason, detail := classifyRedAtBase(redRuns); !ok {
+	if ok, reason, detail := classifyRedAtBaseWithGuards(inst.FailToPass, redRuns); !ok {
 		stage := "red-at-base"
 		if reason == "error" {
 			stage = "environment"
@@ -86,6 +86,8 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 		rej := rejection(inst, stage, reason, detail)
 		return inst, rej, nil
 	}
+	var demotions []Demotion
+	inst, demotions = demoteGuardTests(inst, redRuns, opts.Now)
 
 	goldDir := filepath.Join(workDir, "gold")
 	if err := CheckoutBase(ctx, repoURL(inst.Repo), inst.GoldCommit, goldDir, opts.CacheDir); err != nil {
@@ -112,6 +114,7 @@ func Validate(ctx context.Context, inst Instance, opts ValidateOpts) (Instance, 
 	out.Validation.RedAtBaseRuns = redResults
 	out.Validation.GoldGreenRuns = goldResults
 	out.Validation.FlakeRuns = k
+	out.Validation.Demotions = demotions
 	out.Validation.ValidatorVer = ValidatorVersion
 	out.ValidatedAt = opts.Now
 	if err := out.Validate(); err != nil {
@@ -373,6 +376,104 @@ func uniqueStrings(vals []string) []string {
 		}
 	}
 	return out
+}
+
+func classifyRedAtBaseWithGuards(tests []OracleTest, runs []redRun) (ok bool, reason string, detail string) {
+	for _, r := range runs {
+		if r.infraDetail != "" {
+			return false, "error", r.infraDetail
+		}
+		if !r.allNamedRan {
+			return false, "f2p-did-not-run", strings.Join(r.missing, "; ")
+		}
+	}
+	passCounts := map[string]int{}
+	var passing []string
+	for _, r := range runs {
+		labels := append([]string(nil), r.passing...)
+		sort.Strings(labels)
+		for _, label := range uniqueStrings(labels) {
+			passCounts[label]++
+			passing = append(passing, label)
+		}
+	}
+	retained := 0
+	for _, ot := range tests {
+		label := redAtBaseLabel(ot.TestID)
+		c := passCounts[label]
+		if c > 0 && c < len(runs) {
+			return false, "flaky", ""
+		}
+		if c == 0 {
+			retained++
+		}
+	}
+	if retained == 0 {
+		sort.Strings(passing)
+		return false, "no-gate", strings.Join(uniqueStrings(passing), "; ")
+	}
+	return true, "", ""
+}
+
+func demoteGuardTests(inst Instance, runs []redRun, demotedAt string) (Instance, []Demotion) {
+	passCounts := map[string]int{}
+	for _, r := range runs {
+		labels := append([]string(nil), r.passing...)
+		sort.Strings(labels)
+		for _, label := range uniqueStrings(labels) {
+			passCounts[label]++
+		}
+	}
+	out := inst
+	retained := make([]OracleTest, 0, len(inst.FailToPass))
+	var demotions []Demotion
+	var demotedRegexes []string
+	for _, ot := range inst.FailToPass {
+		if passCounts[redAtBaseLabel(ot.TestID)] == len(runs) {
+			demotions = append(demotions, Demotion{Test: ot.TestID, From: "FAIL_TO_PASS", To: "PASS_TO_PASS", Reason: "passes-at-base", DemotedAt: demotedAt})
+			demotedRegexes = append(demotedRegexes, ot.RunRegex)
+			if !containsString(out.PassToPass.Packages, ot.Package) {
+				out.PassToPass.Packages = append(out.PassToPass.Packages, ot.Package)
+			}
+			continue
+		}
+		retained = append(retained, ot)
+	}
+	out.FailToPass = retained
+	sort.Strings(out.PassToPass.Packages)
+	if out.PassToPass.RunRegex != "" && len(demotedRegexes) > 0 {
+		out.PassToPass.RunRegex = unionRunRegex(append([]string{out.PassToPass.RunRegex}, demotedRegexes...))
+	}
+	return out, demotions
+}
+
+func redAtBaseLabel(t TestID) string {
+	return fmt.Sprintf("%s %s", t.Package, fullTestName(t))
+}
+
+func containsString(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func unionRunRegex(parts []string) string {
+	clean := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" && !containsString(clean, p) {
+			clean = append(clean, p)
+		}
+	}
+	if len(clean) == 1 {
+		return clean[0]
+	}
+	for i, p := range clean {
+		clean[i] = "(?:" + p + ")"
+	}
+	return strings.Join(clean, "|")
 }
 
 func classifyGoldGreen(runs []RunResult) (ok bool, reason string) {

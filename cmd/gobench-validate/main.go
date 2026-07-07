@@ -70,6 +70,7 @@ func run(ctx context.Context, args []string) int {
 
 	var rejections []*gobench.Rejection
 	var acceptedCount int
+	var demotedCount int
 	var totalCount int
 	now := time.Now().Format(time.RFC3339)
 	var scrubber gobench.Scrubber
@@ -152,6 +153,9 @@ func run(ctx context.Context, args []string) int {
 			})
 			continue
 		}
+		if len(validated.Validation.Demotions) > 0 {
+			demotedCount++
+		}
 		acceptedCount++
 	}
 
@@ -160,7 +164,7 @@ func run(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	printSummary(totalCount, acceptedCount, rejections)
+	printSummary(totalCount, acceptedCount, demotedCount, rejections)
 
 	return 0
 }
@@ -195,7 +199,7 @@ func writeRejections(outDir string, rejections []*gobench.Rejection) error {
 	return nil
 }
 
-func printSummary(total, accepted int, rejections []*gobench.Rejection) {
+func printSummary(total, accepted, demoted int, rejections []*gobench.Rejection) {
 	reasons := map[string]int{
 		"broken-base":         0,
 		"base-testbuild-fail": 0,
@@ -215,6 +219,7 @@ func printSummary(total, accepted int, rejections []*gobench.Rejection) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
 	fmt.Fprintf(tw, "Candidates\t%d\n", total)
 	fmt.Fprintf(tw, "Accepted\t%d\n", accepted)
+	fmt.Fprintf(tw, "Demoted\t%d\n", demoted)
 	fmt.Fprintf(tw, "Rejected\t%d\n", len(rejections))
 
 	keys := make([]string, 0, len(reasons))

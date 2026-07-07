@@ -52,7 +52,7 @@ func TestPrintSummary(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	printSummary(10, 7, rejections)
+	printSummary(10, 7, 2, rejections)
 
 	w.Close()
 	var buf bytes.Buffer
@@ -63,6 +63,7 @@ func TestPrintSummary(t *testing.T) {
 	expectedParts := []string{
 		"Candidates", "10",
 		"Accepted", "7",
+		"Demoted", "2",
 		"Rejected", "3",
 		"- broken-base", "1",
 		"- flaky", "2",

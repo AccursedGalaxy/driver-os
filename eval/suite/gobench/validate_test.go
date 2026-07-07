@@ -2,6 +2,7 @@ package gobench
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -353,5 +354,110 @@ func TestStage7ScrubbedPathScreensScrubbedStatement(t *testing.T) {
 	}
 	if inst.Validation.LeakScreen.Method == "" {
 		t.Fatalf("leak screen not populated")
+	}
+}
+
+func TestClassifyRedAtBaseWithGuardDemotionShape(t *testing.T) {
+	tests := []OracleTest{
+		{TestID: TestID{Package: "./cmd", Name: "TestBug"}, RunRegex: "^TestBug$"},
+		{TestID: TestID{Package: "./cmd", Name: "TestGuard"}, RunRegex: "^TestGuard$"},
+	}
+	runs := []redRun{
+		{allNamedRan: true, passing: []string{"./cmd TestGuard"}},
+		{allNamedRan: true, passing: []string{"./cmd TestGuard"}},
+	}
+	ok, reason, detail := classifyRedAtBaseWithGuards(tests, runs)
+	if !ok || reason != "" || detail != "" {
+		t.Fatalf("classifyRedAtBaseWithGuards()=(%v,%q,%q), want ok", ok, reason, detail)
+	}
+	inst := Instance{FailToPass: tests, PassToPass: PassToPass{Packages: []string{"./other"}}}
+	got, demotions := demoteGuardTests(inst, runs, "2026-07-07T00:00:00Z")
+	if len(got.FailToPass) != 1 || got.FailToPass[0].Name != "TestBug" {
+		t.Fatalf("retained F2P=%+v, want only TestBug", got.FailToPass)
+	}
+	if len(demotions) != 1 || demotions[0].Test.Name != "TestGuard" || demotions[0].Reason != "passes-at-base" {
+		t.Fatalf("demotions=%+v", demotions)
+	}
+}
+
+func TestClassifyRedAtBaseGuardFloorNoGate(t *testing.T) {
+	tests := []OracleTest{redTest("./pkg", "TestA"), redTest("./pkg", "TestB")}
+	runs := []redRun{
+		{allNamedRan: true, passing: []string{"./pkg TestA", "./pkg TestB"}},
+		{allNamedRan: true, passing: []string{"./pkg TestA", "./pkg TestB"}},
+	}
+	ok, reason, detail := classifyRedAtBaseWithGuards(tests, runs)
+	if ok || reason != "no-gate" || !strings.Contains(detail, "./pkg TestA") || !strings.Contains(detail, "./pkg TestB") {
+		t.Fatalf("classifyRedAtBaseWithGuards()=(%v,%q,%q), want no-gate naming tests", ok, reason, detail)
+	}
+}
+
+func TestClassifyRedAtBaseMixedGuardIsFlaky(t *testing.T) {
+	tests := []OracleTest{redTest("./pkg", "TestBug"), redTest("./pkg", "TestSometimes")}
+	runs := []redRun{
+		{allNamedRan: true, passing: []string{"./pkg TestSometimes"}},
+		{allNamedRan: true, red: true},
+	}
+	ok, reason, _ := classifyRedAtBaseWithGuards(tests, runs)
+	if ok || reason != "flaky" {
+		t.Fatalf("classifyRedAtBaseWithGuards()=(%v,%q), want flaky", ok, reason)
+	}
+	inst := Instance{FailToPass: tests}
+	got, demotions := demoteGuardTests(inst, runs, "stamp")
+	if len(demotions) != 0 || len(got.FailToPass) != 2 {
+		t.Fatalf("mixed result demoted=%+v retained=%+v", demotions, got.FailToPass)
+	}
+}
+
+func TestDemoteGuardTestsExtendsP2PCoverage(t *testing.T) {
+	tests := []OracleTest{
+		{TestID: TestID{Package: "./bug", Name: "TestBug"}, RunRegex: "^TestBug$"},
+		{TestID: TestID{Package: "./guard", Name: "TestGuard"}, RunRegex: "^TestGuard$"},
+	}
+	runs := []redRun{{allNamedRan: true, passing: []string{"./guard TestGuard"}}, {allNamedRan: true, passing: []string{"./guard TestGuard"}}}
+	inst := Instance{FailToPass: tests, PassToPass: PassToPass{Packages: []string{"./bug"}}}
+	got, _ := demoteGuardTests(inst, runs, "stamp")
+	if !containsString(got.PassToPass.Packages, "./guard") {
+		t.Fatalf("PASS_TO_PASS packages not extended: %+v", got.PassToPass.Packages)
+	}
+
+	inst = Instance{FailToPass: tests, PassToPass: PassToPass{Packages: []string{"./bug", "./guard"}}}
+	got, _ = demoteGuardTests(inst, runs, "stamp")
+	if len(got.PassToPass.Packages) != 2 {
+		t.Fatalf("covered package should be unchanged, got %+v", got.PassToPass.Packages)
+	}
+}
+
+func TestDemotionReceiptStampedFromOptsNow(t *testing.T) {
+	tests := []OracleTest{redTest("./pkg", "TestBug"), redTest("./pkg", "TestGuard")}
+	runs := []redRun{{allNamedRan: true, passing: []string{"./pkg TestGuard"}}, {allNamedRan: true, passing: []string{"./pkg TestGuard"}}}
+	_, demotions := demoteGuardTests(Instance{FailToPass: tests}, runs, "2026-07-07T12:34:56Z")
+	if len(demotions) != 1 || demotions[0].DemotedAt != "2026-07-07T12:34:56Z" || demotions[0].From != "FAIL_TO_PASS" || demotions[0].To != "PASS_TO_PASS" {
+		t.Fatalf("demotion receipt=%+v", demotions)
+	}
+}
+
+func TestValidationDemotionsJSONRoundTrip(t *testing.T) {
+	v := Validation{Demotions: []Demotion{{Test: TestID{Package: "./pkg", Name: "TestGuard"}, From: "FAIL_TO_PASS", To: "PASS_TO_PASS", Reason: "passes-at-base", DemotedAt: "stamp"}}}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "demotions") {
+		t.Fatalf("json missing demotions: %s", b)
+	}
+	var got Validation
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Demotions) != 1 || got.Demotions[0].Test.Name != "TestGuard" || got.Demotions[0].Reason != "passes-at-base" {
+		t.Fatalf("round trip=%+v", got.Demotions)
+	}
+	empty, err := json.Marshal(Validation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(empty), "demotions") {
+		t.Fatalf("empty demotions should be omitted: %s", empty)
 	}
 }
