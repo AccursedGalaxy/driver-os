@@ -197,6 +197,8 @@ func (nopReviewer) Review(context.Context, agent.ReviewInput) (*agent.ReviewVerd
 func TestRunTrialCarriesReview(t *testing.T) {
 	c := markerCase()
 	c.Config.Reviewer = nopReviewer{}
+	c.Config.ReviewOptional = true
+	c.Config.ReviewFailOpen = true
 	fixer := &scriptProvider{name: "fixer", turns: [][]llm.ContentPart{
 		{writeCall("1", "result.txt", "DONE")},
 	}}
