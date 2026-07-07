@@ -49,10 +49,21 @@ validator command itself.
 Gate: `go build ./... && go vet ./eval/suite/gobench/... && go test
 ./eval/suite/gobench/...` green; existing round-trip golden fixtures byte-stable.
 
-## Slice 2 — validator core (THE MOAT)
+## Slice 2 — validator core (THE MOAT) — DONE 2026-07-07 (`bd0783a`)
+
+Shipped `eval/suite/gobench/validate.go` + `validate_test.go` (gpt-5.5 solver +
+opus-4.8 review, $0.76, review clean). `overlayOracle` extracted from `Grade` (DRY,
+Grade behavior unchanged). Pure classifiers `classifyRedAtBase`/`classifyGoldGreen`
+carry the offline unit tests; flake-quarantine is folded into the red/gold K-loops.
+
+**KNOWN GAP (G3 follow-up): the timebox stage is inert.** `runGoTest` hard-kills at
+`testTimeout`, and `firstSlow` flags `DurationS > testTimeout`, so a genuinely slow
+run is killed (surfacing as `gold-red`/`flaky`) before it can ever be flagged `slow`.
+The stage needs a SEPARATE slow-threshold below the kill timeout. Fold this into the
+Gate G3 slow-tier-vs-reject decision.
 
 `validate.go`: `func Validate(ctx, inst Instance, opts ValidateOpts) (Instance,
-Rejection, error)` — returns the fully-populated instance on accept, or a `Rejection`
+*Rejection, error)` — returns the fully-populated instance on accept, or a `*Rejection`
 with a taxonomy `Reason`. Pure of flag/CLI concerns. Stages, in order, first failure
 short-circuits to a `Rejection`:
 
@@ -132,7 +143,16 @@ Separable, involves an LLM call and a text-similarity screen.
   (`method`, `ngram_size`, `score`, `threshold`, `passed`, hashes, `screened_at`). A
   score over threshold flags the instance for human review, does not auto-accept.
 
-## Slice 4 — `cmd/gobench-validate` wiring
+## Slice 4 — `cmd/gobench-validate` wiring — DONE 2026-07-07 (`4ea4c2f`)
+
+Shipped `cmd/gobench-validate/main.go` (+ `main_test.go`). gemini-3-flash solver +
+gpt-5.5 review ($0.54); review caught 3 findings, solver repaired 2, the 3rd
+(exit 0 on missing/unreadable candidates dir) fixed directly (`os.Stat` guard) and
+verified against the reviewer's own repro. Per-candidate `OracleDir =
+<oracles-root>/<instance_id>`; infra faults become a synthetic `{stage:infra,
+reason:error}` rejection so no candidate is dropped silently.
+
+Original design notes below.
 
 Thin `main.go`: flags (`-candidates`, `-oracles`, `-out`, `-cache`, `-flake-runs`,
 `-repos`, `-ids`), fetch issue bodies for the scrub stage (`gh issue view`, the same
