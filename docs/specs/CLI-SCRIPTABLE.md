@@ -54,19 +54,22 @@ The terminal event nests the D3 result object under a `result` key (not flattene
 into the event), so `type` never collides with a result field. It is the same
 object `-format json` emits.
 
-### D3 — The result object (schema_version 4)
+### D3 — The result object (schema_version 7)
 Reuses the persisted transcript summary (`agent.RecordFrom`). **Summary, not full
 trace** — the complete `Steps` trace is already written to `<id>.json`; we point
 at it rather than duplicate it on stdout.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 7,
   "id": "20260603-201500-a1b2c3",
   "outcome": "answered",
   "exit_code": 0,
   "task": "What module path does this project declare?",
   "model": "openai/gpt-4o-mini",
+  "review_model": null,
+  "plan_model": null,
+  "select_model": null,
   "answer": "github.com/AccursedGalaxy/driver-os",
   "reason": "",
   "iterations": 3,
@@ -108,6 +111,10 @@ at it rather than duplicate it on stdout.
 - `review` — the review-gate report (rounds, findings, usage), or `null` when
   the gate was off.
 - `plan` — the plan-stage report (plan, usage), or `null` when the stage was off.
+- `review_model`, `plan_model`, `select_model` (v7) — the ARMED role model ids
+  (configuration), or `null` when the role is off. The per-role reports
+  (`review`/`plan`/`best_of`) record what actually ran; these record what was
+  asked for, so a consumer (and the delegation ledger) never re-parses argv.
 - `solver_cost_usd`, `reviewer_cost_usd`, `planner_cost_usd` — the USD cost for
   each role's usage when the model is priced in `eval.Pricing`, else `null`.
   Role fields are also `null` when that role was not configured.
@@ -117,8 +124,12 @@ at it rather than duplicate it on stdout.
 The object is emitted for **every** `RunResult`, including error outcomes (fixes
 today's bug where SUMMARY prints only on `err==nil`).
 
-**schema_version 4** adds `worktree_path` and `patch_path` for the opt-in
-`-worktree` isolation mode. With that flag, the run starts from a detached git
+**Schema history**: v4 added `worktree_path`/`patch_path`; v5 `best_of` +
+`selector_cost_usd`; v6 `review.status`; v7 the armed role model ids above.
+
+**`-worktree` isolation** (default `auto`: ON inside a git repo unless
+`-review` needs the live tree; `-worktree=false` forces direct working-tree
+edits, `-worktree` forces isolation). With it, the run starts from a detached git
 worktree at `HEAD`; uncommitted main-checkout changes are intentionally not
 visible. At the end, the CLI captures `git diff --binary HEAD` after intent-to-add
 staging and writes `<run-id>.patch` next to the transcript when non-empty.
@@ -140,7 +151,7 @@ sandbox build failure) produce no `RunResult`, but once `-format` has resolved t
 unconditionally. Emit a CLI-error object instead of the result object:
 
 ```json
-{ "schema_version": 4, "outcome": "cli_error", "exit_code": 1,
+{ "schema_version": 7, "outcome": "cli_error", "exit_code": 1,
   "error": { "kind": "no_provider_key",
              "message": "no provider key found; set OPENROUTER_API_KEY or X_AI_API_KEY" },
   "worktree_path": null, "patch_path": null,
@@ -176,6 +187,7 @@ never produced a result" (1) from "the agent ran but did not answer" (2–6):
 | 5 | provider/transport error | `provider_error` |
 | 6 | refused on policy | `refused_unsafe` |
 | 7 | canceled by caller (SIGINT / ctx cancel) | `canceled` |
+| 8 | scope violation — the run changed paths outside `-diff-scope` | `scope_violation` |
 
 Rationale for the classes: a script reacts *differently* to each — retry-with-
 bigger-budget on 3, backoff-and-retry on 5, never-retry on 6, swap-model on 4,
@@ -221,6 +233,31 @@ deadlock (closes O4).
 - Under `-format=json|ndjson`, an **omitted** `-task` is an error, not the demo
   default — a script must not silently run the canned task. `text` mode keeps the
   demo default for backward compat.
+
+### D7 — Orchestrator conveniences are native (2026-07-07)
+
+Everything delegate.sh used to paper over wrapper-side is now in the binary,
+so EVERY caller gets it (raw CLI, adapters, CI):
+
+- **`-trace full|compact`** (default `full`): `compact` reduces the stderr
+  trace to a one-line-per-iteration heartbeat (`[HH:MM:SS] iter N/M · X tok`)
+  plus gate-milestone lines (review/verify/plan/outcome/budget/worktree/
+  baseline/fence/scope/warn/error). **`-trace-file <path>`** banks the FULL
+  unfiltered stream regardless of mode — debug from the file, not the tty.
+- **`-report <path>`**: at the end of the run, write a one-read markdown
+  report — trimmed result projection, the answer, this run's diff (the banked
+  patch in worktree mode; a pre/post snapshot delta that excludes pre-existing
+  dirt otherwise), and concrete next steps (`git apply …`, `ledger.sh mark …`).
+  Setup errors (exit 1 before a run) do NOT write a report — wrappers
+  synthesize one from the `cli_error` object if they need it.
+- **Delegation ledger** (`-ledger`, default on): every finished run appends
+  one JSONL record (model, outcome, per-role cost, review verdict, task
+  preview) to `$DRIVER_OS_LEDGER_DIR`/`~/.local/state/driver-os/ledger.jsonl`
+  — the shape ledger.sh consumes. Setup errors are not recorded.
+- **Headless defaults**: `-worktree=auto` (isolation ON in git repos, see D3),
+  `-effort low` for the solver (`-effort=default` = provider default),
+  `-verify-continue=true`, `-run-timeout 60s`. Deliberate divergences from the
+  TUI's defaults are documented in `cmd/agent/flags.go`.
 
 ## Non-goals (explicitly Tier 2–4, not this spec)
 - Subcommands and run-lifecycle browsing (`agent ls|show|replay`).

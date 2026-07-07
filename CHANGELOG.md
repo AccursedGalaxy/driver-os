@@ -5,6 +5,27 @@ pre-1.0; the API and CLI surface may change between minor versions.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- `driver-agent`: `-trace full|compact` (orchestrator heartbeat on stderr) and
+  `-trace-file` (bank the full unfiltered trace); `-report <file>` one-read
+  markdown run report (result, answer, this-run-only diff, next steps);
+  native delegation-ledger append on every finished run (`-ledger=false` opts
+  out). Result schema v7: `review_model`/`plan_model`/`select_model` record
+  the armed role models.
+- Grouped, sectioned `-help` output on both `driver` and `driver-agent`.
+
+### Changed (breaking for scripted callers)
+- `driver-agent` defaults: `-worktree` is now tri-state with default `auto`
+  (isolation ON inside a git repo unless `-review`; changes come back as a
+  banked patch — pass `-worktree=false` to edit the working tree directly);
+  solver `-effort` defaults to `low` (`-effort=default` = provider default);
+  `-verify-continue` defaults to on; `-run-timeout` default 30s → 60s.
+- `driver`: the `-no-auto-verify` alias was removed; use `-auto-verify=false`.
+- `-ladder` now refuses an explicit `-worktree` (the ladder path banks no
+  patch; the combination silently discarded edits).
+
 ## [0.1.0] - 2026-07-06
 
 Initial public beta. The full history predates this tag; this entry summarizes

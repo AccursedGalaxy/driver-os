@@ -79,10 +79,21 @@ go run ./cmd/agent -memory=false ...                            # disable memory
   trace and banners always go to stderr**, so `agent -format=json … | jq .answer`
   just works.
 - **Exit codes carry the outcome**: `0` answered · `2` unverified · `3` resource
-  cap (iterations/wall/context) · `4` stuck (a loop detector fired) · `5`
+  cap (iterations/wall/context/budget) · `4` stuck (a loop detector fired) · `5`
   provider/transport error · `6` refused on policy · `7` canceled by caller
-  (SIGINT / ctx cancel) · `1` setup error. Branch on
-  `$?` to retry, escalate, or give up.
+  (SIGINT / ctx cancel) · `8` scope violation (`-diff-scope`) · `1` setup error.
+  Branch on `$?` to retry, escalate, or give up.
+- **Orchestrator conveniences, all native** (no wrapper script needed):
+  `-trace=compact` reduces the stderr trace to a one-line-per-iteration
+  heartbeat plus gate milestones; `-trace-file` banks the full trace;
+  `-report out.md` writes a one-read markdown report (result, answer, diff,
+  next steps); every run appends a JSONL record to the delegation ledger
+  (`-ledger=false` opts out).
+- **Headless defaults favor unattended runs**: inside a git repo the run
+  isolates itself in a throwaway worktree (`-worktree` defaults to `auto`;
+  changes come back as a banked `<run-id>.patch` — pass `-worktree=false` to
+  edit the working tree directly), and the solver's reasoning effort defaults
+  to `low` (`-effort=default` restores the provider default).
 - **`-provider` / `-model`**: pick the backend and model on the command line
   instead of via env (the `*_MODEL` vars still work as defaults; the flag wins).
 - **`-task -`** reads the task from stdin: `cat issue.md | agent -task -`.
