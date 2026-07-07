@@ -660,6 +660,12 @@ type Config struct {
 	// some tasks are legitimate no-ops.
 	RequireDiff bool
 
+	// ReviewUnverified runs one advisory, report-only reviewer pass when a run
+	// ends Unverified with a non-empty diff before the normal review gate would
+	// fire. The verdict enriches salvage telemetry but never changes the run
+	// outcome or reason. CLI defaults it on; callers may leave it false to opt out.
+	ReviewUnverified bool
+
 	// ReviewRounds caps the reviewer↔solver repair cycles (0 =
 	// DefaultReviewRounds). Bounded on purpose: refine-loop gains concentrate in
 	// round 1, and unbounded review loops flip correct patches to wrong.

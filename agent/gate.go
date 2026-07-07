@@ -560,10 +560,12 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 					res.Reason = fmt.Sprintf("%s; verification inconclusive due to environment fault (%s)", res.Reason, sig2)
 					g.applyVerifyInfra(res)
 				}
+				g.reviewUnverified(ctx)
 				return res
 			}
 			g.verifyInfraSignature = ""
 		} else {
+			g.reviewUnverified(ctx)
 			return res
 		}
 	}
@@ -571,6 +573,7 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		g.cfg.Obs.Note("upgrade blocked — " + detail)
 		res.Outcome = Unverified
 		res.Reason = detail
+		g.reviewUnverified(ctx)
 		return res
 	}
 	// Execution is green; the review gate has the final word on the upgrade.
@@ -777,6 +780,40 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	rv.blocked = true
 	rv.resolvePending(FateExpired)
 	return "", fmt.Sprintf("review blockers remain after %d round(s)", rv.rounds)
+}
+
+// reviewUnverified runs a single advisory salvage review for an Unverified
+// exit. It records reviewer signal only; callers keep their existing Outcome,
+// Reason, and exit-code class regardless of the verdict.
+func (g *gates) reviewUnverified(ctx context.Context) {
+	if !g.cfg.ReviewUnverified {
+		return
+	}
+	rv := g.review
+	if rv == nil || rv.skip != "" || rv.rounds > 0 || len(rv.findings) > 0 {
+		return
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	gctx, gcancel := gateContext(ctx, gateDiffTimeout)
+	diff, err := rv.captureDiff(gctx)
+	gcancel()
+	if err != nil {
+		if rv.skip == "" && rv.status == "" {
+			rv.skip = "review skipped: could not capture diff for unverified advisory review: " + err.Error()
+			rv.status = ReviewUnavailable
+		}
+		return
+	}
+	if strings.TrimSpace(diff) == "" {
+		if rv.skip == "" && rv.status == "" {
+			rv.skip = "review skipped: no changes to review on unverified exit"
+		}
+		return
+	}
+	rv.salvage = true
+	_, _ = g.reviewFinish(ctx, false)
 }
 
 // failOpen records a review-infrastructure failure without blocking: note it,

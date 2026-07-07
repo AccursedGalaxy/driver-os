@@ -178,6 +178,7 @@ type ReviewReport struct {
 	Rounds        int               `json:"rounds"`
 	Status        ReviewStatus      `json:"status,omitempty"`
 	Blocked       bool              `json:"blocked"`                  // the run ended with blockers standing.
+	Salvage       bool              `json:"salvage,omitempty"`        // advisory review on an Unverified run; never changed outcome.
 	Skipped       string            `json:"skipped,omitempty"`        // why the gate never ran (not a git workspace, reviewer error, …).
 	ReviewerModel string            `json:"reviewer_model,omitempty"` // from ReviewVerdict.Model — the per-reviewer calibration axis.
 	ReviewerRuns  []string          `json:"reviewer_runs,omitempty"`  // per-round ReviewVerdict.RunID — links this transcript to the reviewer's own.
@@ -217,6 +218,7 @@ type reviewState struct {
 	rounds     int
 	status     ReviewStatus
 	blocked    bool
+	salvage    bool
 	model      string   // reviewer model id, from the first verdict that names one.
 	summaries  []string // one entry per round, blank when the reviewer emitted bare JSON.
 	runIDs     []string // reviewer sub-run IDs, one per verdict that carried one.
@@ -301,6 +303,7 @@ func (rv *reviewState) report() *ReviewReport {
 		Rounds:              rv.rounds,
 		Status:              rv.status,
 		Blocked:             rv.blocked,
+		Salvage:             rv.salvage,
 		Skipped:             rv.skip,
 		ReviewerModel:       rv.model,
 		ReviewerRuns:        rv.runIDs,

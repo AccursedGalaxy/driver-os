@@ -74,6 +74,7 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 		if prefix == "" {
 			prefix = "answer not verified"
 		}
+		g.reviewUnverified(ctx)
 		g.cfg.Obs.Note(prefix + " — " + reason)
 		return stopWith(outcome, reason, in.answer)
 	}
@@ -86,10 +87,12 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 			g.cfg.Obs.Note("finish rejected (repro-first) — continuing")
 			return continueWith("OBSERVATION:\nNot finished — " + fb + "\nKeep working: satisfy the repro-first gate before answering.")
 		}
+		g.reviewUnverified(ctx)
 		g.cfg.Obs.Note("answer not verified — " + detail)
 		return stopWith(Unverified, detail, in.answer)
 	}
 	if strings.TrimSpace(in.answer) == "" {
+		g.reviewUnverified(ctx)
 		g.cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
 		return stopWith(Unverified, "empty final answer — the model stopped without producing an answer", in.answer)
 	}

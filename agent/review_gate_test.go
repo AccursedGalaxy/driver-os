@@ -1314,3 +1314,64 @@ func TestRequireDiffHooksUnchangedTreeVerifyShortCircuit(t *testing.T) {
 		t.Fatalf("verifyCompletion = (%s, %q, %v), want require-diff unverified before unchanged-tree shortcut", outcome, reason, noContinue)
 	}
 }
+
+func TestReviewUnverifiedAdvisoryOnVerifyRedRecordsFindings(t *testing.T) {
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc // patched")}}}
+	res := reviewedRun(t, rv, Config{VerifyCmd: "false", ReviewUnverified: true}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if len(rv.inputs) != 1 {
+		t.Fatalf("reviewer called %d times, want 1", len(rv.inputs))
+	}
+	if res.Review == nil || !res.Review.Salvage || len(res.Review.Findings) != 1 || !res.Review.Blocked {
+		t.Fatalf("review report = %+v, want salvage findings", res.Review)
+	}
+}
+
+func TestReviewUnverifiedCleanDoesNotVerifyRun(t *testing.T) {
+	rv := &fakeReviewer{}
+	res := reviewedRun(t, rv, Config{VerifyCmd: "false", ReviewUnverified: true}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified despite clean advisory review", res.Outcome)
+	}
+	if len(rv.inputs) != 1 || res.Review == nil || !res.Review.Salvage || res.Review.Status != ReviewClean {
+		t.Fatalf("reviewer calls=%d report=%+v", len(rv.inputs), res.Review)
+	}
+}
+
+func TestReviewUnverifiedOptOutSkipsReviewer(t *testing.T) {
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc // patched")}}}
+	res := reviewedRun(t, rv, Config{VerifyCmd: "false", ReviewUnverified: false}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if len(rv.inputs) != 0 {
+		t.Fatalf("reviewer called %d times, want 0", len(rv.inputs))
+	}
+}
+
+func TestReviewUnverifiedEmptyDiffSkipsReviewer(t *testing.T) {
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
+	res := reviewedRun(t, rv, Config{VerifyCmd: "false", ReviewUnverified: true}, [][]llm.ContentPart{{llm.Text("done")}})
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if len(rv.inputs) != 0 {
+		t.Fatalf("reviewer called %d times, want 0", len(rv.inputs))
+	}
+}
+
+func TestReviewUnverifiedDoesNotDoubleReviewNormalGateBlock(t *testing.T) {
+	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc // patched")}, {}}}
+	res := reviewedRun(t, rv, Config{ReviewRounds: 1, ReviewUnverified: true}, editThenAnswer())
+	if res.Outcome != Unverified {
+		t.Fatalf("outcome = %s, want unverified", res.Outcome)
+	}
+	if len(rv.inputs) != 1 {
+		t.Fatalf("reviewer called %d times, want normal gate only once", len(rv.inputs))
+	}
+	if res.Review == nil || res.Review.Salvage || res.Review.Rounds != 1 || len(res.Review.Findings) != 1 {
+		t.Fatalf("review report = %+v, want original normal-gate report", res.Review)
+	}
+}
