@@ -56,11 +56,16 @@ func TestCostOfResolution(t *testing.T) {
 		want  string // key in Pricing to compare against
 	}{
 		{"anthropic:claude-opus-4.8", "anthropic/claude-opus-4.8"}, // colon->slash
-		{"openai:gpt-5.5", "openai/gpt-5.5"},                      // colon->slash
-		{"anthropic:claude-fable-5", "claude-fable-5"},            // colon->bare
-		{"anthropic:claude-opus-4-8", "claude-opus-4-8"},          // native hyphen id
+		{"openai:gpt-5.5", "openai/gpt-5.5"},                       // colon->slash
+		{"anthropic:claude-fable-5", "claude-fable-5"},             // colon->bare
+		{"anthropic:claude-opus-4-8", "claude-opus-4-8"},           // native hyphen id
 		{"anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8"}, // verbatim slash
-	}
+		{"openai/gpt-5.6-sol", "openai/gpt-5.6-sol"},
+		{"openai/gpt-5.6-terra", "openai/gpt-5.6-terra"},
+		{"openai/gpt-5.6-luna", "openai/gpt-5.6-luna"},
+		{"openai/gpt-5.6-sol-pro", "openai/gpt-5.6-sol-pro"},
+		{"openai/gpt-5.6-terra-pro", "openai/gpt-5.6-terra-pro"},
+		{"openai/gpt-5.6-luna-pro", "openai/gpt-5.6-luna-pro"}}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

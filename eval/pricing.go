@@ -56,6 +56,9 @@ var Pricing = map[string]Price{
 	"openai/gpt-5.6-sol":            {InPerM: 5.00, OutPerM: 30.00, CacheReadPerM: 0.50},
 	"openai/gpt-5.6-terra":          {InPerM: 2.50, OutPerM: 15.00, CacheReadPerM: 0.25},
 	"openai/gpt-5.6-luna":           {InPerM: 1.00, OutPerM: 6.00, CacheReadPerM: 0.10},
+	"openai/gpt-5.6-sol-pro":        {InPerM: 5.00, OutPerM: 30.00, CacheReadPerM: 0.50},
+	"openai/gpt-5.6-terra-pro":      {InPerM: 2.50, OutPerM: 15.00, CacheReadPerM: 0.25},
+	"openai/gpt-5.6-luna-pro":       {InPerM: 1.00, OutPerM: 6.00, CacheReadPerM: 0.10},
 	"anthropic/claude-fable-5":      {InPerM: 10.00, OutPerM: 50.00, CacheReadPerM: 1.00},
 	"qwen/qwen3.7-max":              {InPerM: 1.20, OutPerM: 6.00},
 	"anthropic/claude-opus-4.8":     {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
@@ -119,6 +122,22 @@ func CostOf(model string, u llm.Usage) (cost float64, ok bool) {
 			if p, ok := Pricing[slug]; ok {
 				return p.Cost(u), true
 			}
+		}
+	}
+
+	// The live catalog is only a fallback: static prices remain reproducible and win.
+	candidates := []string{model}
+	if i := strings.IndexByte(model, ':'); i > 0 {
+		provider := model[:i]
+		slug := model[i+1:]
+		switch provider {
+		case "openrouter", "anthropic", "xai", "openai", "ollama":
+			candidates = append(candidates, provider+"/"+slug, slug)
+		}
+	}
+	for _, candidate := range candidates {
+		if p, found := openRouterPrice(candidate); found {
+			return p.Cost(u), true
 		}
 	}
 
