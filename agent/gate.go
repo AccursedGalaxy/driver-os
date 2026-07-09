@@ -215,6 +215,24 @@ func (g *gates) standingBaseTree() string {
 	return g.stdBaseTree
 }
 
+// deliverableShapedGate reports whether cmd checks for artifacts the task may create.
+// It recognizes grep as a standalone command word and common file-existence clauses.
+func deliverableShapedGate(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i, field := range fields {
+		if field == "grep" {
+			return true
+		}
+		if field == "test" && i+1 < len(fields) && (fields[i+1] == "-f" || fields[i+1] == "-e") {
+			return true
+		}
+		if field == "[" && i+1 < len(fields) && (fields[i+1] == "-f" || fields[i+1] == "-e") {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	if g.cfg.VerifyCmd == "" || g.cfg.SkipVerifyBaseline {
 		return
@@ -246,7 +264,12 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 		g.verifyBaselineMeasured = true
 		g.verifyBaselineRed = true
 		g.verifyBaselineOut = out
-		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable")
+		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable" + func() string {
+			if deliverableShapedGate(g.cfg.VerifyCmd) {
+				return " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
+			}
+			return ""
+		}())
 		return
 	}
 	g.verifyBaselineMeasured = true
@@ -279,6 +302,10 @@ func (g *gates) baselinePreamble() string {
 	} else {
 		out = clip(out, 2000)
 	}
+	annotation := ""
+	if deliverableShapedGate(g.cfg.VerifyCmd) {
+		annotation = " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
+	}
 	return fmt.Sprintf(
 		"\n\n⚠️ PRE-FLIGHT VERIFY BASELINE — RED ⚠️\n"+
 			"The verify command:\n"+
@@ -286,10 +313,10 @@ func (g *gates) baselinePreamble() string {
 			"ALREADY fails on the UNTOUCHED workspace (before any changes):\n"+
 			"%s\n\n"+
 			"If your task is to fix this failure, proceed. "+
-			"If your task is unrelated, the gate may be unsatisfiable — "+
+			"If your task is unrelated, the gate may be unsatisfiable%s — "+
 			"complete your task, then answer explaining that the verify command "+
 			"was already red before any changes rather than grinding against it.",
-		g.cfg.VerifyCmd, out,
+		g.cfg.VerifyCmd, out, annotation,
 	)
 }
 

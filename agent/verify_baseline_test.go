@@ -28,6 +28,7 @@ func TestVerifyBaseline(t *testing.T) {
 		wantBaselineRed    bool
 		wantBaselineOut    bool
 		wantNote           bool
+		wantByDesign       bool
 		wantReasonNote     bool
 	}{
 		{
@@ -38,6 +39,16 @@ func TestVerifyBaseline(t *testing.T) {
 			wantBaselineOut: true,
 			wantNote:        true,
 			wantReasonNote:  true, // "false" always fails, so it will be unverified
+		},
+		{
+			name:            "deliverable-shaped red baseline is by design",
+			verifyCmd:       "grep -q needle README.md; exit 1",
+			finalAnswer:     "done",
+			wantBaselineRed: true,
+			wantBaselineOut: true,
+			wantNote:        true,
+			wantByDesign:    true,
+			wantReasonNote:  true,
 		},
 		{
 			name:            "baseline green records nothing",
@@ -93,14 +104,21 @@ func TestVerifyBaseline(t *testing.T) {
 			}
 
 			hasNote := false
+			hasByDesign := false
 			for _, n := range spy.notes {
 				if strings.Contains(n, "verify baseline: RED") {
 					hasNote = true
-					break
+				}
+				if strings.Contains(n, "BY DESIGN") {
+					hasByDesign = true
 				}
 			}
 			if hasNote != tc.wantNote {
 				t.Errorf("Observer saw 'verify baseline: RED' note = %v, want %v", hasNote, tc.wantNote)
+			}
+
+			if hasByDesign != tc.wantByDesign {
+				t.Errorf("Observer saw 'BY DESIGN' annotation = %v, want %v", hasByDesign, tc.wantByDesign)
 			}
 
 			if tc.wantReasonNote {
@@ -116,6 +134,24 @@ func TestVerifyBaseline(t *testing.T) {
 				if strings.Contains(res.Reason, wantSub) {
 					t.Errorf("Reason = %q, want it NOT to contain %q", res.Reason, wantSub)
 				}
+			}
+		})
+	}
+}
+
+func TestBaselinePreambleDirect(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd string
+		want      bool
+	}{
+		{"deliverable-shaped red", "grep -q needle README.md", true},
+		{"plain red", "false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gs := mustNewGates(t, context.Background(), Config{Sandbox: sbWith(t, nil), VerifyCmd: tc.cmd}, defaultRunTimeout)
+			pre := gs.baselinePreamble()
+			if strings.Contains(pre, "BY DESIGN") != tc.want {
+				t.Errorf("baselinePreamble() BY DESIGN = %v, want %v; preamble: %q", strings.Contains(pre, "BY DESIGN"), tc.want, pre)
 			}
 		})
 	}
