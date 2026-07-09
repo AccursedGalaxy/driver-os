@@ -120,6 +120,42 @@ func TestAppendLedgerUnpricedCostsAreNull(t *testing.T) {
 	}
 }
 
+func TestAppendLedgerSetupErrorHasNullCosts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DRIVER_OS_LEDGER_DIR", dir)
+
+	if err := AppendLedger(RunRecord{
+		SchemaVersion: TranscriptSchemaVersion,
+		Model:         "openai/gpt-5.5",
+		Task:          "fix setup",
+		Outcome:       Outcome("setup_error"),
+	}, LedgerMeta{Repo: "/repo/path", ExitCode: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "ledger.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &m); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]any{
+		"outcome": "setup_error", "exit_code": float64(1),
+		"model": "openai/gpt-5.5", "has_patch": false,
+	} {
+		if m[k] != want {
+			t.Errorf("record[%q] = %v, want %v", k, m[k], want)
+		}
+	}
+	for _, k := range []string{"solver_cost_usd", "reviewer_cost_usd", "planner_cost_usd", "selector_cost_usd", "total_cost_usd"} {
+		if v, ok := m[k]; !ok || v != nil {
+			t.Errorf("%s should be present and null, got %v (present=%v)", k, v, ok)
+		}
+	}
+}
+
 // TestLedgerDirDefault pins the resolution order: $DRIVER_OS_LEDGER_DIR wins,
 // else ~/.local/state/driver-os (the path ledger.sh reads).
 func TestLedgerDirDefault(t *testing.T) {
