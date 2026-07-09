@@ -53,6 +53,10 @@ func (p Price) Cost(u llm.Usage) float64 {
 var Pricing = map[string]Price{
 	// flagships
 	"openai/gpt-5.5":                {InPerM: 5.00, OutPerM: 30.00, CacheReadPerM: 0.50},
+	"openai/gpt-5.6-sol":            {InPerM: 5.00, OutPerM: 30.00, CacheReadPerM: 0.50},
+	"openai/gpt-5.6-terra":          {InPerM: 2.50, OutPerM: 15.00, CacheReadPerM: 0.25},
+	"openai/gpt-5.6-luna":           {InPerM: 1.00, OutPerM: 6.00, CacheReadPerM: 0.10},
+	"anthropic/claude-fable-5":      {InPerM: 10.00, OutPerM: 50.00, CacheReadPerM: 1.00},
 	"qwen/qwen3.7-max":              {InPerM: 1.20, OutPerM: 6.00},
 	"anthropic/claude-opus-4.8":     {InPerM: 5.00, OutPerM: 25.00, CacheReadPerM: 0.50},
 	"google/gemini-3.1-pro-preview": {InPerM: 2.00, OutPerM: 12.00, CacheReadPerM: 0.20},
