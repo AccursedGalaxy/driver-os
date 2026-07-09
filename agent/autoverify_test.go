@@ -90,6 +90,27 @@ func TestResolveAutoVerifyPrecedenceAndIsolation(t *testing.T) {
 	}
 }
 
+func TestVerifySkipFilter(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd, want string
+	}{
+		{"single quoted", "go test ./agent/ -skip 'TestA|TestB'", "-skip 'TestA|TestB'"},
+		{"double quoted", `go test ./agent/ -skip "Test A|Test B"`, `-skip "Test A|Test B"`},
+		{"bare", "go test ./agent/ -skip TestA|TestB", "-skip TestA|TestB"},
+		{"equals single quoted", "go test ./agent/ -skip='TestA|TestB'", "-skip 'TestA|TestB'"},
+		{"equals double quoted", `go test ./agent/ -skip="Test A|Test B"`, `-skip "Test A|Test B"`},
+		{"equals bare", "go test ./agent/ -skip=TestA|TestB", "-skip TestA|TestB"},
+		{"absent", "go test ./agent/ -run TestA", ""},
+		{"first flag wins", "go test ./agent/ -skip TestA -skip TestB", "-skip TestA"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := verifySkipFilter(tc.cmd); got != tc.want {
+				t.Fatalf("verifySkipFilter(%q) = %q, want %q", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyGatePreamble(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
 	got := verifyGatePreamble(cfg)
@@ -97,6 +118,11 @@ func TestVerifyGatePreamble(t *testing.T) {
 	if got != want {
 		t.Fatalf("preamble = %q, want %q", got, want)
 	}
+	cfg.VerifyCmd = "go test ./agent/ -skip 'TestA|TestB'"
+	if got := verifyGatePreamble(cfg); !strings.Contains(got, "`go test ./pkg/you/changed/ -skip 'TestA|TestB'`") || !strings.Contains(got, "The gate deliberately skips these — carry the filter") {
+		t.Fatalf("preamble missing skip guidance: %q", got)
+	}
+	cfg.VerifyCmd = "go test ./..."
 	cfg.autoVerifyProvenance = "go.mod"
 	if got := verifyGatePreamble(cfg); !strings.Contains(got, "auto-derived from go.mod") {
 		t.Fatalf("preamble missing provenance: %q", got)

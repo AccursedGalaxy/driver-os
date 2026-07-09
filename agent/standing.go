@@ -176,7 +176,11 @@ func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown b
 			if unchanged {
 				lines = append(lines, fmt.Sprintf("gate: `%s` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)", verifyCmd))
 			} else {
-				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed.", verifyCmd))
+				hint := ""
+				if verifySkipFilter(verifyCmd) != "" {
+					hint = " The gate deliberately skips these — carry the filter or you will see unrelated red tests."
+				}
+				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed.%s", verifyCmd, hint))
 			}
 		} else {
 			tag := freshnessTag(tr.lastVerifyTree, curTree, curUnknown)

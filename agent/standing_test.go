@@ -95,6 +95,15 @@ func TestStandingVerificationStillNudgesWhenChanged(t *testing.T) {
 	}
 }
 
+func TestStandingVerificationWithSkipCarriesFilter(t *testing.T) {
+	const verifyCmd = "go test ./agent/ -skip 'TestA|TestB'"
+	got := renderVerification(newTurnTracker(Config{VerifyCmd: verifyCmd}, 8), verifyCmd, "tree2", false, false)
+	want := "gate: `go test ./agent/ -skip 'TestA|TestB'` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed. The gate deliberately skips these — carry the filter or you will see unrelated red tests."
+	if got != want {
+		t.Fatalf("changed verification = %q, want %q", got, want)
+	}
+}
+
 func TestStandingDiffCapShowsStatOnlyNoMalformedHunk(t *testing.T) {
 	big := strings.Repeat("x\n", standingDiffCap+100)
 	got := renderDiffSection(" big.txt | 7000 +++++\n 1 file changed, 7000 insertions(+)", "@@ -0,0 +1,7000 @@\n+"+big)

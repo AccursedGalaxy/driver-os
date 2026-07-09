@@ -168,6 +168,60 @@ func formatDepDigest(goListJSON string, cap int) string {
 	return b.String()
 }
 
+func verifySkipFilter(verifyCmd string) string {
+	for i := 0; i < len(verifyCmd); {
+		start := strings.Index(verifyCmd[i:], "-skip")
+		if start < 0 {
+			return ""
+		}
+		start += i
+		if start > 0 && verifyCmd[start-1] != ' ' && verifyCmd[start-1] != '\t' {
+			i = start + len("-skip")
+			continue
+		}
+
+		arg := start + len("-skip")
+		if arg == len(verifyCmd) {
+			return ""
+		}
+		if verifyCmd[arg] == '=' {
+			arg++
+		} else if verifyCmd[arg] == ' ' || verifyCmd[arg] == '\t' {
+			for arg < len(verifyCmd) && (verifyCmd[arg] == ' ' || verifyCmd[arg] == '\t') {
+				arg++
+			}
+		} else {
+			i = arg
+			continue
+		}
+		if arg == len(verifyCmd) {
+			return ""
+		}
+
+		end := arg
+		if verifyCmd[arg] == '\'' || verifyCmd[arg] == '"' {
+			quote := verifyCmd[arg]
+			end++
+			for end < len(verifyCmd) && verifyCmd[end] != quote {
+				end++
+			}
+			if end == len(verifyCmd) {
+				return ""
+			}
+			end++
+		} else {
+			for end < len(verifyCmd) && verifyCmd[end] != ' ' && verifyCmd[end] != '\t' {
+				end++
+			}
+		}
+		if end > arg {
+			return "-skip " + verifyCmd[arg:end]
+		}
+		return ""
+	}
+	return ""
+}
+
 func verifyGatePreamble(cfg Config) string {
 	if cfg.VerifyCmd == "" {
 		return ""
@@ -176,5 +230,11 @@ func verifyGatePreamble(cfg Config) string {
 	if cfg.autoVerifyProvenance != "" {
 		prov = " (auto-derived from " + cfg.autoVerifyProvenance + ")"
 	}
-	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `go test ./pkg/you/changed/`). NEVER run the full suite or the full verify command yourself.", cfg.VerifyCmd, prov)
+	example := "go test ./pkg/you/changed/"
+	hint := ""
+	if filter := verifySkipFilter(cfg.VerifyCmd); filter != "" {
+		example += " " + filter
+		hint = " The gate deliberately skips these — carry the filter or you will see unrelated red tests."
+	}
+	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `%s`).%s NEVER run the full suite or the full verify command yourself.", cfg.VerifyCmd, prov, example, hint)
 }
