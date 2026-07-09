@@ -46,7 +46,10 @@ func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (b
 		ok   bool
 	)
 	if cfg.Spend != nil {
-		cost, ok = cfg.Spend.USD()
+		cost, ok = cfg.Spend.Floor()
+		if !ok && !cfg.Spend.reported() {
+			return false, ""
+		}
 	} else {
 		if !usageReported(u) {
 			return false, ""

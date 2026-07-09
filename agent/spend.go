@@ -45,9 +45,8 @@ func (s *Spend) Add(model string, u llm.Usage) {
 }
 
 // USD reports cumulative dollars and whether the figure is COMPLETE. ok=false
-// when nothing has been priced yet or some call could not be priced — the
-// budget then FAILS OPEN (enforcing on an under-count could wrongly stop a run),
-// matching dollarBudgetStop's existing conservative behavior.
+// when nothing has been priced yet or some call could not be priced. Callers that
+// can safely act on an under-count should use Floor.
 func (s *Spend) USD() (float64, bool) {
 	if s == nil {
 		return 0, false
@@ -55,4 +54,25 @@ func (s *Spend) USD() (float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.usd, s.priced && !s.unpriced
+}
+
+// Floor reports the cumulative total of successfully priced calls. priced is
+// false until at least one call has been priced. It is nil-safe.
+func (s *Spend) Floor() (usd float64, priced bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usd, s.priced
+}
+
+// reported says whether any non-empty usage reached the pricer.
+func (s *Spend) reported() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.priced || s.unpriced
 }
