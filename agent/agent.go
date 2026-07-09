@@ -112,9 +112,12 @@ const (
 
 	// Two DIFFERENT bounds, conflated in casual "bound everything" talk (P4 vs P1):
 	maxFileBytes = 1 << 20 // (P4, MEMORY) read_file never pulls more than 1 MiB off disk — the OOM fence.
-	readLineCap  = 150     // (P1, CONTEXT) read_file returns at most this many lines unless a range asks for fewer.
-	listEntryCap = 200     // (P1) list_dir caps entries so a huge directory can't flood the window.
-	runStreamCap = 4000    // (P1) run clips each of stdout/stderr to this many runes, head+tail.
+	readLineCap  = 150     // (P1, CONTEXT) read_file's unbounded and open-ended reads return at most this many lines.
+	// readLineCapExplicit is the larger context tier for an explicitly closed
+	// line range, so a model can request a useful bounded slice without paging.
+	readLineCapExplicit = 600
+	listEntryCap        = 200  // (P1) list_dir caps entries so a huge directory can't flood the window.
+	runStreamCap        = 4000 // (P1) run clips each of stdout/stderr to this many runes, head+tail.
 
 	// searchMatchCap bounds how many matching lines `search` returns (P1, CONTEXT):
 	// a common term (e.g. "err") can match thousands of lines, and dumping them all
