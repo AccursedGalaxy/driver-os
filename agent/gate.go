@@ -447,7 +447,7 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 	}
 	if g.cfg.AutoVerifySoft {
 		g.autoVerifyFeedback++
-		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isRunTimeout(verifyOut) || isInfraFault(verifyOut) {
+		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isInfraFault(verifyOut) {
 			if sig := infraFaultSignature(verifyOut); sig != "" {
 				g.verifyInfraSignature = sig
 			}
@@ -458,8 +458,10 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 	// A timed-out or infra-failed verify is INCONCLUSIVE — we could not
 	// confirm success, but we also don't know anything is broken. Suppress
 	// VerifyContinue: feeding "keep working: fix the code" to the model when
-	// nothing is known to be broken is wrong.
-	if isRunTimeout(verifyOut) {
+	// nothing is known to be broken is wrong. (Under a SOFT auto-derived gate,
+	// timeouts instead consume the feedback budget above — a merely-slow suite
+	// must not flip the finish green on the first attempt.)
+	if !g.cfg.AutoVerifySoft && isRunTimeout(verifyOut) {
 		return Unverified, reason, true
 	}
 	if sig := infraFaultSignature(verifyOut); sig != "" {
