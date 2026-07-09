@@ -258,6 +258,13 @@ type RunResult struct {
 	// there was none) and the planner's own token cost, kept OUT of Usage so
 	// per-role spend stays attributable. nil when no Planner was configured.
 	Plan *PlanReport
+
+	SolverCost   *float64 `json:"solver_cost_usd,omitempty"`
+	ReviewerCost *float64 `json:"reviewer_cost_usd,omitempty"`
+	PlannerCost  *float64 `json:"planner_cost_usd,omitempty"`
+	SelectorCost *float64 `json:"selector_cost_usd,omitempty"`
+	TotalCost    *float64 `json:"total_cost_usd,omitempty"`
+	CostSource   *string  `json:"cost_source,omitempty"`
 	// Messages is the FULL conversation as it stood when the run ended — the
 	// system-framed TASK (or the seeded History plus this turn's input), every
 	// assistant turn, and every tool result. It is the continuation seam: a chat

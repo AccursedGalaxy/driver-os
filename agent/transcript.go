@@ -25,7 +25,8 @@ import (
 //	     conversation into agent.Session.
 //	v4 = RunRecord carries RescuedFrom, preserving the pre-upgrade outcome for
 //	     cap/kill/deadline/budget runs rescued by harness gates.
-const TranscriptSchemaVersion = "4"
+//	v5 = RunRecord carries per-role cost fields shared with the delegation ledger.
+const TranscriptSchemaVersion = "5"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -98,7 +99,15 @@ type RunRecord struct {
 	// Plan is the plan-stage record (the plan handed to the solver, or why
 	// there was none, plus the planner's own usage — kept out of Usage so
 	// per-role spend stays attributable). Absent when the run had no Planner.
-	Plan     *PlanReport   `json:"plan,omitempty"`
+	Plan *PlanReport `json:"plan,omitempty"`
+
+	SolverCost   *float64 `json:"solver_cost_usd,omitempty"`
+	ReviewerCost *float64 `json:"reviewer_cost_usd,omitempty"`
+	PlannerCost  *float64 `json:"planner_cost_usd,omitempty"`
+	SelectorCost *float64 `json:"selector_cost_usd,omitempty"`
+	TotalCost    *float64 `json:"total_cost_usd,omitempty"`
+	CostSource   *string  `json:"cost_source,omitempty"`
+
 	Messages []llm.Message `json:"messages,omitempty"`
 	Steps    []Step        `json:"steps,omitempty"`
 }
@@ -122,6 +131,12 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Usage:         res.Usage,
 		Review:        res.Review,
 		Plan:          res.Plan,
+		SolverCost:    res.SolverCost,
+		ReviewerCost:  res.ReviewerCost,
+		PlannerCost:   res.PlannerCost,
+		SelectorCost:  res.SelectorCost,
+		TotalCost:     res.TotalCost,
+		CostSource:    res.CostSource,
 		Messages:      res.Messages,
 		Steps:         res.Steps,
 	}
