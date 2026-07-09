@@ -47,12 +47,15 @@ import (
 // case refuses to run (infra failure) on a model that lacks tool support,
 // instead of falling back to the text loop, to avoid measurement confounds.
 type Case struct {
-	Name     string
-	Task     string       // the goal handed to the agent.
-	Fixture  Fixture      // the starting state, materialized fresh per trial.
-	Oracle   Oracle       // grades the finished run against ground truth (not self-report).
-	Protocol string       // "tools" (default) or "text".
-	Config   agent.Config // knob template (MaxIterations, MaxTokens, RunTimeout, Verify*, …).
+	Name string
+	Task string // the goal handed to the agent.
+	// TaskSteer, when non-empty, is appended verbatim to Task by RunTrial as a
+	// final paragraph. It is an eval-arm knob rather than part of a case's task.
+	TaskSteer string
+	Fixture   Fixture      // the starting state, materialized fresh per trial.
+	Oracle    Oracle       // grades the finished run against ground truth (not self-report).
+	Protocol  string       // "tools" (default) or "text".
+	Config    agent.Config // knob template (MaxIterations, MaxTokens, RunTimeout, Verify*, …).
 
 	// Sandbox, when non-nil, builds the per-trial sandbox over the freshly
 	// materialized fixture dir — the seam for cases whose execution environment is

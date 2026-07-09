@@ -195,6 +195,9 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	cfg.Model = m.Provider
 	cfg.Sandbox = sb
 	cfg.Task = c.Task
+	if c.TaskSteer != "" {
+		cfg.Task += "\n\n" + c.TaskSteer
+	}
 	cfg.Root = dir
 	cfg.Obs = nil // silent: a trial yields data, not stdout (that's the Observer seam).
 

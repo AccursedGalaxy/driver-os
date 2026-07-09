@@ -385,3 +385,36 @@ func TestRunTrial_VerifyCmdPropagatesToRunner(t *testing.T) {
 		t.Error("eval must never arm auto-verify")
 	}
 }
+
+func TestRunTrialTaskSteer(t *testing.T) {
+	baseTask := "write DONE to result.txt"
+	steer := "Run the existing tests before answering."
+
+	for _, tc := range []struct {
+		name  string
+		steer string
+		want  string
+	}{
+		{name: "off leaves task unchanged", want: baseTask},
+		{name: "on appends final paragraph", steer: steer, want: baseTask + "\n\n" + steer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := markerCase()
+			c.Task = baseTask
+			c.TaskSteer = tc.steer
+			c.LadderVerify = "true"
+			var got string
+			m := Model{
+				Label: "capture",
+				Run: func(_ context.Context, cfg agent.Config, _ string) (*agent.RunResult, *TrialLadder, error) {
+					got = cfg.Task
+					return &agent.RunResult{}, nil, nil
+				},
+			}
+			RunTrial(context.Background(), c, m, 1)
+			if got != tc.want {
+				t.Errorf("task = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

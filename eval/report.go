@@ -488,21 +488,23 @@ func (c Cell) UnpricedModels() []string {
 // is a comparable artifact, not a one-off. The CLI fills it (it owns time, git,
 // and the env), keeping this package pure and testable.
 type Manifest struct {
-	SchemaVersion string   `json:"schema_version"` // bump when Trial/Cell/Manifest shape changes, so a diff tool can refuse to compare incompatible reports instead of misreading absent-vs-zero fields.
-	GeneratedAt   string   `json:"generated_at"`
-	GitSHA        string   `json:"git_sha"`
-	GoVersion     string   `json:"go_version"`
-	TrialsPer     int      `json:"trials_per_cell"`
-	Models        []string `json:"models"`
-	Cases         []string `json:"cases"`
+	SchemaVersion  string   `json:"schema_version"` // bump when Trial/Cell/Manifest shape changes, so a diff tool can refuse to compare incompatible reports instead of misreading absent-vs-zero fields.
+	GeneratedAt    string   `json:"generated_at"`
+	GitSHA         string   `json:"git_sha"`
+	GoVersion      string   `json:"go_version"`
+	TrialsPer      int      `json:"trials_per_cell"`
+	Models         []string `json:"models"`
+	Cases          []string `json:"cases"`
+	TaskSteerArmed bool     `json:"task_steer_armed,omitempty"`
 }
 
 // ReportSchemaVersion is the current eval-report schema. v2 added LatencyMs on
 // Trial and the reason/latency columns; v3 added Trial.NoAttempt (Grade.
 // NoAttempt) and the best-of-N selection section; v4 added infra tracking
-// and plan-stage cost; v5 added ladder metadata and escalation guard metrics.
+// and plan-stage cost; v5 added ladder metadata and escalation guard metrics;
+// v6 added task-steer arm metadata.
 // Bump on any further shape change.
-const ReportSchemaVersion = "5"
+const ReportSchemaVersion = "6"
 
 // Report is the aggregate of a sweep: the manifest plus every cell's trials. It
 // renders to Markdown (human) and JSON (machine-diffable, for regression diffs).
@@ -517,8 +519,12 @@ func (r *Report) Markdown() string {
 	var b strings.Builder
 	b.WriteString("# Eval report\n\n")
 	m := r.Manifest
-	fmt.Fprintf(&b, "- generated: %s\n- git: %s\n- go: %s\n- trials/cell: %d\n\n",
+	fmt.Fprintf(&b, "- generated: %s\n- git: %s\n- go: %s\n- trials/cell: %d\n",
 		nonEmpty(m.GeneratedAt, "n/a"), nonEmpty(m.GitSHA, "n/a"), nonEmpty(m.GoVersion, "n/a"), m.TrialsPer)
+	if m.TaskSteerArmed {
+		b.WriteString("- arm: +steer\n")
+	}
+	b.WriteByte('\n')
 
 	// Group cells by case, in first-seen order, for one table each.
 	order := []string{}
