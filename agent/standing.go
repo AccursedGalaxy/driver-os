@@ -16,6 +16,8 @@ const (
 	standingGateTailCap = 800
 )
 
+var standingDiffTrees = vcs.DiffTrees
+
 type standingState struct {
 	indexPath string
 	lastTree  string
@@ -87,7 +89,7 @@ func (s *standingState) renderDiff(ctx context.Context, cfg Config, base, cur st
 		return
 	}
 	gctx, cancel = gateContext(ctx, gateDiffTimeout)
-	diff, diffErr := vcs.DiffTrees(gctx, cfg.Root, base, cur)
+	diff, diffErr := standingDiffTrees(gctx, cfg.Root, base, cur)
 	cancel()
 	if diffErr != nil {
 		s.lastDiff = "# Your changes so far: unavailable (could not render diff: " + diffErr.Error() + ")"

@@ -36,21 +36,43 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ss.block(ctx, cfg, gs, tr, 1)
-	for _, want := range []string{
-		"=== STANDING CONTEXT (auto-refreshed each turn",
-		"# Your changes so far (vs session start)",
-		"a.txt",
-		"-old",
-		"+newer",
-		"# Last verification",
-		"baseline at session start: GREEN",
-		"gate: `go test ./...` → PASS  [STALE: files changed since this ran — re-run to confirm]",
-		"stdout:\nok",
-		"=== END STANDING CONTEXT ===",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("standing block missing %q:\n%s", want, got)
-		}
+	want := "=== STANDING CONTEXT (auto-refreshed each turn — do NOT run `git diff` or re-read\n    files just to reconstruct this summary; read files when you need details not\n    shown here) ===\n\n# Your changes so far (vs session start)\n a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\ndiff --git a/a.txt b/a.txt\nindex 3367afd..d58ed19 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+newer\n\n# Last verification\nbaseline at session start: GREEN\ngate: `go test ./...` → PASS  [STALE: files changed since this ran — re-run to confirm]\nexit 0 (1ms)\nstdout:\nok\n=== END STANDING CONTEXT ==="
+	if got != want {
+		t.Fatalf("standing block mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestStandingDiffRenderSpy(t *testing.T) {
+	_, root := gitWorkspace(t, map[string]string{"a.txt": "old\n"})
+	ctx := context.Background()
+	cfg := Config{Root: root, StandingContext: true, Obs: nopObserver{}}
+	gs := mustNewGates(t, ctx, cfg, 0)
+	ss := newStandingState()
+	defer ss.cleanup()
+	defer func() { standingDiffTrees = vcs.DiffTrees }()
+	calls := 0
+	standingDiffTrees = func(ctx context.Context, dir, base, cur string) (string, error) {
+		calls++
+		return vcs.DiffTrees(ctx, dir, base, cur)
+	}
+	tr := newTurnTracker(cfg, 8)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ss.block(ctx, cfg, gs, tr, 1)
+	if calls != 1 {
+		t.Fatalf("first block diff renders = %d, want 1", calls)
+	}
+	ss.block(ctx, cfg, gs, tr, 2)
+	if calls != 1 {
+		t.Fatalf("unchanged block diff renders = %d, want 1", calls)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("newer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ss.block(ctx, cfg, gs, tr, 3)
+	if calls != 2 {
+		t.Fatalf("changed block diff renders = %d, want 2", calls)
 	}
 }
 

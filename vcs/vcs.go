@@ -143,9 +143,11 @@ func DiffTrees(ctx context.Context, dir, a, b string) (string, error) {
 	return run(ctx, dir, "diff", a, b)
 }
 
-// DiffTreesStat returns git's short stat summary between two tree objects.
+// DiffTreesStat returns git's stat summary between two tree objects. --stat
+// alone: combining it with --shortstat printed the "N files changed" summary
+// line twice (caught by the standing-block exact golden, 2026-07-09).
 func DiffTreesStat(ctx context.Context, dir, a, b string) (string, error) {
-	return run(ctx, dir, "diff", "--stat", "--shortstat", a, b)
+	return run(ctx, dir, "diff", "--stat", a, b)
 }
 
 // DiffTreeNames returns the paths whose content differs between two tree objects.
