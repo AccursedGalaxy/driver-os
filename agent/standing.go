@@ -51,8 +51,11 @@ func (s *standingState) block(ctx context.Context, cfg Config, gs *gates, tr *tu
 	}
 	cur, curErr := s.currentTree(ctx, cfg)
 	base := ""
+	baselineMeasured, baselineRed := false, false
 	if gs != nil {
 		base = gs.standingBaseTree()
+		baselineMeasured = gs.verifyBaselineMeasured
+		baselineRed = gs.verifyBaselineRed
 	}
 	unchanged := curErr == nil && base != "" && cur == base
 	diffSection := "# Your changes so far: unavailable (could not read working tree)"
@@ -60,7 +63,7 @@ func (s *standingState) block(ctx context.Context, cfg Config, gs *gates, tr *tu
 		s.renderDiff(ctx, cfg, base, cur)
 		diffSection = s.lastDiff
 	}
-	return renderStandingBlock(diffSection, tr, strings.TrimSpace(cfg.VerifyCmd), cur, curErr != nil, unchanged)
+	return renderStandingBlock(diffSection, tr, strings.TrimSpace(cfg.VerifyCmd), cur, curErr != nil, unchanged, baselineMeasured, baselineRed)
 }
 
 func (s *standingState) renderDiff(ctx context.Context, cfg Config, base, cur string) {
@@ -142,13 +145,20 @@ func boundedStat(stat string) string {
 	return strings.Join(out, "\n")
 }
 
-func renderStandingBlock(diffSection string, tr *turnTracker, verifyCmd, curTree string, curUnknown bool, unchanged bool) string {
+func renderStandingBlock(diffSection string, tr *turnTracker, verifyCmd, curTree string, curUnknown bool, unchanged bool, baselineMeasured, baselineRed bool) string {
 	var b strings.Builder
 	b.WriteString("=== STANDING CONTEXT (auto-refreshed each turn — do NOT run `git diff` or re-read\n")
 	b.WriteString("    files just to reconstruct this summary; read files when you need details not\n")
 	b.WriteString("    shown here) ===\n\n")
 	b.WriteString(strings.TrimRight(diffSection, "\n"))
 	b.WriteString("\n\n# Last verification\n")
+	if baselineMeasured {
+		status := "GREEN"
+		if baselineRed {
+			status = "RED"
+		}
+		fmt.Fprintf(&b, "baseline at session start: %s\n", status)
+	}
 	b.WriteString(renderVerification(tr, verifyCmd, curTree, curUnknown, unchanged))
 	b.WriteString("\n=== END STANDING CONTEXT ===")
 	return b.String()
@@ -164,7 +174,7 @@ func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown b
 			if unchanged {
 				lines = append(lines, fmt.Sprintf("gate: `%s` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)", verifyCmd))
 			} else {
-				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session — run it to confirm", verifyCmd))
+				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed.", verifyCmd))
 			}
 		} else {
 			tag := freshnessTag(tr.lastVerifyTree, curTree, curUnknown)

@@ -176,5 +176,5 @@ func verifyGatePreamble(cfg Config) string {
 	if cfg.autoVerifyProvenance != "" {
 		prov = " (auto-derived from " + cfg.autoVerifyProvenance + ")"
 	}
-	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish; you do NOT need to re-run it yourself to confirm you're done.", cfg.VerifyCmd, prov)
+	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `go test ./pkg/you/changed/`). NEVER run the full suite or the full verify command yourself.", cfg.VerifyCmd, prov)
 }

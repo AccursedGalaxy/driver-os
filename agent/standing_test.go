@@ -19,6 +19,7 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	ctx := context.Background()
 	cfg := Config{Root: root, StandingContext: true, VerifyCmd: "go test ./...", SkipVerifyBaseline: true, Obs: nopObserver{}}
 	gs := mustNewGates(t, ctx, cfg, 0)
+	gs.verifyBaselineMeasured = true
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +43,7 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 		"-old",
 		"+newer",
 		"# Last verification",
+		"baseline at session start: GREEN",
 		"gate: `go test ./...` → PASS  [STALE: files changed since this ran — re-run to confirm]",
 		"stdout:\nok",
 		"=== END STANDING CONTEXT ===",
@@ -54,21 +56,20 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 
 func TestStandingVerificationSkipsRunNudgeWhenUnchanged(t *testing.T) {
 	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8), "go test ./...", "tree1", false, true)
-	if !strings.Contains(got, "nothing to verify") {
-		t.Fatalf("unchanged verification missing calm skip wording:\n%s", got)
-	}
-	if strings.Contains(got, "run it to confirm") || strings.Contains(got, "STALE") {
-		t.Fatalf("unchanged verification should not nudge for a rerun:\n%s", got)
+	want := "gate: `go test ./...` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)"
+	if got != want {
+		t.Fatalf("unchanged verification = %q, want %q", got, want)
 	}
 }
 
 func TestStandingVerificationStillNudgesWhenChanged(t *testing.T) {
 	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8), "go test ./...", "tree2", false, false)
-	if !strings.Contains(got, "NOT run yet this session") || !strings.Contains(got, "run it to confirm") {
-		t.Fatalf("changed verification lost normal run nudge:\n%s", got)
+	want := "gate: `go test ./...` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed."
+	if got != want {
+		t.Fatalf("changed verification = %q, want %q", got, want)
 	}
-	if strings.Contains(got, "nothing to verify") {
-		t.Fatalf("changed verification used unchanged skip wording:\n%s", got)
+	if strings.Contains(got, "run it to confirm") {
+		t.Fatalf("changed verification must not nudge the solver to run the full gate: %s", got)
 	}
 }
 

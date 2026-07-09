@@ -93,8 +93,9 @@ func TestResolveAutoVerifyPrecedenceAndIsolation(t *testing.T) {
 func TestVerifyGatePreamble(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
 	got := verifyGatePreamble(cfg)
-	if !strings.Contains(got, "go test ./...") || !strings.Contains(got, "do NOT need to re-run it yourself") {
-		t.Fatalf("preamble missing command/disposition: %q", got)
+	want := "\n\nVERIFY GATE: `go test ./...`. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `go test ./pkg/you/changed/`). NEVER run the full suite or the full verify command yourself."
+	if got != want {
+		t.Fatalf("preamble = %q, want %q", got, want)
 	}
 	cfg.autoVerifyProvenance = "go.mod"
 	if got := verifyGatePreamble(cfg); !strings.Contains(got, "auto-derived from go.mod") {
@@ -185,7 +186,7 @@ func TestVerifyGatePreambleSeededInFirstMessage(t *testing.T) {
 	if err != nil || res.Outcome != Answered {
 		t.Fatalf("Run outcome=%v err=%v reason=%q", res.Outcome, err, res.Reason)
 	}
-	if len(res.Messages) == 0 || !strings.Contains(res.Messages[0].Text(), "VERIFY GATE: `true`") || !strings.Contains(res.Messages[0].Text(), "do NOT need to re-run it yourself") {
+	if len(res.Messages) == 0 || !strings.Contains(res.Messages[0].Text(), "VERIFY GATE: `true`") || !strings.Contains(res.Messages[0].Text(), "run ONLY tests scoped to the package(s) you changed") || !strings.Contains(res.Messages[0].Text(), "NEVER run the full suite or the full verify command yourself") {
 		t.Fatalf("first message missing verify preamble: %#v", res.Messages)
 	}
 }
