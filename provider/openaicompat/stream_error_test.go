@@ -14,10 +14,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/openai/openai-go"
 )
 
 // streamWithError serves a healthy chunk followed by an SSE error event, and
@@ -86,5 +88,37 @@ func TestClassifyUnexpectedEOFIsRetryable(t *testing.T) {
 	var perr *llm.ProviderError
 	if err := p.classify(io.ErrUnexpectedEOF); !errors.As(err, &perr) || !perr.Retryable {
 		t.Fatalf("classify(ErrUnexpectedEOF) = %v, want a retryable ProviderError", err)
+	}
+}
+
+func TestEncryptedReplayRejectionIsNonRetryableAndRecognized(t *testing.T) {
+	p := New(Config{Name: "test", BaseURL: "http://unused", APIKey: "test", Model: "m"})
+	u, _ := url.Parse("http://unused")
+	requestErr := &openai.Error{
+		Message:    "invalid_encrypted_content: rs_123",
+		StatusCode: http.StatusBadRequest,
+		Request:    &http.Request{Method: http.MethodPost, URL: u},
+		Response:   &http.Response{StatusCode: http.StatusBadRequest},
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "request", err: requestErr},
+		{name: "stream", err: errors.New(`received error while streaming: {"code":400,"message":"Encrypted content could not be decrypted or parsed: rs_123"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := p.classify(tc.err)
+			var perr *llm.ProviderError
+			if !errors.As(err, &perr) {
+				t.Fatalf("classify = %v, want ProviderError", err)
+			}
+			if perr.Retryable {
+				t.Errorf("encrypted replay rejection must not be retryable: %+v", perr)
+			}
+			if !llm.IsEncryptedReplayRejection(err) {
+				t.Errorf("classify = %v, want recognized encrypted replay rejection", err)
+			}
+		})
 	}
 }

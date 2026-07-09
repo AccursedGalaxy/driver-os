@@ -744,6 +744,11 @@ func (p *Provider) classify(err error) error {
 			// A window overflow can arrive mid-stream too; route it to the
 			// eviction fallback, never to a verbatim (still overlong) retry.
 			kind, retryable = llm.KindContextLength, false
+		case llm.IsEncryptedReplayRejection(&llm.ProviderError{StatusCode: int(code), Err: err}):
+			// This is deterministic for the replayed transcript. The agent will
+			// remove the rejected reasoning trace and retry once; never spend a
+			// verbatim transient retry here.
+			retryable = false
 		case code == http.StatusUnauthorized || code == http.StatusForbidden:
 			kind, retryable = llm.KindAuth, false
 		case code == http.StatusTooManyRequests:
@@ -759,6 +764,7 @@ func (p *Provider) classify(err error) error {
 	if errors.As(err, &apiErr) {
 		kind := llm.KindUnknown
 		retryable := false
+		wrappedErr := err
 		switch apiErr.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			kind = llm.KindAuth
@@ -768,6 +774,10 @@ func (p *Provider) classify(err error) error {
 		case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 			if isContextLength(apiErr.Message) {
 				kind = llm.KindContextLength
+			} else if llm.IsEncryptedReplayRejection(&llm.ProviderError{StatusCode: apiErr.StatusCode, Err: errors.New(apiErr.Message)}) {
+				// Include the decoded message as SDK Error.Error() is not stable
+				// across OpenAI-compatible error envelopes.
+				wrappedErr = fmt.Errorf("%s: %w", apiErr.Message, err)
 			}
 		case http.StatusInternalServerError, http.StatusBadGateway,
 			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
@@ -778,7 +788,7 @@ func (p *Provider) classify(err error) error {
 			Kind:       kind,
 			StatusCode: apiErr.StatusCode,
 			Retryable:  retryable,
-			Err:        err,
+			Err:        wrappedErr,
 		}
 	}
 

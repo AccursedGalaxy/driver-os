@@ -1,6 +1,10 @@
 package llm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // ErrorKind is a normalized error classification (decision 9). Adapters map
 // provider/SDK errors into one of these so callers can react uniformly across
@@ -41,6 +45,22 @@ func (e *ProviderError) Error() string {
 
 // Unwrap exposes the wrapped error to errors.Is / errors.As.
 func (e *ProviderError) Unwrap() error { return e.Err }
+
+// IsEncryptedReplayRejection reports the deterministic 400 returned when a
+// provider cannot re-verify an encrypted reasoning item from prior history.
+// The provider's error envelopes vary, so matching intentionally uses the
+// complete error text rather than a provider-specific error code.
+func IsEncryptedReplayRejection(err error) bool {
+	var pe *ProviderError
+	if !errors.As(err, &pe) || (pe.StatusCode != 0 && pe.StatusCode != 400) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "invalid_encrypted_content") ||
+		strings.Contains(message, "encrypted content could not be decrypted") ||
+		(strings.Contains(message, "could not be decrypted") &&
+			strings.Contains(message, "parsed"))
+}
 
 // Is matches on Kind, so callers can write errors.Is(err, llm.ErrRateLimit)
 // regardless of which provider or status code produced it.

@@ -107,8 +107,18 @@ func truncate(s string) string { return clip(s, observationCap) }
 // evictionMaxRetries paid attempts — is returned AS llm.ErrContextLength so the
 // caller degrades to HitContextLimit instead of mislabelling it a transport fault.
 func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
+	droppedEncryptedReasoning := false
 	for attempt := 0; ; attempt++ {
 		resp, err := generateWithRetry(ctx, cfg, req)
+		if llm.IsEncryptedReplayRejection(err) && !droppedEncryptedReasoning {
+			scrubbed, dropped := dropReplayReasoning(req.Messages)
+			if dropped > 0 {
+				cfg.Obs.Note(fmt.Sprintf("encrypted reasoning replay rejected — dropped %d encrypted reasoning item(s) and retrying", dropped))
+				req.Messages = scrubbed
+				droppedEncryptedReasoning = true
+				continue
+			}
+		}
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
 		}
@@ -128,6 +138,35 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 			evicted, len(req.Messages), len(shrunk), attempt+1, evictionMaxRetries))
 		req.Messages = shrunk
 	}
+}
+
+// dropReplayReasoning removes opaque reasoning traces only from assistant
+// history. It is reactive: signed thinking blocks remain intact for providers
+// that require them unless that exact replay has been rejected.
+func dropReplayReasoning(msgs []llm.Message) ([]llm.Message, int) {
+	out := make([]llm.Message, len(msgs))
+	copy(out, msgs)
+	dropped := 0
+	for i := range out {
+		if out[i].Role != llm.RoleAssistant {
+			continue
+		}
+		parts := make([]llm.ContentPart, 0, len(out[i].Parts))
+		for _, part := range out[i].Parts {
+			if _, ok := part.(llm.ReasoningPart); ok {
+				dropped++
+				continue
+			}
+			parts = append(parts, part)
+		}
+		if len(parts) != len(out[i].Parts) {
+			out[i].Parts = parts
+		}
+	}
+	if dropped == 0 {
+		return msgs, 0
+	}
+	return out, dropped
 }
 
 // evictionMaxRetries caps how many compaction+retry cycles ONE overflow can
@@ -188,7 +227,7 @@ func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.R
 	for attempt := 0; ; attempt++ {
 		resp, err := generateOnce(ctx, cfg, req)
 		var perr *llm.ProviderError
-		if err == nil || !errors.As(err, &perr) || !perr.Retryable || attempt >= transientMaxRetries {
+		if err == nil || llm.IsEncryptedReplayRejection(err) || !errors.As(err, &perr) || !perr.Retryable || attempt >= transientMaxRetries {
 			return resp, err
 		}
 		delay := retryBackoffBase << attempt
