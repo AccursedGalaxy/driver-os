@@ -1,10 +1,13 @@
-.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress swebench swebench-gold fasthttp-ws r1 r2 r3
+.PHONY: build routing test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress swebench swebench-gold fasthttp-ws r1 r2 r3
 
 # Core module hygiene. These cover the Go module only — the embedded
 # frontends have their own *-build targets below. `check` is the
 # pre-commit bar: vet + full suite under the race detector.
 build:
 	go build ./...
+
+routing:
+	go run ./cmd/routing
 
 test:
 	go test ./...
