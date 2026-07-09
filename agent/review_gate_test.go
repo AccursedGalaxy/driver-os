@@ -227,23 +227,31 @@ func TestReviewNotConsultedOnFenceViolation(t *testing.T) {
 	}
 }
 
-// Anti-hallucination: a finding whose quote does not appear verbatim in the
-// named post-patch file is DROPPED (fate recorded) and never blocks.
+// Anti-hallucination: a finding whose quote does not appear verbatim in an
+// existing post-patch file is DROPPED. Absence findings skip anchoring and
+// continue through the confidence ladder like any other blocker.
 func TestReviewQuoteValidationDrops(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{
 		blocker("calc.go", "this text is nowhere in the file"),
 		blocker("missing.go", "package calc"),
-	}}}
-	res := reviewedRun(t, rv, Config{}, editThenAnswer())
+	}, {}}}
+	res := reviewedRun(t, rv, Config{}, append(editThenAnswer(), [][]llm.ContentPart{{llm.Text("done after feedback")}}...))
 	if res.Outcome != Answered {
-		t.Fatalf("outcome = %s (%s), want answered (both findings dropped)", res.Outcome, res.Reason)
+		t.Fatalf("outcome = %s (%s), want answered", res.Outcome, res.Reason)
 	}
 	if n := len(res.Review.Findings); n != 2 {
 		t.Fatalf("findings recorded = %d, want 2", n)
 	}
 	for _, f := range res.Review.Findings {
-		if f.Fate != FateDropped {
-			t.Errorf("finding %q fate = %s, want dropped (%s)", f.File, f.Fate, f.DropWhy)
+		switch f.File {
+		case "calc.go":
+			if f.Fate != FateDropped {
+				t.Errorf("finding %q fate = %s, want dropped (%s)", f.File, f.Fate, f.DropWhy)
+			}
+		case "missing.go":
+			if f.Fate != FateRepaired {
+				t.Errorf("absence finding fate = %s, want repaired after surviving anchoring (%s)", f.Fate, f.DropWhy)
+			}
 		}
 	}
 }

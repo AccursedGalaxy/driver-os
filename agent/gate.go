@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"sort"
@@ -943,14 +944,17 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 		rf.Fate, rf.DropWhy = FateDropped, "empty quote"
 		return rf
 	}
-	data, _, err := readBounded(ctx, g.cfg.Sandbox, fenceRelPath(g.review.alias, f.File))
-	if err != nil {
-		rf.Fate, rf.DropWhy = FateDropped, fmt.Sprintf("quoted file unreadable: %v", err)
-		return rf
-	}
-	if !strings.Contains(string(data), quote) {
-		rf.Fate, rf.DropWhy = FateDropped, "quote does not appear verbatim in "+f.File
-		return rf
+	file := strings.TrimSpace(f.File)
+	if file != "" && !strings.EqualFold(file, "n/a") {
+		data, _, err := readBounded(ctx, g.cfg.Sandbox, fenceRelPath(g.review.alias, f.File))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			rf.Fate, rf.DropWhy = FateDropped, fmt.Sprintf("quoted file unreadable: %v", err)
+			return rf
+		}
+		if err == nil && !strings.Contains(string(data), quote) {
+			rf.Fate, rf.DropWhy = FateDropped, "quote does not appear verbatim in "+f.File
+			return rf
+		}
 	}
 	if strings.ToLower(strings.TrimSpace(f.Severity)) != "blocker" {
 		rf.Fate = FateNote
