@@ -140,6 +140,14 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 	}
 }
 
+// ScrubReplayReasoning removes opaque reasoning traces from assistant history before
+// a transcript is replayed in a new session. Provider-signed reasoning can only be
+// replayed in its original request chain, so persisted sessions must not carry it.
+func ScrubReplayReasoning(msgs []llm.Message) []llm.Message {
+	scrubbed, _ := dropReplayReasoning(msgs)
+	return scrubbed
+}
+
 // dropReplayReasoning removes opaque reasoning traces only from assistant
 // history. It is reactive: signed thinking blocks remain intact for providers
 // that require them unless that exact replay has been rejected.
