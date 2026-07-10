@@ -165,27 +165,20 @@ func LoadForUser(ctx context.Context, sb sandbox.Sandbox, s *Skill) (string, err
 }
 
 // stage copies a skill's bundled files into the sandbox under stageRel,
-// preserving layout and execute bits. Directories are created with one mkdir
-// -p exec (the Sandbox interface has no Mkdir); file bytes flow through
-// WriteFile so every backend (local fence, docker) receives them identically.
+// preserving layout and execute bits. WriteFile is the native staging primitive;
+// sandbox backends create any missing parent directories.
 func stage(ctx context.Context, sb sandbox.Sandbox, s *Skill, stageRel string) error {
-	dirs := map[string]bool{stageRel: true}
-	for _, rel := range s.Resources {
-		d := stageRel + "/" + slashDir(rel)
-		dirs[strings.TrimSuffix(d, "/")] = true
+	if maker, ok := sb.(sandbox.DirectoryMaker); ok {
+		dirs := map[string]bool{stageRel: true}
+		for _, rel := range s.Resources {
+			dirs[strings.TrimSuffix(stageRel+"/"+slashDir(rel), "/")] = true
+		}
+		for dir := range dirs {
+			if err := maker.MakeDirAll(ctx, dir, 0o755); err != nil {
+				return fmt.Errorf("creating %s: %v", dir, err)
+			}
+		}
 	}
-	mkdir := make([]string, 0, len(dirs)+1)
-	mkdir = append(mkdir, "-p")
-	for d := range dirs {
-		mkdir = append(mkdir, d)
-	}
-	sort.Strings(mkdir[1:])
-	if res, err := sb.Exec(ctx, sandbox.Command{Path: "mkdir", Args: mkdir}); err != nil {
-		return fmt.Errorf("mkdir: %v", err)
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("mkdir exited %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
-	}
-
 	for _, rel := range s.Resources {
 		src := filepath.Join(s.Dir, filepath.FromSlash(rel))
 		data, err := os.ReadFile(src)

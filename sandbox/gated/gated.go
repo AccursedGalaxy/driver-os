@@ -122,13 +122,23 @@ var (
 // on the inner sandbox). A future forwarding must wrap the session's Exec
 // in the same gate.
 
-// Capabilities, ReadFile, WriteFile, ListDir, Close all pass through unchanged.
+// Capabilities, ReadFile, WriteFile, Remove, ListDir, Close all pass through unchanged.
 func (s *Sandbox) Capabilities() sandbox.Capabilities { return s.inner.Capabilities() }
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	return s.inner.ReadFile(ctx, path)
 }
 func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error {
 	return s.inner.WriteFile(ctx, path, data, mode)
+}
+func (s *Sandbox) Remove(ctx context.Context, path string) error {
+	return s.inner.Remove(ctx, path)
+}
+func (s *Sandbox) MakeDirAll(ctx context.Context, path string, mode fs.FileMode) error {
+	maker, ok := s.inner.(sandbox.DirectoryMaker)
+	if !ok {
+		return fmt.Errorf("sandbox does not support native directory creation")
+	}
+	return maker.MakeDirAll(ctx, path, mode)
 }
 func (s *Sandbox) ListDir(ctx context.Context, path string) ([]sandbox.DirEntry, error) {
 	return s.inner.ListDir(ctx, path)

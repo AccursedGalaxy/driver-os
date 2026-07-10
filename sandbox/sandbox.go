@@ -56,13 +56,15 @@ type Sandbox interface {
 	// canceled, the container died, etc.
 	Exec(ctx context.Context, cmd Command) (*Result, error)
 
-	// ReadFile, WriteFile and ListDir operate on the sandbox's filesystem,
+	// ReadFile, WriteFile, Remove and ListDir operate on the sandbox's filesystem,
 	// confined to its root. Paths are sandbox-relative ("." is the root); a path
-	// that escapes the root must be refused by the backend, not honored. For the
-	// local backend this is exactly today's confineToRoot, lifted up so every
-	// backend enforces the same boundary uniformly.
+	// that escapes the root must be refused by the backend, not honored. Remove
+	// removes one file or empty directory and is never recursive. For the local
+	// backend this is exactly today's confineToRoot, lifted up so every backend
+	// enforces the same boundary uniformly.
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	WriteFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error
+	Remove(ctx context.Context, path string) error
 	ListDir(ctx context.Context, path string) ([]DirEntry, error)
 
 	// Close tears the sandbox down and releases its resources. For isolated
@@ -169,6 +171,13 @@ type LimitedReader interface {
 	// with truncated=true and does NOT read the rest into memory. max <= 0 means
 	// "no limit", equivalent to ReadFile.
 	ReadFileLimit(ctx context.Context, path string, max int64) (data []byte, truncated bool, err error)
+}
+
+// DirectoryMaker is an OPTIONAL native filesystem capability for creating
+// directories without routing harness housekeeping through Exec.
+type DirectoryMaker interface {
+	// MakeDirAll creates path and missing parents within the sandbox root.
+	MakeDirAll(ctx context.Context, path string, mode fs.FileMode) error
 }
 
 // Appender is an OPTIONAL capability: append data to the END of a file without

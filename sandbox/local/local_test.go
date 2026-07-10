@@ -12,6 +12,17 @@ import (
 	"github.com/AccursedGalaxy/driver-os/sandbox/sandboxtest"
 )
 
+func TestRemoveRefusesOutsideRoot(t *testing.T) {
+	sb, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	if err := sb.Remove(context.Background(), "../outside"); err == nil {
+		t.Fatal("Remove outside the sandbox root succeeded")
+	}
+}
+
 // TestConformance runs the shared backend contract suite against the local
 // backend. It runs ALWAYS (no daemon needed) and is the parity baseline the
 // docker backend is held to under the docker_integration tag.

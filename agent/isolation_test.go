@@ -43,6 +43,7 @@ func (f fakeIso) Exec(context.Context, sandbox.Command) (*sandbox.Result, error)
 }
 func (f fakeIso) ReadFile(context.Context, string) ([]byte, error)             { return nil, nil }
 func (f fakeIso) WriteFile(context.Context, string, []byte, fs.FileMode) error { return nil }
+func (f fakeIso) Remove(context.Context, string) error                         { return nil }
 func (f fakeIso) ListDir(context.Context, string) ([]sandbox.DirEntry, error)  { return nil, nil }
 func (f fakeIso) Close() error                                                 { return nil }
 

@@ -86,11 +86,10 @@ func TestFenceGatedDeny(t *testing.T) {
 	}
 
 	ff := f.base[largePath]
-	if ff.fullHash != "" {
-		t.Error("fullHash should be empty when sha256sum is denied")
+	if ff.fullHash == "" {
+		t.Error("fullHash should be computed with native ReadFile even when exec is denied")
 	}
 	if ff.size != int64(len(largeContent)) {
-		// wc is also denied, but wait... if wc is denied, ff.size will be 0.
-		// Actually, if both are denied, we have no way to detect middle mutations.
+		t.Errorf("size = %d, want %d", ff.size, len(largeContent))
 	}
 }

@@ -7,8 +7,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/profile"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
+	"github.com/AccursedGalaxy/driver-os/sandbox/gated"
 )
+
+func TestSearchRunsThroughV3Gate(t *testing.T) {
+	requireRg(t)
+	inner := sbWith(t, map[string]string{"note.txt": "gated needle\n"})
+	policy, err := profile.PolicyByName(profile.DefaultHeadlessPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := gated.New(inner, nil, func(cmd sandbox.Command) gated.Verdict {
+		if policy.AllowsExec(cmd.Path, cmd.Args) {
+			return gated.Allow
+		}
+		return gated.Deny
+	})
+	out, err := searchOp(context.Background(), gate, "needle", "", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "note.txt:1:gated needle") {
+		t.Fatalf("search output = %q", out)
+	}
+}
 
 // TestSearchSurfacesRootDocs is the regression test for the bug this tool fixes:
 // a search must reach the markdown docs at the repo ROOT (DESIGN.md, HARD-PROBLEMS.md)

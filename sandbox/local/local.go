@@ -358,6 +358,24 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte, mode 
 	return os.WriteFile(abs, data, mode)
 }
 
+// MakeDirAll creates a directory tree within the fence.
+func (s *Sandbox) MakeDirAll(ctx context.Context, path string, mode fs.FileMode) error {
+	abs, err := s.resolve(path)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(abs, mode)
+}
+
+// Remove removes one file or empty directory within the fence. It is never recursive.
+func (s *Sandbox) Remove(ctx context.Context, path string) error {
+	abs, err := s.resolve(path)
+	if err != nil {
+		return err
+	}
+	return os.Remove(abs)
+}
+
 // AppendFile implements sandbox.Appender: shell `>>` semantics inside the fence
 // — data lands at the end of the file (created with mode if missing) without the
 // existing contents ever entering memory.

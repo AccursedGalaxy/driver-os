@@ -37,6 +37,10 @@ func (p *plainSandbox) WriteFile(_ context.Context, path string, data []byte, _ 
 	p.files[path] = data
 	return nil
 }
+func (p *plainSandbox) Remove(_ context.Context, path string) error {
+	delete(p.files, path)
+	return nil
+}
 func (p *plainSandbox) ListDir(context.Context, string) ([]sandbox.DirEntry, error) {
 	return nil, nil
 }

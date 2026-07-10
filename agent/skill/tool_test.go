@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AccursedGalaxy/driver-os/sandbox"
+	"github.com/AccursedGalaxy/driver-os/sandbox/gated"
 	"github.com/AccursedGalaxy/driver-os/sandbox/local"
 )
 
@@ -211,5 +213,33 @@ func TestExcludeStaging(t *testing.T) {
 	data, _ = os.ReadFile(filepath.Join(root, ".git", "info", "exclude"))
 	if strings.Count(string(data), ".skills/") != 1 {
 		t.Errorf("exclude line duplicated: %q", string(data))
+	}
+}
+
+// TestStageUnderDenyAllGate pins the exec-free staging contract: skill staging
+// uses only native sandbox file ops (MakeDirAll/WriteFile), so it must succeed
+// even under a gate that denies EVERY exec — the shape gated trust profiles
+// present to harness housekeeping.
+func TestStageUnderDenyAllGate(t *testing.T) {
+	ctx := context.Background()
+	skillDir := writeSkill(t, t.TempDir(), "gatedskill",
+		"name: gatedskill\ndescription: Gated. Use when gated.",
+		"# Body\n\nUse ${SKILL_DIR}/scripts/x.sh.",
+		map[string]string{"scripts/x.sh": "#!/bin/sh\necho hi\n"})
+	s, _, err := Load(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inner.Close()
+	gate := gated.New(inner, nil, func(sandbox.Command) gated.Verdict { return gated.Deny })
+	if _, err := LoadForUser(ctx, gate, s); err != nil {
+		t.Fatalf("staging must not require exec under a deny-all gate: %v", err)
+	}
+	if _, err := gate.ReadFile(ctx, ".skills/gatedskill/scripts/x.sh"); err != nil {
+		t.Fatalf("staged resource missing: %v", err)
 	}
 }

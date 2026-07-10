@@ -247,28 +247,16 @@ func walkFenced(ctx context.Context, sb sandbox.Sandbox, globs []string) (map[st
 			if !overCap {
 				ff.content = data
 			} else {
-				// For over-cap files, compute a full-file hash to detect mutations
-				// beyond the first MiB.
-				res, err := sb.Exec(ctx, sandbox.Command{Path: "sha256sum", Args: []string{"--", p}})
-				if err == nil && res.ExitCode == 0 {
-					fields := strings.Fields(string(res.Stdout))
-					if len(fields) > 0 {
-						ff.fullHash = fields[0]
-					} else {
-						// Fallback: record size if sha256sum output is empty.
-						res, err := sb.Exec(ctx, sandbox.Command{Path: "wc", Args: []string{"-c", "--", p}})
-						if err == nil && res.ExitCode == 0 {
-							fmt.Sscanf(string(res.Stdout), "%d", &ff.size)
-						}
-					}
-				} else {
-					// Fallback: record size if sha256sum fails. Middle mutations
-					// are undetectable in this degraded mode.
-					res, err := sb.Exec(ctx, sandbox.Command{Path: "wc", Args: []string{"-c", "--", p}})
-					if err == nil && res.ExitCode == 0 {
-						fmt.Sscanf(string(res.Stdout), "%d", &ff.size)
-					}
+				// Keep only the bounded prefix as restorable content, but hash the
+				// complete bytes with sandbox-native I/O so this path cannot be
+				// blocked by (or create a bypass around) the exec approval gate.
+				full, err := sb.ReadFile(ctx, p)
+				if err != nil {
+					return fmt.Errorf("read full %q: %w", p, err)
 				}
+				sum := sha256.Sum256(full)
+				ff.fullHash = fmt.Sprintf("%x", sum)
+				ff.size = int64(len(full))
 			}
 			out[p] = ff
 		}
@@ -343,7 +331,7 @@ func (f *fenceState) restore(ctx context.Context, sb sandbox.Sandbox, paths []st
 		base, ok := f.base[p]
 		switch {
 		case !ok: // created during the repro — remove it.
-			if _, err := sb.Exec(ctx, sandbox.Command{Path: "rm", Args: []string{"-f", "--", p}}); err != nil {
+			if err := sb.Remove(ctx, p); err != nil {
 				return fmt.Errorf("remove %q: %w", p, err)
 			}
 		case base.content == nil:

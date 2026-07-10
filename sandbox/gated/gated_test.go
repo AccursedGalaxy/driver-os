@@ -29,6 +29,7 @@ func (f *fakeInner) Exec(_ context.Context, cmd sandbox.Command) (*sandbox.Resul
 func (f *fakeInner) Capabilities() sandbox.Capabilities                           { return sandbox.Capabilities{} }
 func (f *fakeInner) ReadFile(context.Context, string) ([]byte, error)             { return f.readData, nil }
 func (f *fakeInner) WriteFile(context.Context, string, []byte, fs.FileMode) error { return nil }
+func (f *fakeInner) Remove(context.Context, string) error                         { return nil }
 func (f *fakeInner) ListDir(context.Context, string) ([]sandbox.DirEntry, error)  { return nil, nil }
 func (f *fakeInner) Close() error                                                 { return nil }
 
