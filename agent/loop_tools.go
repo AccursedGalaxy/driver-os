@@ -599,7 +599,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// already-seen targets is a cycle and counts toward the window; endless
 			// novel wandering still dies at the hard bound. Bounds are deterministic
 			// — no model-family or reasoning variance (spiralState).
-			if kill, reason := spiral.observeDiscoveryTurn(discoveryTargets(calls, cfg.Tools)); kill {
+			if kind, reason := spiral.observeDiscoveryTurn(discoveryTargets(calls, cfg.Tools)); kind != spiralKillNone {
 				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
 				// (deliverable 5) Record an explicit Observation on the killing turn so
 				// the trace doesn't read as a broken checkout / empty turn.
@@ -608,9 +608,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				}
 				res.Steps = append(res.Steps, steps...)
 				res.Outcome = KilledSpiral
-				if strings.Contains(reason, "revisiting") {
+				switch kind {
+				case spiralKillCycle:
 					res.DetectorCounters.terminated("spiral_cycle", i)
-				} else {
+				case spiralKillWander:
 					res.DetectorCounters.terminated("spiral_wander", i)
 				}
 				res.Reason = reason

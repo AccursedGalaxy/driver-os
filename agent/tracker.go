@@ -125,17 +125,8 @@ type turnTracker struct {
 	greenNudged bool
 }
 
-func newTurnTracker(cfg Config, maxIter int, policies ...any) *turnTracker {
-	t := &turnTracker{cfg: cfg, maxIter: maxIter, policy: resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)}
-	for _, v := range policies {
-		switch x := v.(type) {
-		case TerminationPolicy:
-			t.policy = x
-		case *DetectorCounters:
-			t.counters = x
-		}
-	}
-	return t
+func newTurnTracker(cfg Config, maxIter int, policy TerminationPolicy, counters *DetectorCounters) *turnTracker {
+	return &turnTracker{cfg: cfg, maxIter: maxIter, policy: policy, counters: counters}
 }
 
 // observeRun ingests one `run` observation. A `run` that keeps FAILING with the
@@ -144,9 +135,6 @@ func newTurnTracker(cfg Config, maxIter int, policies ...any) *turnTracker {
 // not the action. Returns whether the stagnant detector should kill the run and
 // the recurrence count (for the kill message).
 func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
-	if t.policy.MaxStagnant <= 0 {
-		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
-	}
 	t.lastRunFailed = isRunFailure(obs)
 	t.lastRunPassed = isRunSuccess(obs) // (HP-4) the green/red of the most recent run.
 	if t.lastRunPassed {
@@ -209,9 +197,6 @@ func (t *turnTracker) recordRun(cmd, obs, tree string) {
 // "N consecutive times" wording and giving a max-iteration run set to the hard
 // ceiling a chance to terminate as killed_repeat instead of hit_cap.
 func (t *turnTracker) observeToolObservation(fp string) (kill bool, count int) {
-	if t.policy.MaxReasoningRepeats <= 0 {
-		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
-	}
 	if fp == "" {
 		t.lastToolObsFP, t.toolObsRepeat = "", 0
 		return false, 0
@@ -303,9 +288,6 @@ func (t *turnTracker) finishNudge(i int) bool {
 // comments in agent.go explain the measured false-kill tradeoff). The caller
 // appends greenRepeatNudgeText to whatever the model reads next.
 func (t *turnTracker) greenRepeatNudge() bool {
-	if t.policy.GreenRepeatThreshold <= 0 {
-		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
-	}
 	if t.greenNudged {
 		return false
 	}
@@ -372,22 +354,16 @@ type spiralState struct {
 	wander   int             // consecutive discovery-only turns (novel or not).
 }
 
-func newSpiralState(policyOrWindow any, counters ...*DetectorCounters) *spiralState {
-	policy := DefaultTerminationPolicy()
-	switch v := policyOrWindow.(type) {
-	case TerminationPolicy:
-		policy = v
-	case int:
-		policy.NavSpiralWindow = v
-	}
-	if policy.NavSpiralWindow <= 0 {
-		policy.NavSpiralWindow = DefaultTerminationPolicy().NavSpiralWindow
-	}
-	var c *DetectorCounters
-	if len(counters) > 0 {
-		c = counters[0]
-	}
-	return &spiralState{policy: policy, counters: c, window: policy.NavSpiralWindow, visited: make(map[string]bool)}
+type spiralKillKind uint8
+
+const (
+	spiralKillNone spiralKillKind = iota
+	spiralKillCycle
+	spiralKillWander
+)
+
+func newSpiralState(policy TerminationPolicy, counters *DetectorCounters) *spiralState {
+	return &spiralState{policy: policy, counters: counters, window: policy.NavSpiralWindow, visited: make(map[string]bool)}
 }
 
 // observeDiscoveryTurn ingests the normalized target set of a discovery-ONLY turn
@@ -396,7 +372,7 @@ func newSpiralState(policyOrWindow any, counters ...*DetectorCounters) *spiralSt
 // reason. A turn that adds any new frontier entry resets the cycle counter; a
 // turn revisiting only seen targets advances it. The wander counter advances on
 // every discovery turn regardless.
-func (s *spiralState) observeDiscoveryTurn(targets []string) (kill bool, reason string) {
+func (s *spiralState) observeDiscoveryTurn(targets []string) (kind spiralKillKind, reason string) {
 	novel := false
 	for _, tgt := range targets {
 		if !s.visited[tgt] {
@@ -414,15 +390,15 @@ func (s *spiralState) observeDiscoveryTurn(targets []string) (kill bool, reason 
 		if s.counters != nil {
 			s.counters.SpiralCycle++
 		}
-		return true, fmt.Sprintf("no progress: %d discovery turns revisiting only already-seen targets (list_dir/search) — read or edit a specific target, or answer", s.cycleRun)
+		return spiralKillCycle, fmt.Sprintf("no progress: %d discovery turns revisiting only already-seen targets (list_dir/search) — read or edit a specific target, or answer", s.cycleRun)
 	}
 	if s.wander >= s.policy.WanderMultiple*s.window {
 		if s.counters != nil {
 			s.counters.SpiralWander++
 		}
-		return true, fmt.Sprintf("no progress: %d discovery-only turns without reading, editing, or running anything — follow a pointer to a concrete target, or answer", s.wander)
+		return spiralKillWander, fmt.Sprintf("no progress: %d discovery-only turns without reading, editing, or running anything — follow a pointer to a concrete target, or answer", s.wander)
 	}
-	return false, ""
+	return spiralKillNone, ""
 }
 
 // add records a new frontier target, evicting the oldest at the cap so the set

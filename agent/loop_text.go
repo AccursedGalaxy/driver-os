@@ -312,11 +312,12 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// query is orientation and never counts toward the kill; a call revisiting
 			// only seen targets is a cycle and counts at the window; endless novel
 			// wandering dies at the hard bound. Deterministic — no reasoning variance.
-			if kill, reason := spiral.observeDiscoveryTurn([]string{textDiscoveryTarget(verb, arg)}); kill {
+			if kind, reason := spiral.observeDiscoveryTurn([]string{textDiscoveryTarget(verb, arg)}); kind != spiralKillNone {
 				res.Outcome = KilledSpiral
-				if strings.Contains(reason, "revisiting") {
+				switch kind {
+				case spiralKillCycle:
 					res.DetectorCounters.terminated("spiral_cycle", i)
-				} else {
+				case spiralKillWander:
 					res.DetectorCounters.terminated("spiral_wander", i)
 				}
 				res.Reason = reason
