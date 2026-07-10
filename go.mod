@@ -14,6 +14,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/rivo/uniseg v0.4.7
 	gopkg.in/yaml.v3 v3.0.1
+	mvdan.cc/sh/v3 v3.12.0
 )
 
 require (

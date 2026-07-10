@@ -85,6 +85,30 @@ non-weakening is established via a CLOSED REGISTRY of shipped policies in
 v1 (structural policy comparison is deferred). Honest framing everywhere:
 reviewed-local is host-visible (files, non-secret env) — it is NOT
 containment; docs must not present it as container-equivalent.
+The unattended policy currently selected by both headless profiles is
+`reviewed-local-readonly-v2`. Authorization parses the `run` tool's `sh -c`
+source with `mvdan.cc/sh/v3/syntax` and accepts exactly one simple command;
+it does not authorize text by prefix. The complete accepted command families
+are `go test`, `go build`, and `go vet` with workspace-relative package
+arguments and the small compiled-in safe-flag set, plus `git status` and
+`git diff` with their compiled-in read-only flags and workspace-relative
+pathspecs after `--`. `cat` and `ls` are deliberately absent because fenced
+file tools provide workspace reads.
+
+All other syntax is denied before the underlying sandbox executes: assignments,
+expansions (including parameter, command, arithmetic, process, tilde, pathname,
+and brace expansion), backticks, redirections, pipelines, lists, background or
+negated commands, comments, multiple statements/newlines, and unsupported AST
+nodes. Absolute paths and cleaned paths that escape via `..` are denied. The
+shell remains transport only after this validation; this is a narrow structural
+contract, not a claim that shell execution generally is safe. Allowed Go tests
+still execute repository code on the host under `reviewed-local`, consistent
+with its host-visible, non-containment threat model. The vulnerable
+`reviewed-local-readonly-v1` identity remains in the closed registry so old
+records are intelligible, but it is retired and cannot authorize execution.
+Policy names, versions, canonical hashes, and default-deny behavior remain part
+of the recorded contract.
+
 
 ## 2. Execution profiles
 
