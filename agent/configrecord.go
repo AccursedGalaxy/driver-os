@@ -9,13 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// ConfigRecord schema v4 adds separate binary and invocation-surface identities.
-const configRecordSchemaVersion = 4
+// ConfigRecord schema v5 adds requested/effective protocol provenance.
+const configRecordSchemaVersion = 5
 
 // Binary and invocation-surface identifiers are stable transcript values.
 const (
@@ -35,26 +34,32 @@ type ConfigRecord struct {
 	SchemaVersion int `json:"schema_version"`
 	// Binary is the legacy v1-v3 conflated invoking-binary label. It is retained
 	// solely so old transcript JSON continues to decode.
-	Binary             string          `json:"binary,omitempty"`
-	BinaryIdentity     string          `json:"binary_identity,omitempty"`
-	InvocationSurface  string          `json:"invocation_surface,omitempty"`
-	HarnessCommit      string          `json:"harness_commit,omitempty"`
-	HarnessDirty       bool            `json:"harness_dirty,omitempty"`
-	PromptSHA256       string          `json:"prompt_sha256"`
-	ToolSchemaSHA256   string          `json:"tool_schema_sha256"`
-	ConfigSHA256       string          `json:"config_sha256"`
-	Effective          EffectiveConfig `json:"effective"`
-	TrustProfile       *string         `json:"trust_profile"`
-	ExecProfile        *string         `json:"exec_profile"`
-	ExecProfileHash    string          `json:"exec_profile_hash,omitempty"`
-	CLIOverrides       []string        `json:"cli_overrides,omitempty"`
-	ApprovalPolicyName string          `json:"approval_policy_name,omitempty"`
-	ApprovalPolicyHash string          `json:"approval_policy_hash,omitempty"`
+	Binary            string `json:"binary,omitempty"`
+	BinaryIdentity    string `json:"binary_identity,omitempty"`
+	InvocationSurface string `json:"invocation_surface,omitempty"`
+	// RequestedProtocol and ProtocolFallbackReason describe CLI routing provenance.
+	// They intentionally remain outside Effective so they do not affect ConfigSHA256.
+	RequestedProtocol      string          `json:"requested_protocol,omitempty"`
+	ProtocolFallbackReason string          `json:"protocol_fallback_reason,omitempty"`
+	HarnessCommit          string          `json:"harness_commit,omitempty"`
+	HarnessDirty           bool            `json:"harness_dirty,omitempty"`
+	PromptSHA256           string          `json:"prompt_sha256"`
+	ToolSchemaSHA256       string          `json:"tool_schema_sha256"`
+	ConfigSHA256           string          `json:"config_sha256"`
+	Effective              EffectiveConfig `json:"effective"`
+	TrustProfile           *string         `json:"trust_profile"`
+	ExecProfile            *string         `json:"exec_profile"`
+	ExecProfileHash        string          `json:"exec_profile_hash,omitempty"`
+	CLIOverrides           []string        `json:"cli_overrides,omitempty"`
+	ApprovalPolicyName     string          `json:"approval_policy_name,omitempty"`
+	ApprovalPolicyHash     string          `json:"approval_policy_hash,omitempty"`
 }
 
 // EffectiveConfig is the serializable projection of Config fields that affect
 // agent behavior. Runtime objects and task content are deliberately excluded.
 type EffectiveConfig struct {
+	// EffectiveProtocol changes the model wire protocol and is therefore hashed.
+	EffectiveProtocol  string            `json:"effective_protocol"`
 	DisableMemoryStore bool              `json:"disable_memory_store"`
 	Persona            string            `json:"persona,omitempty"`
 	MemoryScope        mneme.Scope       `json:"memory_scope"`
@@ -105,26 +110,36 @@ type EffectiveConfig struct {
 	FinishToolTrustsCaller bool     `json:"finish_tool_trusts_caller"`
 }
 
-func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *ConfigRecord {
-	eff := effectiveConfig(cfg)
+// newConfigRecord constructs the single shared reproducibility record path. Callers
+// supply the exact protocol prompt, its stable tool representation, and the loop
+// that actually ran. Text representations are textToolGrammar values; native
+// representations are []llm.Tool API schemas.
+func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
+	effectiveProtocol := "tools" // compatibility default for direct legacy callers.
+	if len(protocols) > 0 {
+		effectiveProtocol = protocols[0]
+	}
+	eff := effectiveConfig(cfg, effectiveProtocol)
 	binaryIdentity := cfg.BinaryIdentity
 	if binaryIdentity == "" {
 		// Preserve records produced by callers still using the v1-v3 Config field.
 		binaryIdentity = cfg.BinaryLabel
 	}
 	rec := &ConfigRecord{
-		SchemaVersion:      configRecordSchemaVersion,
-		Binary:             binaryIdentity,
-		BinaryIdentity:     binaryIdentity,
-		InvocationSurface:  cfg.InvocationSurface,
-		PromptSHA256:       sha256Hex([]byte(systemPrompt)),
-		ToolSchemaSHA256:   jsonSHA256(schemas),
-		ConfigSHA256:       jsonSHA256(eff),
-		Effective:          eff,
-		ApprovalPolicyName: cfg.ApprovalPolicyName,
-		ApprovalPolicyHash: cfg.ApprovalPolicyHash,
-		ExecProfileHash:    cfg.ExecProfileHash,
-		CLIOverrides:       append([]string(nil), cfg.CLIOverrides...),
+		SchemaVersion:          configRecordSchemaVersion,
+		Binary:                 binaryIdentity,
+		BinaryIdentity:         binaryIdentity,
+		InvocationSurface:      cfg.InvocationSurface,
+		RequestedProtocol:      cfg.RequestedProtocol,
+		ProtocolFallbackReason: cfg.ProtocolFallbackReason,
+		PromptSHA256:           sha256Hex([]byte(systemPrompt)),
+		ToolSchemaSHA256:       jsonSHA256(toolRepresentation),
+		ConfigSHA256:           jsonSHA256(eff),
+		Effective:              eff,
+		ApprovalPolicyName:     cfg.ApprovalPolicyName,
+		ApprovalPolicyHash:     cfg.ApprovalPolicyHash,
+		ExecProfileHash:        cfg.ExecProfileHash,
+		CLIOverrides:           append([]string(nil), cfg.CLIOverrides...),
 	}
 	if cfg.TrustProfile != "" {
 		trustProfile := cfg.TrustProfile
@@ -147,9 +162,10 @@ func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *Confi
 	return rec
 }
 
-func effectiveConfig(cfg Config) EffectiveConfig {
-	// InvocationSurface is deliberately excluded: it describes CLI routing, not
-	// agent behavior, so equivalent driver-run and driver-agent runs hash alike.
+func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
+	// RequestedProtocol and ProtocolFallbackReason are provenance rather than
+	// behavior. EffectiveProtocol is included because it changes the model API.
+	// InvocationSurface likewise describes CLI routing, not agent behavior.
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	reviewRounds := cfg.ReviewRounds
@@ -157,6 +173,7 @@ func effectiveConfig(cfg Config) EffectiveConfig {
 		reviewRounds = DefaultReviewRounds
 	}
 	return EffectiveConfig{
+		EffectiveProtocol:  effectiveProtocol,
 		DisableMemoryStore: cfg.DisableMemoryStore, Persona: cfg.Persona, MemoryScope: cfg.MemoryScope,
 		BootContext: cfg.BootContext, StandingContext: cfg.StandingContext, Stream: cfg.Stream, MinIsolation: cfg.MinIsolation,
 		MaxIterations: maxIter, MaxTokens: maxTok, RunTimeout: runTimeout, VerifyTimeout: verifyTimeout(cfg, runTimeout),

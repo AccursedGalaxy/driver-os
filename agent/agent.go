@@ -420,6 +420,11 @@ type Config struct {
 	// driver-run). It is recording-only and never affects behavior.
 	InvocationSurface string
 
+	// RequestedProtocol and ProtocolFallbackReason are CLI provenance supplied by
+	// the caller. The effective protocol is selected by Run or RunNative.
+	RequestedProtocol      string
+	ProtocolFallbackReason string
+
 	// TrustProfile identifies the selected trust profile for transcript config
 	// records. It is recording-only and never affects behavior.
 	TrustProfile string

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -21,6 +22,9 @@ func TestRunNativeStampsConfigRecord(t *testing.T) {
 	if cr == nil {
 		t.Fatal("RunResult.ConfigRecord is nil — the native loop must stamp it on every run")
 	}
+	if cr.Effective.EffectiveProtocol != "tools" {
+		t.Fatalf("effective protocol = %q, want tools", cr.Effective.EffectiveProtocol)
+	}
 	if cr.PromptSHA256 == "" || cr.ToolSchemaSHA256 == "" || cr.ConfigSHA256 == "" {
 		t.Fatalf("hashes must all be set: prompt=%q toolschema=%q config=%q",
 			cr.PromptSHA256, cr.ToolSchemaSHA256, cr.ConfigSHA256)
@@ -28,6 +32,26 @@ func TestRunNativeStampsConfigRecord(t *testing.T) {
 	if cr.TrustProfile != nil || cr.ExecProfile != nil {
 		t.Fatalf("profile identity fields are RESERVED and must stay null until S2/S3; got trust=%v exec=%v",
 			cr.TrustProfile, cr.ExecProfile)
+	}
+}
+
+func TestRunStampsTextConfigRecord(t *testing.T) {
+	res, err := Run(context.Background(), Config{
+		Model:             &scripted{replies: []string{"answer done"}},
+		Sandbox:           sbWith(t, nil),
+		RequestedProtocol: "text",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ConfigRecord == nil {
+		t.Fatal("RunResult.ConfigRecord is nil — the text loop must stamp it")
+	}
+	if got := res.ConfigRecord.Effective.EffectiveProtocol; got != "text" {
+		t.Fatalf("effective protocol = %q, want text", got)
+	}
+	if res.ConfigRecord.RequestedProtocol != "text" || res.ConfigRecord.ProtocolFallbackReason != "" {
+		t.Fatalf("explicit text provenance = %+v", res.ConfigRecord)
 	}
 }
 
@@ -69,8 +93,8 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
 	run := newConfigRecord(cfg, "system prompt", nil)
-	if run.SchemaVersion != 4 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
-		t.Fatalf("v4 identity record = %+v", run)
+	if run.SchemaVersion != 5 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v5 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
 	compat := newConfigRecord(cfg, "system prompt", nil)
@@ -79,6 +103,23 @@ func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	}
 	if run.InvocationSurface == compat.InvocationSurface {
 		t.Fatal("records must retain their distinct invocation surfaces")
+	}
+}
+
+func TestConfigRecordProtocolHashing(t *testing.T) {
+	cfg := Config{Task: "t", RequestedProtocol: "tools"}
+	fallback := newConfigRecord(cfg, "text prompt", textToolGrammar(nil), "text")
+	cfg.ProtocolFallbackReason = "provider lacks tool capability"
+	explicit := newConfigRecord(cfg, "text prompt", textToolGrammar(nil), "text")
+	if fallback.ConfigSHA256 != explicit.ConfigSHA256 {
+		t.Fatalf("same effective text protocol must hash alike: fallback=%s explicit=%s", fallback.ConfigSHA256, explicit.ConfigSHA256)
+	}
+	if explicit.ProtocolFallbackReason == "" || explicit.RequestedProtocol != "tools" {
+		t.Fatalf("fallback provenance not recorded: %+v", explicit)
+	}
+	native := newConfigRecord(cfg, "native prompt", nil, "tools")
+	if native.ConfigSHA256 == explicit.ConfigSHA256 {
+		t.Fatal("different effective protocols must change ConfigSHA256")
 	}
 }
 
@@ -93,15 +134,17 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 		SchemaVersion: TranscriptSchemaVersion,
 		ID:            "cfgrec-test",
 		Config: &ConfigRecord{
-			SchemaVersion:     4,
-			PromptSHA256:      "p",
-			ToolSchemaSHA256:  "t",
-			ConfigSHA256:      "c",
-			HarnessCommit:     "abc123",
-			HarnessDirty:      true,
-			Binary:            BinaryIdentityDriver,
-			BinaryIdentity:    BinaryIdentityDriver,
-			InvocationSurface: InvocationSurfaceDriverRun,
+			SchemaVersion:          5,
+			PromptSHA256:           "p",
+			ToolSchemaSHA256:       "t",
+			ConfigSHA256:           "c",
+			HarnessCommit:          "abc123",
+			HarnessDirty:           true,
+			Binary:                 BinaryIdentityDriver,
+			BinaryIdentity:         BinaryIdentityDriver,
+			InvocationSurface:      InvocationSurfaceDriverRun,
+			RequestedProtocol:      "tools",
+			ProtocolFallbackReason: "provider lacks tool capability",
 		},
 	}
 	path, err := WriteTranscript(dir, rec)
@@ -123,7 +166,8 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 	if g.PromptSHA256 != w.PromptSHA256 || g.ToolSchemaSHA256 != w.ToolSchemaSHA256 ||
 		g.ConfigSHA256 != w.ConfigSHA256 || g.HarnessCommit != w.HarnessCommit ||
 		g.HarnessDirty != w.HarnessDirty || g.Binary != w.Binary ||
-		g.BinaryIdentity != w.BinaryIdentity || g.InvocationSurface != w.InvocationSurface {
+		g.BinaryIdentity != w.BinaryIdentity || g.InvocationSurface != w.InvocationSurface ||
+		g.RequestedProtocol != w.RequestedProtocol || g.ProtocolFallbackReason != w.ProtocolFallbackReason {
 		t.Fatalf("config record mutated in round trip:\ngot  %+v\nwant %+v", *g, *w)
 	}
 }
@@ -135,5 +179,14 @@ func TestConfigRecordDecodesLegacyBinary(t *testing.T) {
 	}
 	if rec.Binary != "cmd/agent" || rec.BinaryIdentity != "" || rec.InvocationSurface != "" {
 		t.Fatalf("legacy binary was not preserved without invented identities: %+v", rec)
+	}
+}
+func TestConfigRecordDecodesV4(t *testing.T) {
+	var rec ConfigRecord
+	if err := json.Unmarshal([]byte(`{"schema_version":4,"binary_identity":"driver","invocation_surface":"driver-run","effective":{}}`), &rec); err != nil {
+		t.Fatalf("unmarshal v4 config record: %v", err)
+	}
+	if rec.SchemaVersion != 4 || rec.BinaryIdentity != "driver" || rec.InvocationSurface != "driver-run" || rec.RequestedProtocol != "" || rec.Effective.EffectiveProtocol != "" {
+		t.Fatalf("v4 record was not preserved without invented v5 values: %+v", rec)
 	}
 }

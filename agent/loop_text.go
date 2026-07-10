@@ -39,6 +39,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	defer func() { stampRun(out, runID, startedAt) }()
 	if refusal := checkIsolation(cfg); refusal != nil {
 		ev.isolation = EvidenceFailed
+		// No protocol prompt or tool grammar has been built before this safety
+		// refusal; record that absence as hashes of empty representations.
+		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "text")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
@@ -104,7 +107,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (mneme) is surfaced into the system prompt before we think. The model gets
 	// what it learned before, but labelled as possibly-stale so it still verifies. ----
 	scope := scopeOrDefault(cfg.MemoryScope)
-	system := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools)) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+	systemPrompt := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools))
+	system := systemPrompt + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+	res.ConfigRecord = newConfigRecord(cfg, systemPrompt, textToolGrammar(cfg.Tools), "text")
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string
@@ -530,6 +535,29 @@ func parseAction(reply string, tools map[string]Tool) (verb, arg string) {
 	// No recognized action: treat the whole reply as a malformed attempt so the
 	// no-progress / cap logic still governs it.
 	return "", reply
+}
+
+// textToolGrammar is the stable, JSON-hashed representation of the text
+// protocol's action grammar: the sorted tool names and the exact descriptions
+// that define each one-line argument syntax, plus the fixed answer production.
+type textToolGrammarSpec struct {
+	Protocol string           `json:"protocol"`
+	Actions  []textToolAction `json:"actions"`
+	Answer   string           `json:"answer"`
+}
+
+type textToolAction struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func textToolGrammar(tools map[string]Tool) textToolGrammarSpec {
+	grammar := textToolGrammarSpec{Protocol: "text-v1", Answer: "answer <final answer>"}
+	for _, name := range toolNames(tools) {
+		t := tools[name]
+		grammar.Actions = append(grammar.Actions, textToolAction{Name: t.Name, Description: t.Desc})
+	}
+	return grammar
 }
 
 // buildSystemPrompt teaches the model the protocol. The structure is dictated

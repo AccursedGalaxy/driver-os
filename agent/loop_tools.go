@@ -152,13 +152,17 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}()
 	if refusal := checkIsolation(cfg); refusal != nil {
 		ev.isolation = EvidenceFailed
+		// Prompt resolution and native schemas have not run on this safety refusal;
+		// the record deliberately hashes empty protocol representations.
+		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "tools")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
 	// (PROMPT-SKILLS slices 2+3) Resolve the base prompt BEFORE any paid call
 	// (the plan stage bills first) — an unknown profile must abort, not run
-	// mislabeled. The routing note (profile "auto") is surfaced once Obs exists:
-	// the family decision must be visible in every transcript, never silent.
+	// mislabeled. Once Obs exists, its routing note is emitted for every run that
+	// reaches prompt setup; pre-prompt refusals instead carry the empty-representation
+	// ConfigRecord documented in BINARY-UNIFICATION.md.
 	basePrompt, promptNote, err := resolveSystemPrompt(cfg)
 	if err != nil {
 		return nil, err
@@ -232,7 +236,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	scope := scopeOrDefault(cfg.MemoryScope)
 	system := withPersona(cfg.Persona, basePrompt) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
-	res.ConfigRecord = newConfigRecord(cfg, withPersona(cfg.Persona, basePrompt), schemas)
+	res.ConfigRecord = newConfigRecord(cfg, withPersona(cfg.Persona, basePrompt), schemas, "tools")
 
 	temp := 0.0
 
