@@ -26,7 +26,8 @@ import (
 //	v4 = RunRecord carries RescuedFrom, preserving the pre-upgrade outcome for
 //	     cap/kill/deadline/budget runs rescued by harness gates.
 //	v5 = RunRecord carries per-role cost fields shared with the delegation ledger.
-const TranscriptSchemaVersion = "5"
+//	v6 = RunRecord carries typed guarantee evidence.
+const TranscriptSchemaVersion = "6"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -95,7 +96,8 @@ type RunRecord struct {
 	// usage) — the calibration telemetry the corpus tooling aggregates
 	// (FP rate per reviewer = refuted+expired / total blockers). Absent when
 	// the run had no Reviewer configured.
-	Review *ReviewReport `json:"review,omitempty"`
+	Review     *ReviewReport `json:"review,omitempty"`
+	Guarantees Guarantees    `json:"guarantees"`
 	// Plan is the plan-stage record (the plan handed to the solver, or why
 	// there was none, plus the planner's own usage — kept out of Usage so
 	// per-role spend stays attributable). Absent when the run had no Planner.
@@ -130,6 +132,7 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Iterations:    res.Iterations,
 		Usage:         res.Usage,
 		Review:        res.Review,
+		Guarantees:    res.Guarantees,
 		Plan:          res.Plan,
 		SolverCost:    res.SolverCost,
 		ReviewerCost:  res.ReviewerCost,

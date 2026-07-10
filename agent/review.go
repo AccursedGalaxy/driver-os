@@ -71,6 +71,7 @@ var ErrReviewParse = errors.New("review parse error")
 // severity, a 0-10 confidence, a concrete failure scenario, and an optional
 // runnable repro the harness escalates to execution.
 type ReviewFinding struct {
+	ID              string `json:"id,omitempty"` // stable within a run; evidence summaries use it as a foreign key.
 	File            string `json:"file"`
 	Quote           string `json:"quote"`    // verbatim post-patch code — mismatch drops the finding.
 	Severity        string `json:"severity"` // "blocker" | "note"

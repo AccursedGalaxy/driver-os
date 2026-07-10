@@ -122,6 +122,14 @@ func prefetchLeadingReadOnly(ctx context.Context, tools map[string]Tool, calls [
 // RunNative executes the agent against a tool-capable provider. Its signature and
 // RunResult match Run exactly, so a caller swaps loops without other changes.
 func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
+
+	ev := &evidenceLog{root: cfg.Root, verifyConfigured: strings.TrimSpace(cfg.VerifyCmd) != "", reviewConfigured: cfg.Reviewer != nil, costConfigured: cfg.MaxTotalCostUSD > 0}
+	cfg.evidence = ev
+	defer func() {
+		if out != nil {
+			out.Guarantees = finalizeGuarantees(ev, out.Outcome, out.Review)
+		}
+	}()
 	// (P1 spine) Same run-identity stamping as Run, registered BEFORE the isolation
 	// refusal so a refused run is addressable too (its transcript write won't fail
 	// on an empty ID).
@@ -143,8 +151,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		stampRun(out, runID, startedAt)
 	}()
 	if refusal := checkIsolation(cfg); refusal != nil {
+		ev.isolation = EvidenceFailed
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
+	ev.isolation = EvidencePassed
 	// (PROMPT-SKILLS slices 2+3) Resolve the base prompt BEFORE any paid call
 	// (the plan stage bills first) — an unknown profile must abort, not run
 	// mislabeled. The routing note (profile "auto") is surfaced once Obs exists:
@@ -160,6 +170,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		cfg.Obs.Note(promptNote)
 	}
 	resolveAutoVerify(ctx, &cfg)
+	ev.verifyConfigured = strings.TrimSpace(cfg.VerifyCmd) != ""
+	ev.verifyCommand = cfg.VerifyCmd
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	cfg.Tools = wrapTools(cfg, runTimeout)
@@ -167,6 +179,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if err != nil {
 		return nil, err
 	}
+	ev.baseTree = gs.runBaseTree
+	ev.closingReady = true
 	cfg.Tools = gs.addReproTools(cfg.Tools)
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
@@ -463,6 +477,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 					usageForFinish, modelMsForFinish, replyForFinish = llm.Usage{}, 0, ""
 					obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
+					if isMutatingTool(c.Name) && !isErr {
+						ev.mutation()
+					}
 					if !isErr {
 						grounded = true
 					}
@@ -627,6 +644,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 			if !isErr {
 				grounded = true // (P4) the model has now seen real external state.
+			}
+			if isMutatingTool(c.Name) && !isErr {
+				ev.mutation()
 			}
 
 			// (P5) Stagnant-observation + churn tracking (shared tracker), evaluated

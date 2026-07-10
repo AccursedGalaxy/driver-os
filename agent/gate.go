@@ -684,6 +684,10 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		g.failOpen(classifyReviewErr(gctx, err), "review error (gate fails open): "+err.Error())
 		return "", g.reviewRequiredBlockReason()
 	}
+	if g.cfg.evidence != nil {
+		g.cfg.evidence.reviewedGen = g.cfg.evidence.mutGen
+		g.cfg.evidence.reviewReached = true
+	}
 	if strings.TrimSpace(diff) == "" {
 		g.setReviewSemanticStatus(ReviewClean)
 		g.cfg.Obs.Note("review: no changes to review — skipping")
@@ -786,6 +790,9 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		}
 		rf := g.classify(gctx, f, &reproBudget)
 		rf.Round = rv.rounds
+		if rf.ID == "" {
+			rf.ID = fmt.Sprintf("r%d-f%d", rv.rounds, len(rv.findings)+1)
+		}
 		rv.findings = append(rv.findings, rf)
 		switch rf.Fate {
 		case "": // pending = blocking.
@@ -854,6 +861,10 @@ func (g *gates) reviewUnverified(ctx context.Context) {
 	gctx, gcancel := gateContext(ctx, gateDiffTimeout)
 	diff, err := rv.captureDiff(gctx)
 	gcancel()
+	if g.cfg.evidence != nil {
+		g.cfg.evidence.reviewedGen = g.cfg.evidence.mutGen
+		g.cfg.evidence.reviewReached = true
+	}
 	if err != nil {
 		if rv.skip == "" && rv.status == "" {
 			rv.skip = "review skipped: could not capture diff for unverified advisory review: " + err.Error()

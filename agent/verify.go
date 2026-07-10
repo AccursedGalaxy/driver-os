@@ -97,6 +97,18 @@ func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out s
 		return "", true, nil
 	}
 	out, err = runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cfg.VerifyCmd, verifyTimeout(cfg, runTimeout))
+	if cfg.evidence != nil && cfg.evidence.closingReady {
+		status := EvidencePassed
+		switch {
+		case err != nil:
+			status = EvidenceInconclusive
+		case isRunTimeout(out) || infraFaultSignature(out) != "":
+			status = EvidenceInconclusive
+		case isRunFailure(out):
+			status = EvidenceFailed
+		}
+		cfg.evidence.recordVerify(cfg.VerifyCmd, status)
+	}
 	return out, false, err
 }
 

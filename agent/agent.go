@@ -255,6 +255,9 @@ type RunResult struct {
 	// Reviewer was configured; populated on every loop exit when one was, even
 	// if the gate never fired (Skipped says why).
 	Review *ReviewReport
+
+	// Guarantees is the typed, machine-readable evidence report for this run.
+	Guarantees Guarantees `json:"guarantees"`
 	// Repro is the repro-first gate report. nil unless ReproFirst was enabled.
 	Repro *ReproReport
 	// Plan is the plan-stage record — the plan the solver was handed (or why
@@ -401,9 +404,12 @@ func (p ReviewPolicy) Optional() bool { return p.optional() }
 // rest default sensibly (nil Tools -> DefaultTools, nil Memory -> no cross-run
 // recall, nil Obs -> silent).
 type Config struct {
-	Model   llm.Provider    // required: the (context) -> text engine.
-	Sandbox sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
-	Memory  mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
+
+	// evidence is run-local observation state threaded through gates and helpers.
+	evidence *evidenceLog
+	Model    llm.Provider    // required: the (context) -> text engine.
+	Sandbox  sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
+	Memory   mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
 
 	// DisableMemoryStore suppresses the post-answer mneme.Add call while leaving
 	// recall enabled. Ladder attempts use this so losing attempts can benefit from

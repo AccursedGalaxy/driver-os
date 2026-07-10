@@ -17,6 +17,14 @@ import (
 // call itself failed); a no-progress kill or a hit cap is a normal Outcome, not
 // a Go error.
 func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
+
+	ev := &evidenceLog{root: cfg.Root, verifyConfigured: strings.TrimSpace(cfg.VerifyCmd) != "", reviewConfigured: cfg.Reviewer != nil, costConfigured: cfg.MaxTotalCostUSD > 0}
+	cfg.evidence = ev
+	defer func() {
+		if out != nil {
+			out.Guarantees = finalizeGuarantees(ev, out.Outcome, out.Review)
+		}
+	}()
 	// Stamp the run identity + wall-clock bounds on whatever result we return, from
 	// every exit path, without threading it through each one (P1 spine: a run is
 	// addressable by ID). Registered BEFORE the isolation refusal so even a refused
@@ -30,13 +38,17 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}
 	defer func() { stampRun(out, runID, startedAt) }()
 	if refusal := checkIsolation(cfg); refusal != nil {
+		ev.isolation = EvidenceFailed
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
+	ev.isolation = EvidencePassed
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
 	}
 
 	resolveAutoVerify(ctx, &cfg)
+	ev.verifyConfigured = strings.TrimSpace(cfg.VerifyCmd) != ""
+	ev.verifyCommand = cfg.VerifyCmd
 
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
@@ -47,6 +59,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	if err != nil {
 		return nil, err
 	}
+	ev.baseTree = gs.runBaseTree
+	ev.closingReady = true
 
 	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
 	recordAutoVerifyResolution(res, cfg)
@@ -307,6 +321,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 		}
 		rawObs := observation
+		if isMutatingTool(verb) && !strings.HasPrefix(observation, "ERROR:") {
+			ev.mutation()
+		}
 		step.ToolMs = time.Since(toolStart).Milliseconds()
 
 		// A successful tool observation means the model has now seen REAL external

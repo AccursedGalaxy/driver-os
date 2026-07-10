@@ -112,6 +112,9 @@ func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (b
 			cfg.Obs.Note(missingMsg)
 			*missingNoted = true
 		}
+		if cfg.evidence != nil {
+			cfg.evidence.unpriced = true
+		}
 		return false, ""
 	}
 	if cost >= cfg.MaxTotalCostUSD {
