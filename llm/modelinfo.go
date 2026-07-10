@@ -6,8 +6,8 @@ import "strings"
 // is sent. A zero field means that limit is unknown; callers must treat an
 // unknown limit as having no proactive limit.
 type ModelInfo struct {
-	ContextWindow   int
-	MaxOutputTokens int
+	ContextWindow   int `json:"context_window"`
+	MaxOutputTokens int `json:"max_output_tokens"`
 }
 
 // Lookup returns cataloged metadata for model. Matching is case-sensitive and
