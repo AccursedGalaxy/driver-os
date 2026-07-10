@@ -23,8 +23,16 @@ transcripts, and docs — no aliases:
 |---|---|---|---|---|---|---|
 | `trusted-local` | local | none | auto (today's) | none | ambient | unrestricted |
 | `reviewed-local` | gated(local) | none | REQUIRED | REQUIRED (see §1.2) | clean-env allowlist | unrestricted |
-| `container` | docker | process | required | policy | clean-env allowlist | ⚑ default TBD |
+| `container` | docker | process | required | none (amended, see below) | clean-env allowlist | **off** (Robin 2026-07-10) |
 | `untrusted` | docker | ≥process | required | policy (default-deny) | none | off |
+
+Amendments at S2b (2026-07-10): container network resolved to OFF (docker
+sandbox default already is `--network none`, so this costs nothing); container
+approval floor amended policy→NONE — command approval INSIDE a container adds
+friction without a security boundary (the containment is the control), and a
+gated container would cripple solver runs whose whole point is free execution
+inside the boundary. `untrusted` keeps default-deny gating ON TOP of
+containment (look-but-barely-touch posture).
 
 **Floor fields — AMENDED to six** (supersedes the five-field set in
 REVIEW-TRIAGE R1; the sixth was added on council advice — network-off cannot
@@ -171,7 +179,13 @@ mark it noncanonical in the transcript.
 ## Open for Robin ⚑
 
 1. Binary unification (unchanged decision point, now explicitly decoupled).
-2. Container network default (off vs allowlisted).
+2. ~~Container network default~~ — RESOLVED 2026-07-10: off.
 3. S4 time-bound: confirm "reproducibility-grade campaigns refuse without
    versioned routing policy" as the gate, or set a date.
-4. Resolver package name.
+4. ~~Resolver package name~~ — RESOLVED: `internal/profile` (shipped S2a).
+5. NEW (deferred to S3): TUI default = reviewed-local collides with the
+   reviewed-local worktree-REQUIRED floor — the TUI's design is in-place
+   interactive editing. S3 must either amend the reviewed-local worktree
+   floor (argument: interactive per-command approval substitutes for
+   workspace isolation as the review mechanism) or give the TUI a distinct
+   named posture. Decide there, on the record.

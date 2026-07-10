@@ -412,6 +412,18 @@ type Config struct {
 	// transcript config records. It is recording-only and never affects behavior.
 	BinaryLabel string
 
+	// TrustProfile identifies the selected trust profile for transcript config
+	// records. It is recording-only and never affects behavior.
+	TrustProfile string
+
+	// ApprovalPolicyName identifies the selected approval policy for transcript
+	// config records. It is recording-only and never affects behavior.
+	ApprovalPolicyName string
+
+	// ApprovalPolicyHash identifies the selected approval policy content for
+	// transcript config records. It is recording-only and never affects behavior.
+	ApprovalPolicyHash string
+
 	// evidence is run-local observation state threaded through gates and helpers.
 	evidence *evidenceLog
 	Model    llm.Provider    // required: the (context) -> text engine.

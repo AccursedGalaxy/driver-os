@@ -14,22 +14,25 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-const configRecordSchemaVersion = 1
+// v2: trust identity + approval policy identity.
+const configRecordSchemaVersion = 2
 
-// ConfigRecord is the reproducibility record embedded in transcripts. S1 records
-// today's effective config plus stable hashes; TrustProfile and ExecProfile are
-// reserved seams for later profile resolution slices and intentionally remain nil.
+// ConfigRecord is the reproducibility record embedded in transcripts. It records
+// today's effective config plus stable hashes; ExecProfile remains a reserved
+// seam for later profile resolution slices.
 type ConfigRecord struct {
-	SchemaVersion    int             `json:"schema_version"`
-	Binary           string          `json:"binary,omitempty"`
-	HarnessCommit    string          `json:"harness_commit,omitempty"`
-	HarnessDirty     bool            `json:"harness_dirty,omitempty"`
-	PromptSHA256     string          `json:"prompt_sha256"`
-	ToolSchemaSHA256 string          `json:"tool_schema_sha256"`
-	ConfigSHA256     string          `json:"config_sha256"`
-	Effective        EffectiveConfig `json:"effective"`
-	TrustProfile     *string         `json:"trust_profile"`
-	ExecProfile      *string         `json:"exec_profile"`
+	SchemaVersion      int             `json:"schema_version"`
+	Binary             string          `json:"binary,omitempty"`
+	HarnessCommit      string          `json:"harness_commit,omitempty"`
+	HarnessDirty       bool            `json:"harness_dirty,omitempty"`
+	PromptSHA256       string          `json:"prompt_sha256"`
+	ToolSchemaSHA256   string          `json:"tool_schema_sha256"`
+	ConfigSHA256       string          `json:"config_sha256"`
+	Effective          EffectiveConfig `json:"effective"`
+	TrustProfile       *string         `json:"trust_profile"`
+	ExecProfile        *string         `json:"exec_profile"`
+	ApprovalPolicyName string          `json:"approval_policy_name,omitempty"`
+	ApprovalPolicyHash string          `json:"approval_policy_hash,omitempty"`
 }
 
 // EffectiveConfig is the serializable projection of Config fields that affect
@@ -88,12 +91,18 @@ type EffectiveConfig struct {
 func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *ConfigRecord {
 	eff := effectiveConfig(cfg)
 	rec := &ConfigRecord{
-		SchemaVersion:    configRecordSchemaVersion,
-		Binary:           cfg.BinaryLabel,
-		PromptSHA256:     sha256Hex([]byte(systemPrompt)),
-		ToolSchemaSHA256: jsonSHA256(schemas),
-		ConfigSHA256:     jsonSHA256(eff),
-		Effective:        eff,
+		SchemaVersion:      configRecordSchemaVersion,
+		Binary:             cfg.BinaryLabel,
+		PromptSHA256:       sha256Hex([]byte(systemPrompt)),
+		ToolSchemaSHA256:   jsonSHA256(schemas),
+		ConfigSHA256:       jsonSHA256(eff),
+		Effective:          eff,
+		ApprovalPolicyName: cfg.ApprovalPolicyName,
+		ApprovalPolicyHash: cfg.ApprovalPolicyHash,
+	}
+	if cfg.TrustProfile != "" {
+		trustProfile := cfg.TrustProfile
+		rec.TrustProfile = &trustProfile
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range info.Settings {

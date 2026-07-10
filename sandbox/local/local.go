@@ -32,6 +32,10 @@ type Sandbox struct {
 	root     string // absolute, cleaned — the lexical fence boundary.
 	realRoot string // root with all symlinks resolved — the symlink-safe boundary.
 
+	// envAllowlist, when non-nil, limits inherited command environment variables
+	// to the listed names. A nil value retains the full ambient environment.
+	envAllowlist []string
+
 	// alias is an OPTIONAL absolute prefix that maps to the root — the in-container
 	// mount point (e.g. "/workspace") when this backend is composed under docker.
 	// The model lives in the container, so it naturally writes "/workspace/f.go";
@@ -56,9 +60,22 @@ var (
 	_ sandbox.WorkdirReporter = (*Sandbox)(nil)
 )
 
+// Options configures a local sandbox.
+type Options struct {
+	// EnvAllowlist limits inherited command environment variables by name. A nil
+	// allowlist preserves the full ambient environment.
+	EnvAllowlist []string
+}
+
 // New creates a local sandbox rooted at dir. dir must exist and be a directory;
 // it is resolved to an absolute, cleaned path that becomes the fence boundary.
+// It preserves the full ambient environment for commands.
 func New(dir string) (*Sandbox, error) {
+	return NewWithOptions(dir, Options{})
+}
+
+// NewWithOptions creates a local sandbox rooted at dir with opts.
+func NewWithOptions(dir string, opts Options) (*Sandbox, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -79,7 +96,15 @@ func New(dir string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Sandbox{root: abs, realRoot: realRoot}, nil
+	var envAllowlist []string
+	if opts.EnvAllowlist != nil {
+		envAllowlist = append([]string{}, opts.EnvAllowlist...)
+	}
+	return &Sandbox{
+		root:         abs,
+		realRoot:     realRoot,
+		envAllowlist: envAllowlist,
+	}, nil
 }
 
 // Capabilities reports the truth: no isolation, host network. The runner can use
@@ -210,6 +235,27 @@ func (s *Sandbox) escapesViaSymlink(abs string) error {
 	}
 }
 
+// baseEnv returns the ambient environment, optionally restricted to the configured
+// variable names. Command-specific variables are appended by Exec.
+func (s *Sandbox) baseEnv() []string {
+	ambient := os.Environ()
+	if s.envAllowlist == nil {
+		return ambient
+	}
+	allowed := make(map[string]struct{}, len(s.envAllowlist))
+	for _, name := range s.envAllowlist {
+		allowed[name] = struct{}{}
+	}
+	filtered := make([]string, 0, len(s.envAllowlist))
+	for _, entry := range ambient {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, ok := allowed[name]; ok {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
 // Exec runs a command to completion. A non-zero exit (or a Timeout kill) is a
 // normal *Result, not an error — only a genuine failure to start the command is
 // returned as err (Principle 6: failures are observations).
@@ -232,7 +278,7 @@ func (s *Sandbox) Exec(ctx context.Context, cmd sandbox.Command) (*sandbox.Resul
 
 	c := exec.CommandContext(runCtx, cmd.Path, cmd.Args...)
 	c.Dir = dir
-	c.Env = append(os.Environ(), cmd.Env...)
+	c.Env = append(s.baseEnv(), cmd.Env...)
 	if len(cmd.Stdin) > 0 {
 		c.Stdin = bytes.NewReader(cmd.Stdin)
 	}
