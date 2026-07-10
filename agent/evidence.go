@@ -34,6 +34,17 @@ const (
 	ReasonInfraFault    DegradationReason = "infra-fault"
 	ReasonNotReached    DegradationReason = "not-reached"
 	ReasonStaleEvidence DegradationReason = "stale-evidence"
+	ReasonNoOpAnswer    DegradationReason = "no-op-answer"
+)
+
+// WorkspaceEffect records whether the final workspace tree differs from the
+// run baseline. Unknown means the harness could not establish the fact.
+type WorkspaceEffect string
+
+const (
+	WorkspaceChanged   WorkspaceEffect = "changed"
+	WorkspaceUnchanged WorkspaceEffect = "unchanged"
+	WorkspaceUnknown   WorkspaceEffect = "unknown"
 )
 
 // Degradation explains why a configured guarantee was weakened.
@@ -54,10 +65,11 @@ type VerificationEvidence struct {
 
 // DiffEvidence summarizes the captured workspace delta; patch content remains an artifact.
 type DiffEvidence struct {
-	Status       EvidenceStatus `json:"status"`
-	FilesChanged []string       `json:"files_changed,omitempty"`
-	PatchRef     string         `json:"patch_ref"`
-	CaptureGen   int            `json:"capture_gen"`
+	Status          EvidenceStatus  `json:"status"`
+	FilesChanged    []string        `json:"files_changed,omitempty"`
+	PatchRef        string          `json:"patch_ref"`
+	CaptureGen      int             `json:"capture_gen"`
+	WorkspaceEffect WorkspaceEffect `json:"workspace_effect"`
 }
 
 // ReviewEvidence is a structured summary whose finding IDs refer to RunResult.Review.
@@ -122,6 +134,7 @@ func finalizeGuarantees(l *evidenceLog, outcome Outcome, review *ReviewReport) G
 	if l == nil {
 		return g
 	}
+	g.Diff.WorkspaceEffect = WorkspaceUnknown
 	g.Isolation = l.isolation
 	g.CostBound = EvidencePassed
 	if !l.costConfigured {
@@ -182,10 +195,18 @@ func finalizeGuarantees(l *evidenceLog, outcome Outcome, review *ReviewReport) G
 		ctx, cancel := context.WithTimeout(context.Background(), gateDiffTimeout)
 		defer cancel()
 		if cur, err := vcs.WriteTree(ctx, l.root); err == nil {
+			if cur == l.baseTree {
+				g.Diff.WorkspaceEffect = WorkspaceUnchanged
+			} else {
+				g.Diff.WorkspaceEffect = WorkspaceChanged
+			}
 			if names, e := vcs.DiffTreeNames(ctx, l.root, l.baseTree, cur); e == nil {
 				sort.Strings(names)
-				g.Diff = DiffEvidence{Status: EvidencePassed, FilesChanged: names, CaptureGen: l.mutGen}
+				g.Diff.Status = EvidencePassed
+				g.Diff.FilesChanged = names
+				g.Diff.CaptureGen = l.mutGen
 			} else {
+				g.Diff.WorkspaceEffect = WorkspaceUnknown
 				g.Diff.Status = EvidenceInconclusive
 			}
 		} else {
@@ -195,7 +216,9 @@ func finalizeGuarantees(l *evidenceLog, outcome Outcome, review *ReviewReport) G
 		g.Diff.Status = EvidenceSkipped
 		l.degradation("diff", ReasonNoVCS, "no workspace baseline available", &g)
 	}
-	_ = outcome
+	if outcome == Answered && g.Diff.WorkspaceEffect == WorkspaceUnchanged {
+		l.degradation("diff", ReasonNoOpAnswer, "answered with no workspace changes", &g)
+	}
 	return g
 }
 
