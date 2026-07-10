@@ -122,6 +122,8 @@ type Verdict struct {
 	TestbuildOK   bool     `json:"testbuild_ok"`
 	RanTests      []TestID `json:"ran_tests"`
 	GraderError   string   `json:"grader_error,omitempty"`
+	Infra         bool     `json:"infra,omitempty"`
+	InfraCause    string   `json:"infra_cause,omitempty"`
 	GraderVersion string   `json:"grader_version"`
 }
 

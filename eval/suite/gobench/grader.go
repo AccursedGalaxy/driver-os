@@ -41,6 +41,7 @@ func GradeWithTimeout(checkoutDir, oracleDir string, inst Instance, timeout time
 
 	if err := overlayOracle(checkoutDir, oracleDir, inst.OracleFiles); err != nil {
 		v.GraderError = fmt.Sprintf("overlay oracle failed: %v", err)
+		MarkInfra(&v, v.GraderError)
 		return v, err
 	}
 
@@ -81,6 +82,9 @@ func GradeWithTimeout(checkoutDir, oracleDir string, inst Instance, timeout time
 	v.P2PPass = p2pPass
 	if v.GraderError == "" && p2pReason != "" && strings.HasPrefix(p2pReason, "infra") {
 		v.GraderError = p2pReason
+	}
+	if strings.HasPrefix(v.GraderError, "infra") {
+		MarkInfra(&v, v.GraderError)
 	}
 
 	// 6. Final resolve bit.

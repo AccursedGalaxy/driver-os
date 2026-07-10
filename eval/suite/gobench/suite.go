@@ -53,7 +53,15 @@ func DefaultInstancesDir() string { return "eval/suite/gobench/testdata/instance
 
 func DefaultOraclesDir() string { return "docs/findings/harness-bench/swe-instances" }
 
-func DefaultCacheDir() string { return filepath.Join(os.TempDir(), "gobench-cache") }
+// DefaultCacheDir returns the disk-backed per-user cache for GoBench mirrors.
+// It falls back to the historical temp location only when the OS user cache
+// directory cannot be resolved.
+func DefaultCacheDir() string {
+	if dir, err := os.UserCacheDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "driver-os", "gobench")
+	}
+	return filepath.Join(os.TempDir(), "gobench-cache")
+}
 
 func resolveDir(dir string) string {
 	if dir == "" || filepath.IsAbs(dir) {
@@ -227,6 +235,13 @@ func verdictDetail(v Verdict) string {
 	}
 	if v.GraderError != "" {
 		parts = append(parts, "GraderError="+v.GraderError)
+	}
+	if v.Infra {
+		cause := v.InfraCause
+		if cause == "" {
+			cause = v.GraderError
+		}
+		parts = append(parts, "Infra=true", "InfraCause="+cause)
 	}
 	return strings.Join(parts, " ")
 }
