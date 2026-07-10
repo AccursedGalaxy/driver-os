@@ -18,7 +18,7 @@ code depends on the engine, never the reverse:
 1. **Core library** (`llm/`, `provider/`, `sandbox/`): provider abstraction
    modeled on the `database/sql` driver pattern, plus the sandbox interfaces.
    The most stable surface.
-2. **Execution engine** (`agent/`, `cmd/agent`, `cmd/driver`): the agent loop,
+2. **Execution engine** (`agent/`, `internal/headless`, `cmd/driver`): the agent loop,
    gates, detectors, transcripts, and the headless + TUI binaries.
 3. **Research lab** (`eval/`, `council/`, benchmark tooling, `docs/findings/`):
    the measurement machinery and its results. Changes fast, breaks freely.
@@ -39,7 +39,7 @@ decision.
 The first four speak the OpenAI Chat Completions wire format, so a single adapter
 covers them. Claude uses its own **native** Messages API via the `anthropic`
 adapter (DESIGN.md, decision 3): signed-thinking replay, the 5-family effort
-knob, and prompt caching. `cmd/agent` can select any of the five with `-provider`.
+knob, and prompt caching. `driver run` and `driver-agent` can select any of the five with `-provider`.
 
 ## Quick start
 
@@ -66,21 +66,21 @@ Override model ids without recompiling: `OPENROUTER_MODEL`, `XAI_MODEL`.
 
 ## Agent loop (with long-term memory)
 
-`cmd/agent` is a minimal think→act→observe agent over the sandbox tools. It has
+`driver run` (or `driver-agent`) is a minimal think→act→observe agent over the sandbox tools. It has
 **persistent memory across runs** via [mneme](https://github.com/AccursedGalaxy/mneme):
 before thinking it recalls facts relevant to the task, and after answering it
 stores what it learned. So a second, related run starts already knowing the
 answer instead of re-exploring.
 
 ```sh
-go run ./cmd/agent -task "What module path does this project declare?"
-go run ./cmd/agent -task "What is this project's module path?"  # recalls from run 1
-go run ./cmd/agent -memory=false ...                            # disable memory
+go run ./cmd/driver run -task "What module path does this project declare?"
+go run ./cmd/driver run -task "What is this project's module path?"  # recalls from run 1
+go run ./cmd/driver run -memory=false ...                            # disable memory
 ```
 
 ### Driving it from scripts
 
-`cmd/agent` obeys the Unix contract, so it composes in a pipe, a Makefile, or CI
+`driver run` and `driver-agent` obey the Unix contract, so it composes in a pipe, a Makefile, or CI
 (full contract in [docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
 
 - **`-format text|json|ndjson`**: `text` (default) prints the answer + a `SUMMARY`
@@ -166,12 +166,12 @@ backend, not the tool, decides how strongly that boundary isolates:
 ```sh
 # Run the agent's `run`/`search` commands inside a locked-down container
 # (network off, root fs read-only, CPU/memory/pids capped, non-root user):
-go run ./cmd/agent -sandbox=docker -task "..."
+go run ./cmd/driver run -sandbox=docker -task "..."
 
 # Treat the task's code as HOSTILE: require gVisor and refuse to start on
 # anything weaker. Fails closed: `-untrusted` without `-runtime=runsc` will not
 # run a single command:
-go run ./cmd/agent -sandbox=docker -runtime=runsc -untrusted -task "..."
+go run ./cmd/driver run -sandbox=docker -runtime=runsc -untrusted -task "..."
 ```
 
 Build the container image once (it carries `sh`, `rg`, `git`, `go`):
@@ -207,7 +207,7 @@ tool-exec loop, and the comparison/fan-in harness. All are end-to-end tested.
 On top of that foundation the project has grown into an agent-harness research
 platform:
 
-- **Agent loop** (`cmd/agent`): think→act→observe over the sandbox tools, with
+- **Agent loop** (`driver run` or `driver-agent`): think→act→observe over the sandbox tools, with
   cross-run memory ([mneme](https://github.com/AccursedGalaxy/mneme)),
   reasoning-trace round-tripping, per-turn timing, and stuck-detection backed by
   a build-diagnostics feed (see `docs/specs/CODE-INTELLIGENCE.md`).

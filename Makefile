@@ -1,4 +1,4 @@
-.PHONY: build routing test race vet check deps-clone sandbox-image sandbox-integration install-council corpus-baseline corpus-regress swebench swebench-gold fasthttp-ws r1 r2 r3
+.PHONY: build routing test race vet check deps-clone sandbox-image sandbox-integration install install-council install-driver corpus-baseline corpus-regress swebench swebench-gold fasthttp-ws r1 r2 r3
 
 # Core module hygiene. These cover the Go module only — the embedded
 # frontends have their own *-build targets below. `check` is the
@@ -26,6 +26,28 @@ check: vet race
 install-council:
 	GOBIN=$(HOME)/.local/bin go install ./cmd/council
 	@echo ">> installed council to $(HOME)/.local/bin/council"
+
+install: install-driver
+
+# Install the unified driver binary and its driver-agent compatibility name.
+# If $(HOME)/.local/bin/driver is a SCRIPT (a rebuild-on-invoke dev wrapper,
+# not a binary this target made), leave it alone and only refresh the
+# driver-agent symlink — the wrapper must use `exec -a "$(basename "$0")"` so
+# argv[0] dispatch survives the exec.
+install-driver:
+	@mkdir -p $(HOME)/.local/bin
+	@if [ -f $(HOME)/.local/bin/driver ] && head -c2 $(HOME)/.local/bin/driver | grep -q '#!'; then \
+		echo ">> $(HOME)/.local/bin/driver is a dev wrapper script — keeping it (it rebuilds from the tree)"; \
+	else \
+		go build -o $(HOME)/.local/bin/driver ./cmd/driver; \
+	fi
+	ln -sfn driver $(HOME)/.local/bin/driver-agent
+	@test "$$(readlink -f $(HOME)/.local/bin/driver)" = "$$(readlink -f $(HOME)/.local/bin/driver-agent)"
+	@path="$$(command -v driver-agent 2>/dev/null || true)"; \
+	if [ -n "$$path" ] && [ "$$path" != "$(HOME)/.local/bin/driver-agent" ]; then \
+		echo "warning: driver-agent on PATH shadows $(HOME)/.local/bin/driver-agent"; \
+	fi
+	@echo ">> installed driver and driver-agent to $(HOME)/.local/bin"
 
 # Print the dogfood corpus baseline (commit-msg verdicts + council convergence/
 # signal/still-open residue) from records already on disk — NO model calls, no API
