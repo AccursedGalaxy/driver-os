@@ -37,13 +37,13 @@ const (
 // snapshot measured by the command — it is what the staleness label keys on —
 // and Attempts counts gate recurrences so replacement ordering is explicit.
 type VerificationRecord struct {
-	Status      EvidenceStatus
-	Cause       VerificationCause
-	Command     string
-	Output      string
-	Fingerprint string
-	Tree        string
-	Attempts    int
+	Status      EvidenceStatus    `json:"status"`
+	Cause       VerificationCause `json:"cause,omitempty"`
+	Command     string            `json:"command"`
+	Output      string            `json:"output"`
+	Fingerprint string            `json:"fingerprint"`
+	Tree        string            `json:"tree"`
+	Attempts    int               `json:"attempts"`
 }
 
 func classifyRunObservation(obs string) (EvidenceStatus, VerificationCause) {

@@ -79,6 +79,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	defer func() {
 		if out != nil {
 			gs.applyVerifyInfra(out)
+			gs.applyClosingVerification(out)
 			out.Review = gs.reviewReport()
 		}
 	}()

@@ -290,6 +290,9 @@ type RunResult struct {
 	// VerifyBaselineOut is the failing output of the baseline VerifyCmd run,
 	// clipped like other observations. Empty when the baseline was green.
 	VerifyBaselineOut string `json:"verify_baseline_out,omitempty"`
+	// ClosingVerification records the authoritative closing gate run that accepted
+	// the final state. It is nil when no closing verification succeeded.
+	ClosingVerification *VerificationRecord `json:"closing_verification,omitempty"`
 	// VerifyInfra is true when a closing VerifyCmd failed because the harness
 	// recognized an environment fault rather than a code failure.
 	VerifyInfra bool `json:"verify_infra,omitempty"`

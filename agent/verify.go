@@ -177,7 +177,7 @@ func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runT
 			}
 			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out), out
 		}
-		return "", ""
+		return "", out
 	}
 	if cfg.VerifyLastRun && lastRunFailed {
 		return "the most recent command run was still failing and nothing succeeded after it — the task does not look complete", ""

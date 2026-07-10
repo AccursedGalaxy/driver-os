@@ -105,6 +105,9 @@ type gates struct {
 	// harness-derived VerifyCmd. After the bounded feedback budget is spent, the
 	// auto gate becomes advisory so it cannot downgrade an otherwise answered run.
 	autoVerifyFeedback int
+
+	closingVerification *VerificationRecord
+	closingVerifyGen    int
 }
 
 // newGates snapshots the run-start state both closing gates need: the fence
@@ -438,6 +441,32 @@ func (g *gates) requireDiffFailure(ctx context.Context) (Outcome, string, bool) 
 	return "", "", false
 }
 
+func (g *gates) captureClosingVerification(out, tree string) {
+	record := newVerificationRecord(g.cfg.VerifyCmd, out, tree)
+	g.closingVerification = &record
+	if g.cfg.evidence != nil {
+		g.closingVerifyGen = g.cfg.evidence.mutGen
+	}
+}
+
+func (g *gates) applyClosingVerification(res *RunResult) {
+	if g.closingVerification == nil {
+		return
+	}
+	record := *g.closingVerification
+	if g.cfg.evidence != nil && g.closingVerifyGen < g.cfg.evidence.mutGen {
+		record.Status = EvidenceDegraded
+	}
+	res.ClosingVerification = &record
+}
+
+func (g *gates) verificationTree(ctx context.Context) string {
+	gctx, cancel := gateContext(ctx, gateDiffTimeout)
+	defer cancel()
+	tree, _ := vcs.WriteTree(gctx, g.cfg.Root)
+	return tree
+}
+
 func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outcome Outcome, reason string, noContinue bool) {
 	if out, reason, stop := g.requireDiffFailure(ctx); reason != "" {
 		return out, reason, stop
@@ -455,7 +484,11 @@ func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outco
 			return g.verifyCompletionFailure(reason, g.verifyBaselineOut)
 		}
 	}
+	preVerifyTree := g.verificationTree(ctx)
 	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
+	if reason == "" && g.cfg.VerifyCmd != "" {
+		g.captureClosingVerification(verifyOut, preVerifyTree)
+	}
 	return g.verifyCompletionFailure(reason, verifyOut)
 }
 
@@ -622,6 +655,7 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 			return res
 		}
 	}
+	g.captureClosingVerification(out, preVerifyTree)
 	if fb, detail := g.reproFinish(ctx); fb != "" {
 		g.cfg.Obs.Note("upgrade blocked — " + detail)
 		res.Outcome = Unverified
