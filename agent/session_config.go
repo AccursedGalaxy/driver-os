@@ -100,6 +100,16 @@ func (s *Session) SetReviewer(r Reviewer) { s.cfg.Reviewer = r }
 // Reviewer returns the reviewer the next Send will gate on (nil = gate off).
 func (s *Session) Reviewer() Reviewer { return s.cfg.Reviewer }
 
+// SetReviewPolicy swaps the review policy for every SUBSEQUENT turn. Callers
+// that disarm the reviewer (SetReviewer(nil)) while a required policy is in
+// force must downgrade the policy too — Config.Validate rejects a required
+// policy with no Reviewer, which would fail every later Send. Same calling
+// contract as SetModel: only from the driving goroutine, never mid-Send.
+func (s *Session) SetReviewPolicy(p ReviewPolicy) { s.cfg.ReviewPolicy = p }
+
+// ReviewPolicy returns the policy the next Send will run under.
+func (s *Session) ReviewPolicy() ReviewPolicy { return s.cfg.ReviewPolicy }
+
 // SetTools swaps the toolset used for every SUBSEQUENT turn — the /skills
 // picker's seam: toggling a skill rebuilds the `skill` meta-tool (its Level-1
 // listing is baked into the tool description) and the whole map is swapped

@@ -147,6 +147,30 @@ func TestSessionSetToolsSwapsToolset(t *testing.T) {
 	}
 }
 
+// /review off must turn review OFF for the next Send. Regression: a launch
+// that armed a reviewer promoted ReviewPolicyRequired; disarming only the
+// Reviewer left the required policy behind, and Config.Validate then bricked
+// every subsequent turn with "required review policy needs a Reviewer".
+func TestSessionReviewOffDowngradesRequiredPolicy(t *testing.T) {
+	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("answer")}}}
+	s := NewSession(Config{
+		Model:        ns,
+		Sandbox:      sbWith(t, map[string]string{"go.mod": "module x\n"}),
+		Reviewer:     &errReviewer{},
+		ReviewPolicy: ReviewPolicyRequired,
+	}, RunNative)
+
+	s.SetReviewer(nil)
+	s.SetReviewPolicy(ReviewPolicyDefault)
+	if got := s.ReviewPolicy(); got != ReviewPolicyDefault {
+		t.Fatalf("ReviewPolicy() = %v after SetReviewPolicy(ReviewPolicyDefault)", got)
+	}
+
+	if _, err := s.Send(context.Background(), "just answer"); err != nil {
+		t.Fatalf("Send after /review off: %v (review off must not require a reviewer)", err)
+	}
+}
+
 // SetMaxTokens must reach the provider on the NEXT Send's requests.
 func TestSessionSetMaxTokens(t *testing.T) {
 	ns := &nativeScript{turns: [][]llm.ContentPart{
