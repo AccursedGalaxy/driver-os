@@ -64,6 +64,24 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 	}
 }
 
+// Invocation surface describes routing rather than behavior, so it is stored
+// alongside, rather than within, the effective-config hash.
+func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
+	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
+	run := newConfigRecord(cfg, "system prompt", nil)
+	if run.SchemaVersion != 4 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v4 identity record = %+v", run)
+	}
+	cfg.InvocationSurface = InvocationSurfaceDriverAgent
+	compat := newConfigRecord(cfg, "system prompt", nil)
+	if run.ConfigSHA256 != compat.ConfigSHA256 {
+		t.Fatalf("invocation surface must not affect ConfigSHA256: run=%s agent=%s", run.ConfigSHA256, compat.ConfigSHA256)
+	}
+	if run.InvocationSurface == compat.InvocationSurface {
+		t.Fatal("records must retain their distinct invocation surfaces")
+	}
+}
+
 // The record survives the transcript write→read round trip, and the
 // transcript schema version is bumped for the new field.
 func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
@@ -75,12 +93,15 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 		SchemaVersion: TranscriptSchemaVersion,
 		ID:            "cfgrec-test",
 		Config: &ConfigRecord{
-			PromptSHA256:     "p",
-			ToolSchemaSHA256: "t",
-			ConfigSHA256:     "c",
-			HarnessCommit:    "abc123",
-			HarnessDirty:     true,
-			Binary:           "cmd/agent",
+			SchemaVersion:     4,
+			PromptSHA256:      "p",
+			ToolSchemaSHA256:  "t",
+			ConfigSHA256:      "c",
+			HarnessCommit:     "abc123",
+			HarnessDirty:      true,
+			Binary:            BinaryIdentityDriver,
+			BinaryIdentity:    BinaryIdentityDriver,
+			InvocationSurface: InvocationSurfaceDriverRun,
 		},
 	}
 	path, err := WriteTranscript(dir, rec)
@@ -101,7 +122,18 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 	g, w := got.Config, rec.Config
 	if g.PromptSHA256 != w.PromptSHA256 || g.ToolSchemaSHA256 != w.ToolSchemaSHA256 ||
 		g.ConfigSHA256 != w.ConfigSHA256 || g.HarnessCommit != w.HarnessCommit ||
-		g.HarnessDirty != w.HarnessDirty || g.Binary != w.Binary {
+		g.HarnessDirty != w.HarnessDirty || g.Binary != w.Binary ||
+		g.BinaryIdentity != w.BinaryIdentity || g.InvocationSurface != w.InvocationSurface {
 		t.Fatalf("config record mutated in round trip:\ngot  %+v\nwant %+v", *g, *w)
+	}
+}
+
+func TestConfigRecordDecodesLegacyBinary(t *testing.T) {
+	var rec ConfigRecord
+	if err := json.Unmarshal([]byte(`{"schema_version":3,"binary":"cmd/agent"}`), &rec); err != nil {
+		t.Fatalf("unmarshal legacy config record: %v", err)
+	}
+	if rec.Binary != "cmd/agent" || rec.BinaryIdentity != "" || rec.InvocationSurface != "" {
+		t.Fatalf("legacy binary was not preserved without invented identities: %+v", rec)
 	}
 }

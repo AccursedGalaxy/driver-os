@@ -408,9 +408,17 @@ func (p ReviewPolicy) Optional() bool { return p.optional() }
 // recall, nil Obs -> silent).
 type Config struct {
 
-	// BinaryLabel identifies the invoking binary (for example, "cmd/agent") for
-	// transcript config records. It is recording-only and never affects behavior.
+	// BinaryLabel is the legacy v1-v3 conflated binary label retained for
+	// transcript compatibility. New callers should set BinaryIdentity instead.
 	BinaryLabel string
+
+	// BinaryIdentity identifies the built artifact for transcript config records.
+	// It is recording-only and never affects behavior.
+	BinaryIdentity string
+
+	// InvocationSurface identifies how the artifact was invoked (for example,
+	// driver-run). It is recording-only and never affects behavior.
+	InvocationSurface string
 
 	// TrustProfile identifies the selected trust profile for transcript config
 	// records. It is recording-only and never affects behavior.

@@ -14,15 +14,30 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// v3 = execution-profile identity + CLI-override provenance.
-const configRecordSchemaVersion = 3
+// ConfigRecord schema v4 adds separate binary and invocation-surface identities.
+const configRecordSchemaVersion = 4
+
+// Binary and invocation-surface identifiers are stable transcript values.
+const (
+	BinaryIdentityDriver = "driver"
+
+	InvocationSurfaceDriverRun   = "driver-run"
+	InvocationSurfaceDriverAgent = "driver-agent"
+	InvocationSurfaceDriverTUI   = "driver-tui"
+)
 
 // ConfigRecord is the reproducibility record embedded in transcripts. It records
 // today's effective config plus stable hashes and the selected profile identities
-// and override provenance.
+// and override provenance. Binary is the legacy, conflated binary label from
+// schema v1-v3 records; it remains decodable for old transcripts. New records
+// use BinaryIdentity and InvocationSurface for the two distinct facts.
 type ConfigRecord struct {
-	SchemaVersion      int             `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+	// Binary is the legacy v1-v3 conflated invoking-binary label. It is retained
+	// solely so old transcript JSON continues to decode.
 	Binary             string          `json:"binary,omitempty"`
+	BinaryIdentity     string          `json:"binary_identity,omitempty"`
+	InvocationSurface  string          `json:"invocation_surface,omitempty"`
 	HarnessCommit      string          `json:"harness_commit,omitempty"`
 	HarnessDirty       bool            `json:"harness_dirty,omitempty"`
 	PromptSHA256       string          `json:"prompt_sha256"`
@@ -92,9 +107,16 @@ type EffectiveConfig struct {
 
 func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *ConfigRecord {
 	eff := effectiveConfig(cfg)
+	binaryIdentity := cfg.BinaryIdentity
+	if binaryIdentity == "" {
+		// Preserve records produced by callers still using the v1-v3 Config field.
+		binaryIdentity = cfg.BinaryLabel
+	}
 	rec := &ConfigRecord{
 		SchemaVersion:      configRecordSchemaVersion,
-		Binary:             cfg.BinaryLabel,
+		Binary:             binaryIdentity,
+		BinaryIdentity:     binaryIdentity,
+		InvocationSurface:  cfg.InvocationSurface,
 		PromptSHA256:       sha256Hex([]byte(systemPrompt)),
 		ToolSchemaSHA256:   jsonSHA256(schemas),
 		ConfigSHA256:       jsonSHA256(eff),
@@ -126,6 +148,8 @@ func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *Confi
 }
 
 func effectiveConfig(cfg Config) EffectiveConfig {
+	// InvocationSurface is deliberately excluded: it describes CLI routing, not
+	// agent behavior, so equivalent driver-run and driver-agent runs hash alike.
 	knobs := resolveKnobs(cfg)
 	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
 	reviewRounds := cfg.ReviewRounds
