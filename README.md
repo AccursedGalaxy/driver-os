@@ -248,6 +248,10 @@ platform:
   long-lived process host and stateful shell sessions.
 - **Eval harness** (`eval/`): multiple suites including a dogfood corpus
   regression scored against real human verdicts (see `docs/findings/DOGFOOD.md`).
+- **Command approval benchmark** (`cmd/command-bench`): screens OpenRouter
+  models on labelled `ok` versus `review` shell commands, with fail-closed parsing,
+  budget enforcement, confidence bounds, and per-task cost reporting (see
+  `docs/specs/COMMAND-APPROVAL-BENCH.md`).
 - **Council** (`docs/specs/COUNCIL.md`): adversarial multi-model review (author ↔
   critic ↔ referee) plus a structured consult/Q&A mode; every run recorded as
   dogfood corpus.
