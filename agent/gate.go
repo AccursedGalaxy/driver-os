@@ -113,25 +113,15 @@ type gates struct {
 // VerifyCmd baseline (pre-flight) when configured, and captures the run-start
 // git tree for the upgradeIfVerified empty-diff guard.
 func effectiveReviewRequired(cfg Config) bool {
-	if cfg.ReviewFailOpen {
+	if cfg.ReviewPolicy.failOpen() {
 		return false
 	}
-	return cfg.ReviewRequired || cfg.Reviewer != nil
-}
-
-func validateReviewRequirementConfig(cfg Config) error {
-	if cfg.ReviewFailOpen && cfg.ReviewRequired {
-		return setupErr("invalid_review_config", "ReviewFailOpen and ReviewRequired cannot both be true")
-	}
-	return nil
+	return cfg.ReviewPolicy.required() || cfg.Reviewer != nil
 }
 
 func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates, error) {
 	if cfg.Obs == nil {
 		cfg.Obs = nopObserver{}
-	}
-	if err := validateReviewRequirementConfig(cfg); err != nil {
-		return nil, err
 	}
 	review, err := newReviewState(ctx, cfg)
 	if err != nil {

@@ -269,7 +269,7 @@ func newReviewState(ctx context.Context, cfg Config) (*reviewState, error) {
 		}
 	}
 	if rv.skip != "" {
-		if !cfg.ReviewOptional {
+		if !cfg.ReviewPolicy.optional() {
 			return nil, setupErr("review_unavailable", rv.skip+" (review gate was armed; pass -review-optional to skip and continue)")
 		}
 		rv.status = ReviewUnavailable

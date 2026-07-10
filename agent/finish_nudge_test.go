@@ -162,7 +162,7 @@ func TestRunGreenRepeatNudgeFiresAfterThreeIdenticalGreens(t *testing.T) {
 		"read_file a", // breaks the repeat detector, not a mutation
 		green,         // green 2
 		"read_file b",
-		green,         // green 3 -> nudge fires here
+		green, // green 3 -> nudge fires here
 		"answer done",
 	}}
 	res, err := Run(context.Background(), Config{
@@ -343,9 +343,9 @@ func TestRunNativeGreenRepeatNudgeStaysOutWithFileMutation(t *testing.T) {
 	turns := [][]llm.ContentPart{
 		{structuredCall("c1", "run", map[string]any{"command": "echo hi"})},
 		{structuredCall("r1", "read_file", map[string]any{"path": "a"})},
-		{structuredCall("c2", "run", map[string]any{"command": "echo hi"})}, // count=2
+		{structuredCall("c2", "run", map[string]any{"command": "echo hi"})},                  // count=2
 		{structuredCall("w", "write_file", map[string]any{"path": "f.txt", "content": "x"})}, // mutation resets
-		{structuredCall("c3", "run", map[string]any{"command": "echo hi"})}, // count=1
+		{structuredCall("c3", "run", map[string]any{"command": "echo hi"})},                  // count=1
 		{structuredCall("r2", "read_file", map[string]any{"path": "b"})},
 		{structuredCall("c4", "run", map[string]any{"command": "echo hi"})}, // count=2 — not enough
 		{llm.Text("done")},

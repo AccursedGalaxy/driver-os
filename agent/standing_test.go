@@ -202,10 +202,12 @@ func (m *standingCaptureModel) Generate(_ context.Context, req llm.Request) (*ll
 }
 
 func TestStandingContextDoesNotEnterPersistentMessages(t *testing.T) {
+	sb := sbWith(t, nil)
 	run := func(enabled bool) []llm.Request {
 		m := &standingCaptureModel{}
 		_, err := RunNative(context.Background(), Config{
 			Model:           m,
+			Sandbox:         sb,
 			Task:            "do it",
 			StandingContext: enabled,
 			Tools: map[string]Tool{"noop": {

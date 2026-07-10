@@ -612,7 +612,7 @@ func TestConformance_PrecedenceVerifyFailSkipsReviewer(t *testing.T) {
 			cfg := conformanceBaseConfig(t)
 			cfg.VerifyCmd = "false"
 			cfg.Reviewer = rv
-			cfg.ReviewOptional = true
+			cfg.ReviewPolicy = ReviewPolicyOptional
 			res, _, err := loop.run(context.Background(), cfg)
 			if err != nil {
 				t.Fatal(err)

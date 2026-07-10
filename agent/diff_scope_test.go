@@ -19,8 +19,8 @@ import (
 
 func TestDiffScopeToolRefusal(t *testing.T) {
 	sb := sbWith(t, map[string]string{
-		"inside/x.go":   "package inside",
-		"outside/x.go":  "package outside",
+		"inside/x.go":  "package inside",
+		"outside/x.go": "package outside",
 	})
 	tools := applyDiffScope(DefaultTools(sb, defaultRunTimeout), []string{"inside/**"}, sb)
 	ctx := context.Background()

@@ -329,6 +329,74 @@ func (r *RunResult) AwaitMemory() {
 	}
 }
 
+// ReviewPolicy selects how an armed review gate handles infrastructure failures
+// and unavailable workspace baselines. The zero value preserves the historical
+// library default: a configured Reviewer is required and its baseline must be
+// available.
+type ReviewPolicy int
+
+const (
+	// ReviewPolicyDefault requires an armed reviewer to succeed and requires its
+	// workspace baseline. With no Reviewer, the review gate is disabled.
+	ReviewPolicyDefault ReviewPolicy = iota
+	// ReviewPolicyRequired explicitly requires review infrastructure to succeed.
+	ReviewPolicyRequired
+	// ReviewPolicyFailOpen records review infrastructure failures without
+	// downgrading an otherwise verified run.
+	ReviewPolicyFailOpen
+	// ReviewPolicyOptional permits an unavailable review baseline, while review
+	// infrastructure failures still block when the reviewer can be armed.
+	ReviewPolicyOptional
+	// ReviewPolicyRequiredOptional explicitly requires review infrastructure but
+	// permits an unavailable review baseline.
+	ReviewPolicyRequiredOptional
+	// ReviewPolicyFailOpenOptional permits both an unavailable baseline and
+	// fail-open handling of review infrastructure failures.
+	ReviewPolicyFailOpenOptional
+)
+
+// ReviewPolicyFrom converts the legacy flag representation into a policy.
+// Required and failOpen are contradictory; all other combinations are the
+// configurations historically constructed by this repository.
+func ReviewPolicyFrom(required, failOpen, optional bool) (ReviewPolicy, error) {
+	if required && failOpen {
+		return ReviewPolicyDefault, fmt.Errorf("review required and fail-open cannot both be enabled")
+	}
+	switch {
+	case required && optional:
+		return ReviewPolicyRequiredOptional, nil
+	case failOpen && optional:
+		return ReviewPolicyFailOpenOptional, nil
+	case required:
+		return ReviewPolicyRequired, nil
+	case failOpen:
+		return ReviewPolicyFailOpen, nil
+	case optional:
+		return ReviewPolicyOptional, nil
+	default:
+		return ReviewPolicyDefault, nil
+	}
+}
+
+func (p ReviewPolicy) valid() bool {
+	return p >= ReviewPolicyDefault && p <= ReviewPolicyFailOpenOptional
+}
+func (p ReviewPolicy) required() bool {
+	return p == ReviewPolicyRequired || p == ReviewPolicyRequiredOptional
+}
+func (p ReviewPolicy) failOpen() bool {
+	return p == ReviewPolicyFailOpen || p == ReviewPolicyFailOpenOptional
+}
+func (p ReviewPolicy) optional() bool {
+	return p == ReviewPolicyOptional || p == ReviewPolicyRequiredOptional || p == ReviewPolicyFailOpenOptional
+}
+
+// FailOpen reports whether review infrastructure failures are advisory.
+func (p ReviewPolicy) FailOpen() bool { return p.failOpen() }
+
+// Optional reports whether an unavailable review baseline may be skipped.
+func (p ReviewPolicy) Optional() bool { return p.optional() }
+
 // Config is everything Run needs. Model, Sandbox, and Task are required; the
 // rest default sensibly (nil Tools -> DefaultTools, nil Memory -> no cross-run
 // recall, nil Obs -> silent).
@@ -654,27 +722,10 @@ type Config struct {
 	// imports agent, so the reviewer must be injected to avoid the cycle.
 	Reviewer Reviewer
 
-	// ReviewRequired forces review infrastructure failures to block even when
-	// Reviewer is nil. It is mainly an explicit assertion for callers and config
-	// files: with Reviewer set, review is required by default. When required,
-	// reviewer unavailability, timeouts, unparseable output, or skipped review
-	// baselines turn a would-be Answered finish into Unverified instead of
-	// silently passing as reviewed. Semantic reviewer outcomes
-	// (clean/advisory/blockers) keep their normal behavior; caller cancellation
-	// still cancels the run. It may not be combined with ReviewFailOpen.
-	ReviewRequired bool
-
-	// ReviewFailOpen explicitly opts out of the library default that an armed
-	// Reviewer is required. Set this for interactive/advisory use where reviewer
-	// infrastructure failures should be recorded but not downgrade an otherwise
-	// verified run. It may not be combined with ReviewRequired.
-	ReviewFailOpen bool
-
-	// ReviewOptional restores fail-open review-gate arming for interactive or
-	// non-repository use. By default, configuring Reviewer but failing to capture
-	// the review baseline is a setup error, because a silently skipped armed gate
-	// corrupts headless measurements.
-	ReviewOptional bool
+	// ReviewPolicy controls whether review failures block and whether an
+	// unavailable baseline may be skipped. Its zero value preserves the default
+	// behavior of requiring any configured Reviewer.
+	ReviewPolicy ReviewPolicy
 
 	// RequireDiff makes an empty final workspace diff a failed completion rather
 	// than an answer. It requires a git baseline at startup and is opt-in because
@@ -796,6 +847,31 @@ type Config struct {
 	// policy still run.
 	// Default false.
 	FinishToolTrustsCaller bool
+}
+
+// Validate checks contradictory or unsafe pure configuration before setup does
+// any environmental work. Workspace and sandbox capability checks remain in the
+// stages that can inspect those resources.
+func (c Config) Validate() error {
+	if c.Model == nil {
+		return setupErr("invalid_config", "Model must not be nil")
+	}
+	if c.Sandbox == nil {
+		return setupErr("invalid_config", "Sandbox must not be nil")
+	}
+	if !c.ReviewPolicy.valid() {
+		return setupErr("invalid_review_config", "ReviewPolicy is not a recognized value")
+	}
+	if c.ReviewPolicy.required() && c.Reviewer == nil {
+		return setupErr("invalid_review_config", "required review policy needs a Reviewer")
+	}
+	if c.MaxIterations < 0 || c.MaxTokens < 0 || c.RunTimeout < 0 || c.VerifyTimeout < 0 ||
+		c.MaxWallClock < 0 || c.MaxTotalTokens < 0 || c.MaxTotalCostUSD < 0 ||
+		c.ReviewRounds < 0 || c.FinishNudgeWindow < 0 || c.NavSpiralWindow < 0 ||
+		c.AnswerNudgeWindow < 0 || c.ChurnNudgeRuns < 0 || c.ReadWindow < 0 {
+		return setupErr("invalid_config", "budgets, caps, timeouts, rounds, and windows must not be negative")
+	}
+	return nil
 }
 
 // checkIsolation enforces Config.MinIsolation (P2/§5) and is the FIRST thing both

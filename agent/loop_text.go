@@ -22,6 +22,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// addressable by ID). Registered BEFORE the isolation refusal so even a refused
 	// run gets an ID — otherwise the default CLI transcript write fails on an empty ID.
 	runID, startedAt := newRunID(), time.Now()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.ReproFirst {
 		return nil, setupErr("repro_first", "repro-first requires the native tool protocol")
 	}

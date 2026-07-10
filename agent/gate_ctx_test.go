@@ -172,12 +172,12 @@ func TestGateContextReviewerFailOpenIntegration(t *testing.T) {
 	errReviewer := &fakeReviewer{err: errors.New("review infrastructure fault")}
 
 	g, err := NewGate(context.Background(), Config{
-		Obs:            nopObserver{},
-		Task:           "fix it",
-		Root:           root,
-		Sandbox:        sb,
-		Reviewer:       errReviewer,
-		ReviewFailOpen: true,
+		Obs:          nopObserver{},
+		Task:         "fix it",
+		Root:         root,
+		Sandbox:      sb,
+		Reviewer:     errReviewer,
+		ReviewPolicy: ReviewPolicyFailOpen,
 	})
 	if err != nil {
 		t.Fatalf("NewGate: %v", err)

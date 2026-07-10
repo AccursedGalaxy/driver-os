@@ -188,7 +188,7 @@ func TestSessionCancelledTurnDoesNotAdvanceHistory(t *testing.T) {
 // after the text part.
 func TestSessionSendPartsFlowsImagesToFirstUserMessage(t *testing.T) {
 	sp := &scripted{replies: []string{"answer saw it"}}
-	s := NewSession(Config{Model: sp}, Run)
+	s := NewSession(Config{Model: sp, Sandbox: sbWith(t, nil)}, Run)
 	img := llm.ImagePart{MIME: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}
 
 	res, err := s.SendParts(context.Background(), "describe this image", []llm.ImagePart{img})
@@ -210,7 +210,7 @@ func TestSessionSendPartsFlowsImagesToFirstUserMessage(t *testing.T) {
 		t.Fatalf("first user parts = %#v, want text + image", first.Parts)
 	}
 	text, ok := first.Parts[0].(llm.TextPart)
-	if !ok || text.Text != "TASK: describe this image" {
+	if !ok || !strings.HasPrefix(text.Text, "TASK: describe this image") {
 		t.Fatalf("part 0 = %#v, want TASK text", first.Parts[0])
 	}
 	gotImg, ok := first.Parts[1].(llm.ImagePart)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"iter"
+	"strings"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
@@ -82,17 +83,9 @@ func TestRefusesTooWeakSandbox(t *testing.T) {
 // TestNilSandboxFailsClosed proves the gate fails CLOSED: a nil Sandbox under a
 // non-zero MinIsolation is a refusal, not a panic on Capabilities().
 func TestNilSandboxFailsClosed(t *testing.T) {
-	res, err := Run(context.Background(), Config{
-		Model:        failIfCalled{t},
-		Sandbox:      nil,
-		Task:         "x",
-		MinIsolation: sandbox.IsolationKernel,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.Outcome != RefusedUnsafe {
-		t.Errorf("nil sandbox + MinIsolation should refuse, got %q", res.Outcome)
+	_, err := Run(context.Background(), Config{Model: failIfCalled{t}, Task: "x", MinIsolation: sandbox.IsolationKernel})
+	if err == nil || !strings.Contains(err.Error(), "Sandbox") {
+		t.Fatalf("nil sandbox should be rejected as invalid setup, got %v", err)
 	}
 }
 

@@ -83,12 +83,12 @@ func TestReviewAndRepairParseErrorReviewRequiredYieldsUnverified(t *testing.T) {
 	rv := &errReviewer{parseErr: true}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
 	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
-		Task:           "fix calc",
-		Root:           root,
-		Sandbox:        sb,
-		Reviewer:       rv,
-		ReviewRounds:   1,
-		ReviewRequired: true,
+		Task:         "fix calc",
+		Root:         root,
+		Sandbox:      sb,
+		Reviewer:     rv,
+		ReviewRounds: 1,
+		ReviewPolicy: ReviewPolicyRequired,
 	}, base, ReviewPassOptions{BaseTree: baseTree}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -138,18 +138,17 @@ func TestReviewAndRepairParseErrorDefaultRequiredYieldsUnverified(t *testing.T) 
 
 func TestReviewFailOpenAndReviewRequiredIsSetupError(t *testing.T) {
 	root, _, sb := initReviewPassGit(t)
-	_, err := NewGate(context.Background(), Config{
-		Root:           root,
-		Sandbox:        sb,
-		Task:           "fix calc",
-		Reviewer:       &errReviewer{},
-		ReviewRequired: true,
-		ReviewFailOpen: true,
-	})
+	err := (Config{Model: &nativeScript{},
+		Root:         root,
+		Sandbox:      sb,
+		Task:         "fix calc",
+		Reviewer:     &errReviewer{},
+		ReviewPolicy: ReviewPolicy(99),
+	}).Validate()
 	if err == nil {
-		t.Fatal("NewGate succeeded, want setup error")
+		t.Fatal("Validate succeeded, want setup error")
 	}
-	if !strings.Contains(err.Error(), "ReviewFailOpen") || !strings.Contains(err.Error(), "ReviewRequired") {
+	if !strings.Contains(err.Error(), "ReviewPolicy") {
 		t.Fatalf("error = %v, want conflict message", err)
 	}
 }
@@ -165,12 +164,12 @@ func TestReviewAndRepairParseErrorFailOpenStaysAnswered(t *testing.T) {
 	rv := &errReviewer{parseErr: true}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
 	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
-		Task:           "fix calc",
-		Root:           root,
-		Sandbox:        sb,
-		Reviewer:       rv,
-		ReviewRounds:   1,
-		ReviewFailOpen: true,
+		Task:         "fix calc",
+		Root:         root,
+		Sandbox:      sb,
+		Reviewer:     rv,
+		ReviewRounds: 1,
+		ReviewPolicy: ReviewPolicyFailOpen,
 	}, base, ReviewPassOptions{BaseTree: baseTree}, nil)
 	if err != nil {
 		t.Fatal(err)

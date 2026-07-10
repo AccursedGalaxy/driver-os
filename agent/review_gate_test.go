@@ -449,7 +449,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo.
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewOptional: true, ReviewFailOpen: true})
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewPolicy: ReviewPolicyFailOpenOptional})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 // stays Answered, loudly noted and recorded.
 func TestReviewerErrorFailsOpen(t *testing.T) {
 	rv := &fakeReviewer{err: errors.New("provider melted")}
-	res := reviewedRun(t, rv, Config{ReviewFailOpen: true}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewPolicy: ReviewPolicyFailOpen}, editThenAnswer())
 	if res.Outcome != Answered {
 		t.Fatalf("outcome = %s, want answered (fail open)", res.Outcome)
 	}
@@ -479,7 +479,7 @@ func TestReviewerErrorFailsOpen(t *testing.T) {
 
 func TestReviewRequiredUnavailableDowngradesToUnverified(t *testing.T) {
 	rv := &fakeReviewer{err: errors.New("reviewer down")}
-	res := reviewedRun(t, rv, Config{ReviewRequired: true}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewPolicy: ReviewPolicyRequired}, editThenAnswer())
 	if res.Outcome != Unverified {
 		t.Fatalf("outcome = %s, want unverified", res.Outcome)
 	}
@@ -496,7 +496,7 @@ func TestReviewRequiredUnavailableDowngradesToUnverified(t *testing.T) {
 
 func TestReviewRequiredParseErrorDowngradesToUnverified(t *testing.T) {
 	rv := &fakeReviewer{err: fmt.Errorf("%w: bad json", ErrReviewParse)}
-	res := reviewedRun(t, rv, Config{ReviewRequired: true}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewPolicy: ReviewPolicyRequired}, editThenAnswer())
 	if res.Outcome != Unverified {
 		t.Fatalf("outcome = %s, want unverified", res.Outcome)
 	}
@@ -516,7 +516,7 @@ func TestReviewRequiredSkipNoRootYieldsUnverified(t *testing.T) {
 	ns := &nativeScript{turns: editThenAnswer()}
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: "", Task: "fix calc",
-		Reviewer: rv, ReviewRequired: true, ReviewOptional: true,
+		Reviewer: rv, ReviewPolicy: ReviewPolicyRequiredOptional,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestReviewRequiredSkipNonGitYieldsUnverified(t *testing.T) {
 	root := t.TempDir() // NOT a git repo.
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
-		Reviewer: rv, ReviewRequired: true, ReviewOptional: true,
+		Reviewer: rv, ReviewPolicy: ReviewPolicyRequiredOptional,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -574,7 +574,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 	root := t.TempDir() // NOT a git repo → skip.
 	res, err := RunNative(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "t",
-		Reviewer: rv, ReviewFailOpen: true, ReviewOptional: true,
+		Reviewer: rv, ReviewPolicy: ReviewPolicyFailOpenOptional,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -596,7 +596,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 
 func TestReviewErrorTimeoutClassification(t *testing.T) {
 	rv := &fakeReviewer{err: context.DeadlineExceeded}
-	res := reviewedRun(t, rv, Config{ReviewFailOpen: true}, editThenAnswer())
+	res := reviewedRun(t, rv, Config{ReviewPolicy: ReviewPolicyFailOpen}, editThenAnswer())
 	if res.Outcome != Answered {
 		t.Fatalf("outcome = %s, want fail-open answered", res.Outcome)
 	}
@@ -1286,8 +1286,7 @@ func TestReviewArmedNonRepoFailsSetupUnlessOptional(t *testing.T) {
 		t.Fatalf("err = %T %[1]v, want review_unavailable SetupError", err)
 	}
 
-	cfg.ReviewOptional = true
-	cfg.ReviewFailOpen = true
+	cfg.ReviewPolicy = ReviewPolicyFailOpenOptional
 	res, err = RunNative(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("optional RunNative err: %v", err)

@@ -126,6 +126,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// refusal so a refused run is addressable too (its transcript write won't fail
 	// on an empty ID).
 	runID, startedAt := newRunID(), time.Now()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	// (N1) Last prose the model produced this run, captured even on iterations that
 	// ALSO called tools (native termination only records prose on a no-tool turn).
 	// The defer salvages it as the answer when the run ends WITHOUT a clean answer —
