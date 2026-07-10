@@ -98,15 +98,19 @@ func TestRunEmptyAnswerIsUnverified(t *testing.T) {
 }
 
 func TestRunKilledSpiral(t *testing.T) {
-	// noProgressWindow (4) list_dir calls in a row with DIFFERENT args — exact
-	// repeat never fires, the spiral detector does. This guards the fix-3 gating.
+	// Policy change (frontier-aware spiral detector): distinct-but-NOVEL list_dir
+	// args are orientation now, not a spiral. A true spiral REVISITS already-seen
+	// targets — list_dir alternating a/b/a/b/… — so the cycle counter trips at the
+	// window. Exact-repeat never fires (each turn differs); the spiral detector does.
 	res, _ := runScript(t, nil,
-		[]string{"list_dir a", "list_dir b", "list_dir c", "list_dir d"})
+		[]string{"list_dir a", "list_dir b", "list_dir a", "list_dir b", "list_dir a", "list_dir b"})
 	if res.Outcome != KilledSpiral {
 		t.Fatalf("Outcome = %q, want %q (Reason: %s)", res.Outcome, KilledSpiral, res.Reason)
 	}
-	if res.Iterations != noProgressWindow {
-		t.Errorf("Iterations = %d, want %d", res.Iterations, noProgressWindow)
+	// Kills at the cycle window: two novel listings (a,b) then noProgressWindow
+	// revisiting turns.
+	if res.Iterations != 2+noProgressWindow {
+		t.Errorf("Iterations = %d, want %d", res.Iterations, 2+noProgressWindow)
 	}
 }
 

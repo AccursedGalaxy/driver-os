@@ -751,18 +751,29 @@ func TestConformance_KilledRepeatIgnoresReasoningWhenObservationStagnates(t *tes
 }
 
 func TestConformance_KilledSpiral(t *testing.T) {
-	// noProgressWindow=4 discovery calls with DIFFERENT args.
-	text := []string{"list_dir a", "list_dir b", "list_dir c", "list_dir d"}
+	// Policy change (frontier-aware spiral detector): discovery turns with
+	// DIFFERENT-but-NOVEL args are now orientation, not a spiral, so they no
+	// longer die at the window. A true spiral is REVISITING already-seen targets
+	// — here list_dir alternates a/b/a/b/…, so after the first two novel listings
+	// every turn revisits and the cycle counter trips at the window. Alternating
+	// a→b→a→b also keeps each turn distinct, so the tight-loop detector stays out.
+	text := []string{"list_dir a", "list_dir b", "list_dir a", "list_dir b", "list_dir a", "list_dir b"}
 	native := [][]llm.ContentPart{
 		{structuredCall("c1", "list_dir", map[string]any{"path": "a"})},
 		{structuredCall("c2", "list_dir", map[string]any{"path": "b"})},
-		{structuredCall("c3", "list_dir", map[string]any{"path": "c"})},
-		{structuredCall("c4", "list_dir", map[string]any{"path": "d"})},
+		{structuredCall("c3", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c4", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("c5", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c6", "list_dir", map[string]any{"path": "b"})},
 	}
 
 	for _, loop := range conformanceLoops(text, native) {
 		t.Run(loop.name, func(t *testing.T) {
 			cfg := conformanceBaseConfig(t)
+			// The frontier-aware cycle needs two novel listings before four
+			// revisiting turns trip the window (kills on turn 6), so give the loop
+			// headroom past the default conformance cap.
+			cfg.MaxIterations = 10
 			res, _, err := loop.run(context.Background(), cfg)
 			if err != nil {
 				t.Fatal(err)

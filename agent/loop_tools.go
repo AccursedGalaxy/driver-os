@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -251,7 +252,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	var lastReadObs string      // (Change A) observation from the last executed read-only call.
 	var lastExecutedSig string  // (Change A) signature of the immediately-preceding EXECUTED call.
 	dd := newObsDedup()
-	repeats, navRun := 0, 0
+	repeats := 0
+	// (P5) Frontier/state-aware explore-spiral detector (deliverable 1): replaces
+	// the old fixed consecutive-discovery-turn count. spiralWindow is the cycle
+	// window (Config.NavSpiralWindow, default noProgressWindow); see spiralState.
+	spiral := newSpiralState(spiralWindow)
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
 	// (review #9) The stagnant/churn/diagnostics/finisher state shared with Run
@@ -559,9 +564,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
 			if repeats++; repeats >= repeatThreshold(reasoningAdvanced) {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)...)
-				res.Outcome = KilledRepeat
+				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
+				// (deliverable 5) explicit killing-turn Observation, uniform with the
+				// spiral kill below — an empty turn reads as a broken checkout in traces.
+				if len(steps) > 0 {
+					steps[0].Observation = "harness: run killed by tight-loop detector: " + res.Reason
+				}
+				res.Steps = append(res.Steps, steps...)
+				res.Outcome = KilledRepeat
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
@@ -571,24 +582,32 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		lastReasoningSig = reasoningSig
 
 		if allCallsDiscovery(calls) { // (b)
-			// Two thresholds, mirroring the repeat detector (a). Measured false-kill
-			// (SWE-bench stride-30, 2026-06-12): glm-5 opens every task with a grounded
-			// descend-the-tree orientation burst (list_dir . → pkg → pkg/sub → targeted
-			// search) and was executed at exactly iter 4 on instances other models
-			// solved 2/2 — 12 of its 19 spiral kills. A turn whose reasoning trace
-			// MOVED gets the lenient ceiling (the model is visibly working through the
-			// listings it just received); a frozen or absent trace keeps the strict one,
-			// so the original ungrounded list_dir pathology (a non-reasoning model
-			// ignoring its observations) still dies at the window. Either way the spiral
-			// stays bounded well before the iteration cap.
-			if navRun++; navRun >= spiralLimit(spiralWindow, reasoningAdvanced) {
-				res.Steps = append(res.Steps, turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)...)
+			// Frontier/state-aware policy (deliverable 1): a discovery turn that
+			// reveals a NEW list_dir path or search query is orientation and never
+			// counts toward the kill — this is what lets a textbook top-down
+			// orientation of a large repo (list_dir . → pkg → pkg/sub → targeted
+			// search, all novel) run to its first useful read instead of dying at a
+			// fixed window (the opa-8781 P1 false-kill). A turn revisiting only
+			// already-seen targets is a cycle and counts toward the window; endless
+			// novel wandering still dies at the hard bound. Bounds are deterministic
+			// — no model-family or reasoning variance (spiralState).
+			if kill, reason := spiral.observeDiscoveryTurn(discoveryTargets(calls, cfg.Tools)); kill {
+				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
+				// (deliverable 5) Record an explicit Observation on the killing turn so
+				// the trace doesn't read as a broken checkout / empty turn.
+				if len(steps) > 0 {
+					steps[0].Observation = "harness: run killed by explore-spiral detector: " + reason
+				}
+				res.Steps = append(res.Steps, steps...)
 				res.Outcome = KilledSpiral
-				res.Reason = fmt.Sprintf("no progress: %d discovery-only turns in a row (list_dir/search) — read or edit a specific target, or answer", navRun)
+				res.Reason = reason
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
-			navRun = 0
+			// Any non-discovery turn (the first read_file, a run/diagnostics call, or
+			// a workspace mutation) is a phase transition: clear the frontier and both
+			// counters so the model earns a fresh orientation budget (deliverable 1a/1e).
+			spiral.reset()
 		}
 
 		// (P1) Committed to dispatch — NOW the assistant turn (carrying its tool-call
@@ -1025,6 +1044,78 @@ func allCallsDiscovery(calls []llm.ToolCallPart) bool {
 		}
 	}
 	return len(calls) > 0
+}
+
+// discoveryTargets returns the NORMALIZED frontier target of each discovery call
+// in a turn. The frontier-aware spiral detector (spiralState) tells orientation
+// (a NEW target) from a cycle (all targets already visited), so the key must be
+// the SEMANTIC target — the directory being listed or the query being run — not
+// the raw argument spelling. Equivalent list_dir paths ("a", "./a", "a/", "a/.")
+// name one directory and must share one key, else a true navigation cycle over
+// re-spelled paths dodges the cycle window. Callers pass only discovery turns.
+func discoveryTargets(calls []llm.ToolCallPart, tools map[string]Tool) []string {
+	targets := make([]string, len(calls))
+	for i, c := range calls {
+		targets[i] = discoveryTargetForCall(c, tools)
+	}
+	return targets
+}
+
+// discoveryTargetForCall builds the normalized frontier key for one native
+// discovery call, reading the typed path/pattern fields (falling back to the
+// bridge "arg" for tool-less providers) so path-spelling variants collapse.
+func discoveryTargetForCall(c llm.ToolCallPart, tools map[string]Tool) string {
+	var a struct {
+		Path    string `json:"path"`
+		Pattern string `json:"pattern"`
+		Arg     string `json:"arg"`
+	}
+	_ = json.Unmarshal(c.Args, &a)
+	switch c.Name {
+	case "list_dir":
+		p := a.Path
+		if p == "" {
+			p = a.Arg // bridge/tool-less form carries the path as the single "arg".
+		}
+		return "list_dir " + normalizeDirPath(p)
+	case "search":
+		pat := a.Pattern
+		if pat == "" {
+			pat = a.Arg
+		}
+		key := "search " + strings.TrimSpace(pat)
+		// A structured search may scope to a subtree; fold the normalized scope in
+		// so "search x @ a" and "search x @ ./a" collapse but a whole-repo "search x"
+		// stays distinct from a scoped one.
+		if a.Pattern != "" && strings.TrimSpace(a.Path) != "" {
+			key += " @ " + normalizeDirPath(a.Path)
+		}
+		return key
+	default:
+		return c.Name + " " + signatureArg(c, tools)
+	}
+}
+
+// textDiscoveryTarget builds the normalized frontier key for one text-protocol
+// discovery call, whose argument is a single string: the list_dir path or the
+// search query. It mirrors discoveryTargetForCall so both loops key on the same
+// semantic target (deliverable 3 — the two loops must not drift).
+func textDiscoveryTarget(verb, arg string) string {
+	if verb == "list_dir" {
+		return "list_dir " + normalizeDirPath(arg)
+	}
+	return verb + " " + strings.TrimSpace(arg)
+}
+
+// normalizeDirPath collapses equivalent spellings of a directory path to one
+// canonical form (path.Clean), so "a", "./a", "a/", and "a/." all key as "a".
+// An empty or whitespace-only path is the repository root (".").
+func normalizeDirPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "."
+	}
+	return path.Clean(p)
 }
 
 // turnSteps builds the trace steps for a turn killed by a detector BEFORE

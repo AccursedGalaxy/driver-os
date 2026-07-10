@@ -695,14 +695,19 @@ func TestRunNativeParallelListDirIsNotSpiral(t *testing.T) {
 }
 
 func TestRunNativeListDirSpiralAcrossTurns(t *testing.T) {
-	// The spiral detector still fires on the real thing: noProgressWindow
-	// list_dir-ONLY turns in a row (each a different path), never escalating.
-	files := map[string]string{"a/x": "1", "b/x": "1", "c/x": "1", "d/x": "1"}
+	// The spiral detector still fires on the real thing — but the real thing is
+	// now a CYCLE, not merely N distinct listings (frontier-aware policy). A
+	// distinct-but-novel a→b→c→d sweep is orientation; REVISITING already-seen
+	// targets (list_dir alternating a/b/a/b/…) is the spiral, and it dies at the
+	// cycle window.
+	files := map[string]string{"a/x": "1", "b/x": "1"}
 	turns := [][]llm.ContentPart{
 		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},
 		{structuredCall("2", "list_dir", map[string]any{"path": "b"})},
-		{structuredCall("3", "list_dir", map[string]any{"path": "c"})},
-		{structuredCall("4", "list_dir", map[string]any{"path": "d"})},
+		{structuredCall("3", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("4", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("5", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("6", "list_dir", map[string]any{"path": "b"})},
 	}
 	ns := &nativeScript{turns: turns}
 	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
@@ -715,17 +720,19 @@ func TestRunNativeListDirSpiralAcrossTurns(t *testing.T) {
 }
 
 func TestRunNativeNavSpiralWindowRelaxes(t *testing.T) {
-	// NavSpiralWindow raises the spiral threshold for an OBSERVE-only caller (the
-	// council code critic): the same four list_dir-only turns that trip the default
-	// detector (above) survive when the window is 8, then the run answers. The
-	// opt-in relaxation must not weaken the default for everyone else — the test
-	// above proves the default still fires.
-	files := map[string]string{"a/x": "1", "b/x": "1", "c/x": "1", "d/x": "1"}
+	// NavSpiralWindow raises the CYCLE window for an OBSERVE-only caller (the
+	// council code critic): the a/b/a/b/… revisiting cycle that trips the default
+	// window-4 detector (above, killing at 6 turns) survives when the window is 8,
+	// then the run answers. The opt-in relaxation must not weaken the default for
+	// everyone else — the test above proves the default still fires.
+	files := map[string]string{"a/x": "1", "b/x": "1"}
 	turns := [][]llm.ContentPart{
 		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},
 		{structuredCall("2", "list_dir", map[string]any{"path": "b"})},
-		{structuredCall("3", "list_dir", map[string]any{"path": "c"})},
-		{structuredCall("4", "list_dir", map[string]any{"path": "d"})},
+		{structuredCall("3", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("4", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("5", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("6", "list_dir", map[string]any{"path": "b"})},
 		{llm.Text("[]")},
 	}
 	ns := &nativeScript{turns: turns}
@@ -821,16 +828,19 @@ func TestRunNativeMixedTurnResetsSpiral(t *testing.T) {
 
 func TestRunNativeSearchSpiralAcrossTurns(t *testing.T) {
 	// HP-2 generalization: the spiral detector keys on the discovery CLASS, not on
-	// list_dir alone, so search-churn — searching for a NEW pattern every turn,
-	// never reading a result — is the same wandering and must end as KilledSpiral.
-	// The detector runs on the model's CALLS before dispatch, so it fires regardless
-	// of whether ripgrep finds anything in the test sandbox.
+	// list_dir alone, so search-churn is caught the same way as list_dir. Under the
+	// frontier-aware policy the churn that dies is REVISITING seen queries —
+	// search alpha/beta/alpha/beta/… — never reading a result. The detector runs on
+	// the model's CALLS before dispatch, so it fires regardless of whether ripgrep
+	// finds anything in the test sandbox.
 	files := map[string]string{"a.go": "package a\n"}
 	turns := [][]llm.ContentPart{
 		{structuredCall("1", "search", map[string]any{"pattern": "alpha"})},
 		{structuredCall("2", "search", map[string]any{"pattern": "beta"})},
-		{structuredCall("3", "search", map[string]any{"pattern": "gamma"})},
-		{structuredCall("4", "search", map[string]any{"pattern": "delta"})},
+		{structuredCall("3", "search", map[string]any{"pattern": "alpha"})},
+		{structuredCall("4", "search", map[string]any{"pattern": "beta"})},
+		{structuredCall("5", "search", map[string]any{"pattern": "alpha"})},
+		{structuredCall("6", "search", map[string]any{"pattern": "beta"})},
 	}
 	ns := &nativeScript{turns: turns}
 	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
@@ -845,13 +855,17 @@ func TestRunNativeSearchSpiralAcrossTurns(t *testing.T) {
 func TestRunNativeMixedDiscoverySpiral(t *testing.T) {
 	// Alternating list_dir and search — no single verb repeats, so the old
 	// list_dir-only check never fired — is still pure discovery: pointers gathered,
-	// none followed. Keying on the discovery class catches it.
+	// none followed. Under the frontier-aware policy the killing case is REVISITING
+	// the same two targets (list_dir a / search alpha) in a cycle; keying on the
+	// discovery class across both tools catches it at the window.
 	files := map[string]string{"a/x": "1", "b/x": "1"}
 	turns := [][]llm.ContentPart{
 		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},
 		{structuredCall("2", "search", map[string]any{"pattern": "alpha"})},
-		{structuredCall("3", "list_dir", map[string]any{"path": "b"})},
-		{structuredCall("4", "search", map[string]any{"pattern": "beta"})},
+		{structuredCall("3", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("4", "search", map[string]any{"pattern": "alpha"})},
+		{structuredCall("5", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("6", "search", map[string]any{"pattern": "alpha"})},
 	}
 	ns := &nativeScript{turns: turns}
 	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
@@ -1368,10 +1382,12 @@ func TestRunNativeRecordsReasoningAdvanced(t *testing.T) {
 func TestRunNativeDiscoveryOrientationBurstWithReasoningSurvives(t *testing.T) {
 	// The measured glm-5 false-kill (SWE-bench stride-30, 2026-06-12): the model
 	// opens with a grounded descend-the-tree orientation burst — list_dir . →
-	// pkg → pkg/sub → a targeted search — reasoning visibly advancing every turn,
-	// and was executed at exactly the strict window on instances other models
-	// solved 2/2. Five discovery turns with a MOVING trace must survive the
-	// strict window (4), reach the read, and answer.
+	// pkg → pkg/sub → a targeted search — and was executed at exactly the strict
+	// window on instances other models solved 2/2. Under the frontier-aware policy
+	// every turn here reveals a NEW target, so it is orientation, not a spiral:
+	// five discovery turns must survive the window, reach the read, and answer.
+	// (Reasoning traces are present but the survival no longer depends on them —
+	// the bounds are deterministic.)
 	files := map[string]string{"pkg/sub/f.txt": "x\n"}
 	turns := [][]llm.ContentPart{
 		{llm.ReasoningPart{Raw: json.RawMessage(`[{"data":"r1"}]`)}, structuredCall("1", "list_dir", map[string]any{"path": "."})},
@@ -1392,27 +1408,31 @@ func TestRunNativeDiscoveryOrientationBurstWithReasoningSurvives(t *testing.T) {
 	}
 }
 
-func TestRunNativeDiscoverySpiralWithReasoningStillBounded(t *testing.T) {
-	// The leniency is a doubled window, not immunity: a reasoning model that does
-	// NOTHING but discovery — trace moving, pointers gathered, none ever followed —
-	// must still die at 2× the window (8), well before the iteration cap.
-	turns := make([][]llm.ContentPart, 0, 9)
-	for i := 0; i < 9; i++ {
+func TestRunNativeDiscoveryHardWanderingBound(t *testing.T) {
+	// Deliverable 1c/6f: novel-target discovery is orientation and never trips the
+	// CYCLE counter, but it is not immunity — a model that does NOTHING but gather
+	// fresh pointers (a distinct search every turn, never following one) must still
+	// die at the hard wandering bound (spiralWanderMultiple × window = 16 at the
+	// default), well before the iteration cap. Deterministic: reasoning movement
+	// does not change the bound (no model-family/reasoning variance).
+	const hardBound = spiralWanderMultiple * noProgressWindow
+	turns := make([][]llm.ContentPart, 0, hardBound+1)
+	for i := 0; i < hardBound+1; i++ {
 		turns = append(turns, []llm.ContentPart{
 			llm.ReasoningPart{Raw: json.RawMessage(fmt.Sprintf(`[{"data":"r%d"}]`, i))},
 			structuredCall(fmt.Sprintf("c%d", i), "search", map[string]any{"pattern": fmt.Sprintf("p%d", i)}),
 		})
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 20})
+	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 40})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Outcome != KilledSpiral {
-		t.Errorf("Outcome = %q (%s), want KilledSpiral at the doubled window — reasoning leniency must stay bounded", res.Outcome, res.Reason)
+		t.Errorf("Outcome = %q (%s), want KilledSpiral at the hard wandering bound", res.Outcome, res.Reason)
 	}
-	if n := len(res.Steps); n != 8 {
-		t.Errorf("killed after %d steps, want 8 (2× the strict window)", n)
+	if n := len(res.Steps); n != hardBound {
+		t.Errorf("killed after %d steps, want %d (the hard wandering bound)", n, hardBound)
 	}
 }
 
@@ -1499,12 +1519,15 @@ func TestRunNativeKilledRepeatWellFormedMessages(t *testing.T) {
 }
 
 func TestRunNativeKilledSpiralWellFormedMessages(t *testing.T) {
-	// A discovery-spiral kill must likewise leave a well-formed transcript.
+	// A discovery-spiral kill must likewise leave a well-formed transcript. A true
+	// spiral is a revisiting cycle (a/b/a/b/…) under the frontier-aware policy.
 	turns := [][]llm.ContentPart{
 		{structuredCall("c1", "list_dir", map[string]any{"path": "a"})},
 		{structuredCall("c2", "list_dir", map[string]any{"path": "b"})},
-		{structuredCall("c3", "list_dir", map[string]any{"path": "c"})},
-		{structuredCall("c4", "list_dir", map[string]any{"path": "d"})},
+		{structuredCall("c3", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c4", "list_dir", map[string]any{"path": "b"})},
+		{structuredCall("c5", "list_dir", map[string]any{"path": "a"})},
+		{structuredCall("c6", "list_dir", map[string]any{"path": "b"})},
 	}
 	res, _, _ := runNative(t, nil, turns)
 	if res.Outcome != KilledSpiral {

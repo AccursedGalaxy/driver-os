@@ -14,6 +14,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -263,13 +264,103 @@ func repeatThreshold(reasoningAdvanced bool) int {
 	return maxRepeats
 }
 
-// spiralLimit is the reasoning-aware discovery-spiral window shared by both
-// loops: a discovery turn whose reasoning trace moved gets 2× the window (a
-// model visibly working through fresh listings is orienting, not spinning —
-// the measured glm-5 false-kill); a frozen or absent trace keeps the strict one.
-func spiralLimit(window int, reasoningAdvanced bool) int {
-	if reasoningAdvanced {
-		return 2 * window
+// spiralFrontierCap bounds the visited-target set the explore-spiral detector
+// keeps per run (deliverable 1b): a rolling FIFO window of normalized discovery
+// targets. It only has to be large enough that a genuine top-down orientation of
+// a big repo never wraps mid-sweep; 64 distinct list_dir paths + search queries
+// is far more than any real orientation burst and keeps the set cheap.
+const spiralFrontierCap = 64
+
+// spiralWanderMultiple is the hard-wandering bound expressed as a multiple of the
+// cycle window (deliverable 1c): even discovery turns that keep revealing NEW
+// frontier targets — never revisiting, so the cycle counter never trips — must
+// eventually die if the model never follows a pointer. At the default window of
+// 4 this caps endless novel wandering at 16 discovery-only turns. Deterministic:
+// same for every model, reasoning behavior, and benchmark case (deliverable 4).
+const spiralWanderMultiple = 4
+
+// spiralState is the frontier/state-aware explore-spiral detector shared by both
+// loops (native per-turn, text per-call) so they cannot drift (deliverable 3).
+// It replaces the old "N consecutive discovery-only turns = no progress" rule
+// (which false-killed textbook top-down orientation of a large repo — the
+// opa-8781 P1) with a deterministic state machine:
+//
+//   - A discovery turn that reveals ANY new frontier target (a list_dir path or
+//     search query not seen before) is orientation, not spinning: it resets the
+//     cycle counter (deliverable 1a/1b).
+//   - A discovery turn whose targets were ALL visited before is a cycle: it
+//     counts toward the cycle kill at the window (deliverable 1b).
+//   - A hard wandering bound (spiralWanderMultiple × window) caps even endless
+//     novel-target discovery so the run always terminates (deliverable 1c).
+//
+// Any non-discovery turn (a read_file, run/diagnostics, or workspace mutation)
+// is a phase transition that resets the whole state via reset() — the first
+// useful read starts a fresh orientation budget (deliverable 1a/1e). Both bounds
+// are deterministic and identical for every model and case; the reasoning-aware
+// 2× leniency stays with the tight-loop repeat detector (repeatThreshold), which
+// is the only place it still applies (deliverable 2/4).
+type spiralState struct {
+	window   int             // cycle window (Config.NavSpiralWindow, default noProgressWindow).
+	visited  map[string]bool // bounded frontier of discovery targets seen this run.
+	order    []string        // insertion order, for FIFO eviction at spiralFrontierCap.
+	cycleRun int             // consecutive all-visited (revisiting) discovery turns.
+	wander   int             // consecutive discovery-only turns (novel or not).
+}
+
+func newSpiralState(window int) *spiralState {
+	if window <= 0 {
+		window = noProgressWindow
 	}
-	return window
+	return &spiralState{window: window, visited: make(map[string]bool)}
+}
+
+// observeDiscoveryTurn ingests the normalized target set of a discovery-ONLY turn
+// (list_dir paths + search queries; a parallel fan-out is one turn, several
+// targets) and reports whether the run should end as KilledSpiral, with the
+// reason. A turn that adds any new frontier entry resets the cycle counter; a
+// turn revisiting only seen targets advances it. The wander counter advances on
+// every discovery turn regardless.
+func (s *spiralState) observeDiscoveryTurn(targets []string) (kill bool, reason string) {
+	novel := false
+	for _, tgt := range targets {
+		if !s.visited[tgt] {
+			novel = true
+			s.add(tgt)
+		}
+	}
+	s.wander++
+	if novel {
+		s.cycleRun = 0
+	} else {
+		s.cycleRun++
+	}
+	if s.cycleRun >= s.window {
+		return true, fmt.Sprintf("no progress: %d discovery turns revisiting only already-seen targets (list_dir/search) — read or edit a specific target, or answer", s.cycleRun)
+	}
+	if s.wander >= spiralWanderMultiple*s.window {
+		return true, fmt.Sprintf("no progress: %d discovery-only turns without reading, editing, or running anything — follow a pointer to a concrete target, or answer", s.wander)
+	}
+	return false, ""
+}
+
+// add records a new frontier target, evicting the oldest at the cap so the set
+// stays bounded (deliverable 1b).
+func (s *spiralState) add(tgt string) {
+	s.visited[tgt] = true
+	s.order = append(s.order, tgt)
+	if len(s.order) > spiralFrontierCap {
+		delete(s.visited, s.order[0])
+		s.order = s.order[1:]
+	}
+}
+
+// reset clears the discovery state on any progress / phase-transition turn (a
+// read_file, run/diagnostics, or workspace mutation): the first useful read of a
+// long orientation burst restarts the frontier and both counters, so the model
+// gets a fresh orientation budget after it commits to a concrete target
+// (deliverable 1a/1e).
+func (s *spiralState) reset() {
+	s.cycleRun, s.wander = 0, 0
+	s.visited = make(map[string]bool)
+	s.order = nil
 }

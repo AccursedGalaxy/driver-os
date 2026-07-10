@@ -180,7 +180,7 @@ const (
 	Unverified      Outcome = "unverified"        // the model finished, but the closing verification (VerifyCmd / last-run check) failed — a non-pass (P5/HP-5).
 	HitCap          Outcome = "hit_cap"           // ran out of iterations (P5 hard cap).
 	KilledRepeat    Outcome = "killed_repeat"     // exact same action maxRepeats times.
-	KilledSpiral    Outcome = "killed_spiral"     // noProgressWindow discovery-only turns (list_dir/search) in a row.
+	KilledSpiral    Outcome = "killed_spiral"     // frontier-aware explore-spiral: a discovery-only cycle (revisiting seen list_dir/search targets) or endless novel wandering (spiralState).
 	KilledStagnant  Outcome = "killed_stagnant"   // the same failing `run` result maxStagnant times despite changing actions.
 	HitDeadline     Outcome = "hit_deadline"      // exceeded the wall-clock budget (P5) — a spiral that dodged the action/observation detectors.
 	HitBudget       Outcome = "hit_budget"        // exceeded the token budget (P5/HP-8, MaxTotalTokens) — cost is a first-class cap, not a side effect of the iteration count.
@@ -849,11 +849,15 @@ type Config struct {
 	// clearly not converging. 0 = off (DiagnoseCmd is also required to arm).
 	DiagnoseAfterEdits int
 
-	// NavSpiralWindow overrides the explore-spiral detector's threshold — the number
-	// of consecutive discovery-only turns (list_dir/search, even with different args)
-	// that ends the run as KilledSpiral. 0 = the default noProgressWindow. A turn
-	// whose reasoning trace advanced gets 2× this window (the measured glm-5
-	// orientation-burst false-kill — see the detector comment). It exists
+	// NavSpiralWindow overrides the explore-spiral detector's CYCLE window — the
+	// number of discovery-only turns REVISITING only already-seen targets
+	// (list_dir paths / search queries) that ends the run as KilledSpiral. 0 = the
+	// default noProgressWindow. The detector is frontier/state-aware (spiralState):
+	// a discovery turn that reveals any NEW target is orientation and never counts
+	// toward this window, so novel top-down orientation of a large repo is never
+	// false-killed; a hard wandering bound (spiralWanderMultiple × this window)
+	// caps endless novel discovery. The bounds are deterministic — no model-family
+	// or reasoning variance. It exists
 	// for the OBSERVE-only agent whose whole job is to survey a tree: a read-only
 	// critic legitimately does a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep
 	// (or a burst of `search`es) before reading, which is several discovery turns in a

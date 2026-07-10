@@ -118,7 +118,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	var lastExecutedSig string // signature of the immediately previous executed tool call.
 	dd := newObsDedup()
 	repeats := 0
-	sameVerb := 0
+	// (P5) Frontier/state-aware explore-spiral detector (deliverable 1), shared
+	// with the native loop via spiralState so the two protocols cannot drift.
+	spiral := newSpiralState(spiralWindow)
 	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
 	// ReasoningPart.Raw). A thinking model whose trace keeps changing while its
 	// visible action repeats gets the lenient tight-loop threshold (maxReasoningRepeats);
@@ -297,17 +299,23 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// are real progress, and a read after a search is reconnaissance that resets
 		// the count. (Native loop mirrors this with allCallsDiscovery.)
 		if discoveryTools[verb] {
-			// Reasoning-aware window, mirroring the repeat detector and the native
-			// loop — see spiralLimit.
-			sameVerb++
-			if sameVerb >= spiralLimit(spiralWindow, reasoningAdvanced) {
-				res.Steps = append(res.Steps, step)
+			// Frontier/state-aware policy (deliverable 1), identical to the native
+			// loop via spiralState: a discovery call on a NEW list_dir path or search
+			// query is orientation and never counts toward the kill; a call revisiting
+			// only seen targets is a cycle and counts at the window; endless novel
+			// wandering dies at the hard bound. Deterministic — no reasoning variance.
+			if kill, reason := spiral.observeDiscoveryTurn([]string{textDiscoveryTarget(verb, arg)}); kill {
 				res.Outcome = KilledSpiral
-				res.Reason = fmt.Sprintf("no progress: %d discovery turns in a row (list_dir/search) — read or edit a specific target, or answer", sameVerb)
+				res.Reason = reason
+				// (deliverable 5) explicit killing-turn Observation — no empty turn.
+				step.Observation = "harness: run killed by explore-spiral detector: " + reason
+				res.Steps = append(res.Steps, step)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
-			sameVerb = 0
+			// Non-discovery call (read_file, run, edit …) is a phase transition:
+			// reset the frontier + counters (deliverable 1a/1e).
+			spiral.reset()
 		}
 
 		// ACT: run the named tool. The model only chose it; we execute it (P2).
