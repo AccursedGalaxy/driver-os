@@ -270,6 +270,108 @@ func TestPinning(t *testing.T) {
 		}
 	})
 
+	t.Run("PreferredUpstreamSteering", func(t *testing.T) {
+		// openai/* on OpenRouter: every request carries standing
+		// order-steering toward the cache-serving OpenAI upstream with
+		// fallbacks allowed, and a response served by another upstream
+		// (Azure) must NOT pin — the next request steers back to OpenAI.
+		t.Setenv("OPENROUTER_PIN_PROVIDER", "")
+		var lastBody map[string]any
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			lastBody = nil
+			_ = json.Unmarshal(body, &lastBody)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{
+				"id":"x","model":"m",
+				"choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],
+				"provider":"Azure"
+			}`)
+		}
+		srv := httptest.NewServer(http.HandlerFunc(handler))
+		defer srv.Close()
+
+		p := New(Config{Name: "openrouter", BaseURL: srv.URL, APIKey: "key", Model: "openai/gpt-5.6-sol"})
+
+		check := func(reqNo int) {
+			prov, ok := lastBody["provider"].(map[string]any)
+			if !ok {
+				t.Fatalf("request %d missing provider steering field: %v", reqNo, lastBody)
+			}
+			order := prov["order"].([]any)
+			if len(order) != 1 || order[0] != "openai" {
+				t.Errorf("request %d provider.order = %v, want [openai]", reqNo, order)
+			}
+			if prov["allow_fallbacks"] != true {
+				t.Errorf("request %d allow_fallbacks = %v, want true", reqNo, prov["allow_fallbacks"])
+			}
+		}
+
+		if _, err := p.Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi")}}); err != nil {
+			t.Fatal(err)
+		}
+		check(1)
+		// The Azure-served response above must not have pinned.
+		if p.pinnedProvider != "" {
+			t.Errorf("pinnedProvider = %q, want empty (steered models never response-pin)", p.pinnedProvider)
+		}
+		if _, err := p.Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi again")}}); err != nil {
+			t.Fatal(err)
+		}
+		check(2)
+	})
+
+	t.Run("EnvPinOverridesPreferred", func(t *testing.T) {
+		// OPENROUTER_PIN_PROVIDER stays authoritative over the steering
+		// default: pinned from turn 1, allow_fallbacks false.
+		t.Setenv("OPENROUTER_PIN_PROVIDER", "azure")
+		var lastBody map[string]any
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			lastBody = nil
+			_ = json.Unmarshal(body, &lastBody)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`)
+		}
+		srv := httptest.NewServer(http.HandlerFunc(handler))
+		defer srv.Close()
+
+		p := New(Config{Name: "openrouter", BaseURL: srv.URL, APIKey: "key", Model: "openai/gpt-5.6-sol"})
+		if _, err := p.Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.User("hi")}}); err != nil {
+			t.Fatal(err)
+		}
+		prov, ok := lastBody["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing provider field with env pin set")
+		}
+		order := prov["order"].([]any)
+		if len(order) != 1 || order[0] != "azure" {
+			t.Errorf("provider.order = %v, want [azure] (env pin wins)", order)
+		}
+		if prov["allow_fallbacks"] != false {
+			t.Errorf("allow_fallbacks = %v, want false (env pin is a pin)", prov["allow_fallbacks"])
+		}
+	})
+
+	t.Run("preferredUpstreams", func(t *testing.T) {
+		tests := []struct {
+			model string
+			want  int // len of preferred list
+		}{
+			{"openai/gpt-5.6-sol", 1},
+			{"openai/gpt-5.5", 1},
+			{"deepseek/deepseek-v4-flash", 0},
+			{"google/gemini-3-flash", 0},
+			{"anthropic/claude-opus-4.8", 0},
+			{"", 0},
+		}
+		for _, tt := range tests {
+			if got := preferredUpstreams(tt.model); len(got) != tt.want {
+				t.Errorf("preferredUpstreams(%q) = %v, want len %d", tt.model, got, tt.want)
+			}
+		}
+	})
+
 	t.Run("NonOpenRouterNeverPins", func(t *testing.T) {
 		t.Setenv("OPENROUTER_PIN_PROVIDER", "google-vertex") // even if set, should be ignored
 		var lastBody map[string]any

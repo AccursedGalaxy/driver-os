@@ -75,9 +75,21 @@ type Provider struct {
 	// Set by the first response/streamed chunk that carries a provider
 	// field, then injected into every subsequent request via OpenRouter's
 	// `provider` routing field: `{"order":["<slug>"],"allow_fallbacks":false}`.
+	//
+	// Exception: models with a KNOWN cache-serving upstream (preferredUpstreams)
+	// use standing `order` steering with allow_fallbacks:true instead of
+	// response-based pinning. Pin-to-turn-1-server is upstream-agnostic, and for
+	// openai/* slugs OpenRouter routes across upstreams with unequal cache
+	// behavior (measured 2026-07-10, gpt-5.6-sol identical repeats: OpenAI
+	// upstream served 1213/1216 cached tokens at ~10x cost reduction; Azure
+	// served ZERO cache reads at full price) — a turn-1 Azure route would pin
+	// the cache-less upstream for the provider's lifetime. Steering prefers the
+	// caching upstream on every request and self-heals after a transient
+	// fallback; the pin would lock the fallback in.
 	mu             sync.Mutex
-	pinnedProvider string // empty = not yet pinned
-	isOpenRouter   bool   // gate: only engage for the OpenRouter constructor
+	pinnedProvider string   // empty = not yet pinned
+	isOpenRouter   bool     // gate: only engage for the OpenRouter constructor
+	preferred      []string // standing provider.order steering; disables response pinning
 }
 
 // WithPromptCache returns the provider with Anthropic prompt-caching breakpoints
@@ -137,6 +149,11 @@ func New(cfg Config) *Provider {
 		}
 	}
 
+	var preferred []string
+	if isOR {
+		preferred = preferredUpstreams(cfg.Model)
+	}
+
 	return &Provider{
 		name:           cfg.Name,
 		model:          cfg.Model,
@@ -145,7 +162,22 @@ func New(cfg Config) *Provider {
 		cache:          cfg.PromptCache,
 		isOpenRouter:   isOR,
 		pinnedProvider: pinned,
+		preferred:      preferred,
 	}
+}
+
+// preferredUpstreams returns the OpenRouter `provider.order` steering for
+// model families where upstreams differ in prompt-cache behavior, so routing
+// must not be left to the turn-1 coin flip that response pinning locks in.
+// Measured 2026-07-10 (identical-repeat probes, openai/gpt-5.6-sol): the
+// OpenAI upstream serves cache reads (~10x input-cost reduction on the
+// re-sent prefix); the Azure upstream serves none at full price. Empty for
+// everything else — those keep the sticky response pin.
+func preferredUpstreams(model string) []string {
+	if strings.HasPrefix(model, "openai/") {
+		return []string{"openai"}
+	}
+	return nil
 }
 
 // Preset constructors read the conventional env var for their key and default
@@ -371,6 +403,18 @@ func (p *Provider) buildParams(req llm.Request) (openai.ChatCompletionNewParams,
 			"provider": map[string]any{
 				"order":           []string{pinned},
 				"allow_fallbacks": false,
+			},
+		})
+	} else if len(p.preferred) > 0 {
+		// Standing steering toward the cache-serving upstream (see the
+		// preferred field doc). Fallbacks stay allowed: if the preferred
+		// upstream is down, one request degrades instead of failing, and the
+		// next request steers back — unlike a pin, which would lock the
+		// fallback in for the provider's lifetime.
+		params.SetExtraFields(map[string]any{
+			"provider": map[string]any{
+				"order":           p.preferred,
+				"allow_fallbacks": true,
 			},
 		})
 	}
@@ -877,6 +921,14 @@ func hasEncryptedReasoning(raw json.RawMessage) bool {
 // provider field is missing/empty.
 func (p *Provider) maybePin(providerField json.RawMessage) {
 	if !p.isOpenRouter {
+		return
+	}
+	// Models with preferred-upstream steering never response-pin: pinning to
+	// whoever served turn 1 is exactly what locked runs onto the cache-less
+	// Azure upstream for openai/* slugs (see the preferred field doc). The
+	// OPENROUTER_PIN_PROVIDER env override still wins — it pre-sets
+	// pinnedProvider at construction, and buildParams prefers the pin.
+	if len(p.preferred) > 0 {
 		return
 	}
 
