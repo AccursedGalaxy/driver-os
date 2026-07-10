@@ -183,9 +183,9 @@ mark it noncanonical in the transcript.
 3. S4 time-bound: confirm "reproducibility-grade campaigns refuse without
    versioned routing policy" as the gate, or set a date.
 4. ~~Resolver package name~~ — RESOLVED: `internal/profile` (shipped S2a).
-5. NEW (deferred to S3): TUI default = reviewed-local collides with the
-   reviewed-local worktree-REQUIRED floor — the TUI's design is in-place
-   interactive editing. S3 must either amend the reviewed-local worktree
-   floor (argument: interactive per-command approval substitutes for
-   workspace isolation as the review mechanism) or give the TUI a distinct
-   named posture. Decide there, on the record.
+5. ~~TUI default vs worktree floor~~ — RESOLVED at S3 (ffa60cb): the
+   reviewed-local worktree FLOOR amended required→auto; interactive
+   per-command approval substitutes for workspace isolation as the review
+   mechanism; headless reviewed-local keeps forcing a worktree as a
+   tightening. TUI defaults reviewed-local (approve interactive, clean
+   env); `-trust trusted-local` restores the previous TUI behavior.
