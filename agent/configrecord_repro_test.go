@@ -93,8 +93,8 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
 	run := newConfigRecord(cfg, "system prompt", nil)
-	if run.SchemaVersion != 5 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
-		t.Fatalf("v5 identity record = %+v", run)
+	if run.SchemaVersion != 6 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v6 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
 	compat := newConfigRecord(cfg, "system prompt", nil)

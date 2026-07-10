@@ -4,17 +4,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// ConfigRecord schema v5 adds requested/effective protocol provenance.
-const configRecordSchemaVersion = 5
+// ConfigRecord schema v6 adds stable runtime-presence and implementation identities
+// needed to make the complete Config classification auditable.
+const configRecordSchemaVersion = 6
 
 // Binary and invocation-surface identifiers are stable transcript values.
 const (
@@ -39,51 +42,63 @@ type ConfigRecord struct {
 	InvocationSurface string `json:"invocation_surface,omitempty"`
 	// RequestedProtocol and ProtocolFallbackReason describe CLI routing provenance.
 	// They intentionally remain outside Effective so they do not affect ConfigSHA256.
-	RequestedProtocol      string          `json:"requested_protocol,omitempty"`
-	ProtocolFallbackReason string          `json:"protocol_fallback_reason,omitempty"`
-	HarnessCommit          string          `json:"harness_commit,omitempty"`
-	HarnessDirty           bool            `json:"harness_dirty,omitempty"`
-	PromptSHA256           string          `json:"prompt_sha256"`
-	ToolSchemaSHA256       string          `json:"tool_schema_sha256"`
-	ConfigSHA256           string          `json:"config_sha256"`
-	Effective              EffectiveConfig `json:"effective"`
-	TrustProfile           *string         `json:"trust_profile"`
-	ExecProfile            *string         `json:"exec_profile"`
-	ExecProfileHash        string          `json:"exec_profile_hash,omitempty"`
-	CLIOverrides           []string        `json:"cli_overrides,omitempty"`
-	ApprovalPolicyName     string          `json:"approval_policy_name,omitempty"`
-	ApprovalPolicyHash     string          `json:"approval_policy_hash,omitempty"`
+	RequestedProtocol      string `json:"requested_protocol,omitempty"`
+	ProtocolFallbackReason string `json:"protocol_fallback_reason,omitempty"`
+	HarnessCommit          string `json:"harness_commit,omitempty"`
+	HarnessDirty           bool   `json:"harness_dirty,omitempty"`
+	PromptSHA256           string `json:"prompt_sha256"`
+	ToolSchemaSHA256       string `json:"tool_schema_sha256"`
+	// ConfigSHA256 proves that the recorded effective behavior inputs were the
+	// same. It does not prove semantic task equivalence, environment identity,
+	// unrecorded runtime state, or provider-side behavior.
+	ConfigSHA256 string `json:"config_sha256"`
+
+	Effective          EffectiveConfig `json:"effective"`
+	TrustProfile       *string         `json:"trust_profile"`
+	ExecProfile        *string         `json:"exec_profile"`
+	ExecProfileHash    string          `json:"exec_profile_hash,omitempty"`
+	CLIOverrides       []string        `json:"cli_overrides,omitempty"`
+	ApprovalPolicyName string          `json:"approval_policy_name,omitempty"`
+	ApprovalPolicyHash string          `json:"approval_policy_hash,omitempty"`
 }
 
 // EffectiveConfig is the serializable projection of Config fields that affect
 // agent behavior. Runtime objects and task content are deliberately excluded.
 type EffectiveConfig struct {
 	// EffectiveProtocol changes the model wire protocol and is therefore hashed.
-	EffectiveProtocol  string            `json:"effective_protocol"`
-	DisableMemoryStore bool              `json:"disable_memory_store"`
-	Persona            string            `json:"persona,omitempty"`
-	MemoryScope        mneme.Scope       `json:"memory_scope"`
-	BootContext        bool              `json:"boot_context"`
-	StandingContext    bool              `json:"standing_context"`
-	Stream             bool              `json:"stream"`
-	MinIsolation       sandbox.Isolation `json:"min_isolation"`
-	MaxIterations      int               `json:"max_iterations"`
-	MaxTokens          int               `json:"max_tokens"`
-	RunTimeout         time.Duration     `json:"run_timeout"`
-	VerifyTimeout      time.Duration     `json:"verify_timeout"`
-	ReasoningEffort    string            `json:"reasoning_effort,omitempty"`
-	PromptProfile      string            `json:"prompt_profile,omitempty"`
-	CodeAct            bool              `json:"code_act"`
-	ReproFirst         bool              `json:"repro_first"`
-	ReproGate          bool              `json:"repro_gate"`
-	BatchReads         bool              `json:"batch_reads"`
-	ReadWindow         int               `json:"read_window"`
-	ReadOutline        bool              `json:"read_outline"`
-	MaxWallClock       time.Duration     `json:"max_wall_clock"`
-	MaxTotalTokens     int               `json:"max_total_tokens"`
-	MaxTotalCostUSD    float64           `json:"max_total_cost_usd"`
-	AllowUnpricedSpend bool              `json:"allow_unpriced_spend"`
-	SolverModel        string            `json:"solver_model,omitempty"`
+	EffectiveProtocol       string            `json:"effective_protocol"`
+	DisableMemoryStore      bool              `json:"disable_memory_store"`
+	Persona                 string            `json:"persona,omitempty"`
+	MemoryScope             mneme.Scope       `json:"memory_scope"`
+	BootContext             bool              `json:"boot_context"`
+	StandingContext         bool              `json:"standing_context"`
+	Stream                  bool              `json:"stream"`
+	MinIsolation            sandbox.Isolation `json:"min_isolation"`
+	MaxIterations           int               `json:"max_iterations"`
+	MaxTokens               int               `json:"max_tokens"`
+	RunTimeout              time.Duration     `json:"run_timeout"`
+	VerifyTimeout           time.Duration     `json:"verify_timeout"`
+	ReasoningEffort         string            `json:"reasoning_effort,omitempty"`
+	PromptProfile           string            `json:"prompt_profile,omitempty"`
+	CodeAct                 bool              `json:"code_act"`
+	ReproFirst              bool              `json:"repro_first"`
+	ReproGate               bool              `json:"repro_gate"`
+	BatchReads              bool              `json:"batch_reads"`
+	ReadWindow              int               `json:"read_window"`
+	ReadOutline             bool              `json:"read_outline"`
+	MaxWallClock            time.Duration     `json:"max_wall_clock"`
+	MaxTotalTokens          int               `json:"max_total_tokens"`
+	MaxTotalCostUSD         float64           `json:"max_total_cost_usd"`
+	AllowUnpricedSpend      bool              `json:"allow_unpriced_spend"`
+	SolverModel             string            `json:"solver_model,omitempty"`
+	ModelConfigured         bool              `json:"model_configured"`
+	MemoryConfigured        bool              `json:"memory_configured"`
+	VerifySandboxConfigured bool              `json:"verify_sandbox_configured"`
+	CostFnConfigured        bool              `json:"cost_fn_configured"`
+	SpendConfigured         bool              `json:"spend_configured"`
+	ModelInfo               llm.ModelInfo     `json:"model_info"`
+	ReviewerIdentity        string            `json:"reviewer_identity,omitempty"`
+	PlannerIdentity         string            `json:"planner_identity,omitempty"`
 
 	VerifyCmd              string   `json:"verify_cmd,omitempty"`
 	AutoVerify             bool     `json:"auto_verify"`
@@ -106,6 +121,7 @@ type EffectiveConfig struct {
 	DiagnoseAfterEdits     int      `json:"diagnose_after_edits"`
 	NavSpiralWindow        int      `json:"nav_spiral_window"`
 	AnswerNudgeWindow      int      `json:"answer_nudge_window"`
+	FinishTool             string   `json:"finish_tool,omitempty"`
 	FinishToolConfigured   bool     `json:"finish_tool_configured"`
 	FinishToolTrustsCaller bool     `json:"finish_tool_trusts_caller"`
 }
@@ -180,15 +196,94 @@ func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
 		ReasoningEffort: cfg.ReasoningEffort, PromptProfile: cfg.PromptProfile, CodeAct: cfg.CodeAct, ReproFirst: cfg.ReproFirst,
 		ReproGate: cfg.ReproGate, BatchReads: cfg.BatchReads, ReadWindow: cfg.ReadWindow, ReadOutline: cfg.ReadOutline,
 		MaxWallClock: cfg.MaxWallClock, MaxTotalTokens: cfg.MaxTotalTokens, MaxTotalCostUSD: cfg.MaxTotalCostUSD,
-		AllowUnpricedSpend: cfg.AllowUnpricedSpend, SolverModel: cfg.SolverModel, VerifyCmd: cfg.VerifyCmd, AutoVerify: cfg.AutoVerify,
+		AllowUnpricedSpend: cfg.AllowUnpricedSpend, SolverModel: cfg.SolverModel,
+		ModelConfigured: cfg.Model != nil, MemoryConfigured: cfg.Memory != nil, VerifySandboxConfigured: cfg.VerifySandbox != nil,
+		CostFnConfigured: cfg.CostFn != nil, SpendConfigured: cfg.Spend != nil, ModelInfo: cfg.ModelInfo,
+		ReviewerIdentity: runtimeImplementationIdentity(cfg.Reviewer), PlannerIdentity: runtimeImplementationIdentity(cfg.Planner),
+		VerifyCmd: cfg.VerifyCmd, AutoVerify: cfg.AutoVerify,
 		AutoVerifySoft: cfg.AutoVerifySoft, SkipVerifyBaseline: cfg.SkipVerifyBaseline, AbortOnRedBaseline: cfg.AbortOnRedBaseline,
 		VerifyLastRun: cfg.VerifyLastRun, ChurnNudgeRuns: cfg.ChurnNudgeRuns, VerifyContinue: cfg.VerifyContinue,
 		TestFence: cfg.TestFence, DiffScope: cfg.DiffScope, RequireDiff: cfg.RequireDiff, ReviewConfigured: cfg.Reviewer != nil,
 		ReviewPolicy: int(cfg.ReviewPolicy), ReviewUnverified: cfg.ReviewUnverified, ReviewRounds: reviewRounds,
 		PlannerConfigured: cfg.Planner != nil, FinishNudgeWindow: cfg.FinishNudgeWindow, DiagnoseCmd: cfg.DiagnoseCmd,
 		DiagnoseAfterEdits: cfg.DiagnoseAfterEdits, NavSpiralWindow: spiralWindow, AnswerNudgeWindow: cfg.AnswerNudgeWindow,
-		FinishToolConfigured: strings.TrimSpace(cfg.FinishTool) != "", FinishToolTrustsCaller: cfg.FinishToolTrustsCaller,
+		FinishTool: cfg.FinishTool, FinishToolConfigured: strings.TrimSpace(cfg.FinishTool) != "", FinishToolTrustsCaller: cfg.FinishToolTrustsCaller,
 	}
+}
+
+// configFieldClass is an external completeness anchor for Config. Keep this table
+// separate from EffectiveConfig: adding an exported Config field must make an
+// explicit recording/redaction decision rather than silently changing the hash.
+type configFieldClass struct {
+	class          string
+	representation string // EffectiveConfig or ConfigRecord field for recorded entries.
+}
+
+const (
+	recordedDirect  = "recorded-direct"
+	recordedDerived = "recorded-derived"
+	excludedRuntime = "excluded-runtime"
+	excludedSecret  = "excluded-secret"
+	excludedContent = "excluded-content"
+)
+
+var configFieldClasses = map[string]configFieldClass{
+	"BinaryLabel": {recordedDerived, "ConfigRecord.Binary"}, "BinaryIdentity": {recordedDerived, "ConfigRecord.BinaryIdentity"}, "InvocationSurface": {recordedDerived, "ConfigRecord.InvocationSurface"},
+	"RequestedProtocol": {recordedDerived, "ConfigRecord.RequestedProtocol"}, "ProtocolFallbackReason": {recordedDerived, "ConfigRecord.ProtocolFallbackReason"},
+	"TrustProfile": {recordedDerived, "ConfigRecord.TrustProfile"}, "ExecProfileName": {recordedDerived, "ConfigRecord.ExecProfile"}, "ExecProfileHash": {recordedDerived, "ConfigRecord.ExecProfileHash"}, "CLIOverrides": {recordedDerived, "ConfigRecord.CLIOverrides"}, "ApprovalPolicyName": {recordedDerived, "ConfigRecord.ApprovalPolicyName"}, "ApprovalPolicyHash": {recordedDerived, "ConfigRecord.ApprovalPolicyHash"},
+	"Model": {recordedDerived, "EffectiveConfig.ModelConfigured"}, "Sandbox": {excludedRuntime, ""}, "Memory": {recordedDerived, "EffectiveConfig.MemoryConfigured"}, "DisableMemoryStore": {recordedDirect, "DisableMemoryStore"}, "Persona": {recordedDirect, "Persona"}, "MemoryScope": {recordedDirect, "MemoryScope"}, "VerifySandbox": {recordedDerived, "EffectiveConfig.VerifySandboxConfigured"}, "Tools": {recordedDerived, "ConfigRecord.ToolSchemaSHA256"},
+	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"},
+	"MaxIterations": {recordedDirect, "MaxIterations"}, "MaxTokens": {recordedDirect, "MaxTokens"}, "RunTimeout": {recordedDirect, "RunTimeout"}, "VerifyTimeout": {recordedDirect, "VerifyTimeout"}, "ReasoningEffort": {recordedDirect, "ReasoningEffort"}, "PromptProfile": {recordedDirect, "PromptProfile"}, "CodeAct": {recordedDirect, "CodeAct"}, "ReproFirst": {recordedDirect, "ReproFirst"}, "ReproGate": {recordedDirect, "ReproGate"}, "BatchReads": {recordedDirect, "BatchReads"}, "ReadWindow": {recordedDirect, "ReadWindow"}, "ReadOutline": {recordedDirect, "ReadOutline"}, "MaxWallClock": {recordedDirect, "MaxWallClock"}, "MaxTotalTokens": {recordedDirect, "MaxTotalTokens"}, "MaxTotalCostUSD": {recordedDirect, "MaxTotalCostUSD"}, "AllowUnpricedSpend": {recordedDirect, "AllowUnpricedSpend"}, "CostFn": {recordedDerived, "EffectiveConfig.CostFnConfigured"}, "SolverModel": {recordedDirect, "SolverModel"}, "Spend": {recordedDerived, "EffectiveConfig.SpendConfigured"},
+	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "NavSpiralWindow": {recordedDirect, "NavSpiralWindow"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
+}
+
+// checkConfigFieldClassifications is shared by the oracle and its negative test.
+func checkConfigFieldClassifications(configType reflect.Type, classes map[string]configFieldClass) []string {
+	var problems []string
+	for i := 0; i < configType.NumField(); i++ {
+		field := configType.Field(i)
+		if field.PkgPath != "" { // unexported implementation state
+			continue
+		}
+		entry, ok := classes[field.Name]
+		if !ok {
+			problems = append(problems, "exported Config field "+field.Name+" has no classification")
+			continue
+		}
+		if entry.class != recordedDirect && entry.class != recordedDerived && entry.class != excludedRuntime && entry.class != excludedSecret && entry.class != excludedContent {
+			problems = append(problems, "Config field "+field.Name+" has invalid class "+entry.class)
+		}
+		if entry.class == recordedDirect || entry.class == recordedDerived {
+			parts := strings.Split(entry.representation, ".")
+			t := reflect.TypeOf(EffectiveConfig{})
+			name := entry.representation
+			if len(parts) == 2 {
+				name = parts[1]
+				if parts[0] == "ConfigRecord" {
+					t = reflect.TypeOf(ConfigRecord{})
+				} else if parts[0] != "EffectiveConfig" {
+					problems = append(problems, "Config field "+field.Name+" has invalid representation "+entry.representation)
+					continue
+				}
+			}
+			if _, ok := t.FieldByName(name); !ok {
+				problems = append(problems, "Config field "+field.Name+" claims missing representation "+entry.representation)
+			}
+		}
+	}
+	for name := range classes {
+		if _, ok := configType.FieldByName(name); !ok {
+			problems = append(problems, "stale Config classification for "+name)
+		}
+	}
+	return problems
+}
+
+func runtimeImplementationIdentity(v any) string {
+	if v == nil {
+		return ""
+	}
+	return reflect.TypeOf(v).String()
 }
 
 func jsonSHA256(v any) string {
