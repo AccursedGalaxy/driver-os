@@ -545,6 +545,12 @@ type Config struct {
 	// not a panic.
 	MinIsolation sandbox.Isolation
 
+	// RequireNetworkOff is a SAFETY PRECONDITION: before the first model call,
+	// Run/RunNative refuse when Sandbox.Capabilities reports network access. It
+	// fails closed for a nil Sandbox. The zero value preserves trusted callers'
+	// existing behavior.
+	RequireNetworkOff bool
+
 	// All three default sensibly when zero (P5/P7 — termination knobs are OURS):
 	MaxIterations int           // 0 = DefaultMaxIterations. The hard cap on think->act->observe turns.
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
@@ -923,7 +929,7 @@ func (c Config) Validate() error {
 	if c.Model == nil {
 		return setupErr("invalid_config", "Model must not be nil")
 	}
-	if c.Sandbox == nil {
+	if c.Sandbox == nil && !c.RequireNetworkOff {
 		return setupErr("invalid_config", "Sandbox must not be nil")
 	}
 	if !c.ReviewPolicy.valid() {
@@ -941,28 +947,45 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// checkIsolation enforces Config.MinIsolation (P2/§5) and is the FIRST thing both
-// loops do. It returns a non-nil RefusedUnsafe RunResult — to be returned
-// directly, before any model call or verification — when the Sandbox's isolation
-// is weaker than required, and nil when the run may proceed. It fails CLOSED: a
-// nil Sandbox under a non-zero MinIsolation is a refusal, not a panic. The caller
-// must return this result AS-IS and must NOT route it through upgradeIfVerified —
-// a refused run must never execute VerifyCmd on the unsafe sandbox.
-func checkIsolation(cfg Config) *RunResult {
-	if cfg.MinIsolation <= sandbox.IsolationNone {
-		return nil // default: every backend admitted; today's trusted-caller behavior.
+// checkSandboxFloor enforces Config.MinIsolation and Config.RequireNetworkOff and
+// is the FIRST thing both loops do. It returns a non-nil RefusedUnsafe RunResult
+// — to be returned directly, before any model call or verification — when the
+// Sandbox is weaker than required. It fails CLOSED: a nil Sandbox under either
+// floor is a refusal, not a panic. The caller must return this result AS-IS and
+// must NOT route it through upgradeIfVerified — a refused run must never execute
+// VerifyCmd on the unsafe sandbox.
+func checkSandboxFloor(cfg Config) *RunResult {
+	var caps sandbox.Capabilities
+	haveCaps := cfg.Sandbox != nil
+	if haveCaps {
+		caps = cfg.Sandbox.Capabilities()
+		if cfg.evidence != nil {
+			cfg.evidence.observedIsolation = caps.Isolation.String()
+			observedNetwork := caps.Network
+			cfg.evidence.observedNetwork = &observedNetwork
+		}
 	}
-	have := sandbox.IsolationNone
-	if cfg.Sandbox != nil {
-		have = cfg.Sandbox.Capabilities().Isolation
+	if cfg.MinIsolation > sandbox.IsolationNone {
+		have := sandbox.IsolationNone
+		if haveCaps {
+			have = caps.Isolation
+		}
+		if have < cfg.MinIsolation {
+			return &RunResult{
+				Task:    cfg.Task,
+				Root:    cfg.Root,
+				Outcome: RefusedUnsafe,
+				Reason: fmt.Sprintf("refused: task requires isolation >= %s but the sandbox provides %s — "+
+					"run with a stronger backend (e.g. -sandbox=docker -runtime=runsc)", cfg.MinIsolation, have),
+			}
+		}
 	}
-	if have < cfg.MinIsolation {
+	if cfg.RequireNetworkOff && (!haveCaps || caps.Network) {
 		return &RunResult{
 			Task:    cfg.Task,
 			Root:    cfg.Root,
 			Outcome: RefusedUnsafe,
-			Reason: fmt.Sprintf("refused: task requires isolation >= %s but the sandbox provides %s — "+
-				"run with a stronger backend (e.g. -sandbox=docker -runtime=runsc)", cfg.MinIsolation, have),
+			Reason:  "refused: task requires network off but the sandbox network floor was violated",
 		}
 	}
 	return nil

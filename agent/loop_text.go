@@ -37,7 +37,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		return nil, setupErr("repro_first", "repro-first requires the native tool protocol")
 	}
 	defer func() { stampRun(out, runID, startedAt) }()
-	if refusal := checkIsolation(cfg); refusal != nil {
+	if refusal := checkSandboxFloor(cfg); refusal != nil {
 		ev.isolation = EvidenceFailed
 		// No protocol prompt or tool grammar has been built before this safety
 		// refusal; record that absence as hashes of empty representations.

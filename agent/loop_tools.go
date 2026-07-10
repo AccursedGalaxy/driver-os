@@ -151,7 +151,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		stampRun(out, runID, startedAt)
 	}()
-	if refusal := checkIsolation(cfg); refusal != nil {
+	if refusal := checkSandboxFloor(cfg); refusal != nil {
 		ev.isolation = EvidenceFailed
 		// Prompt resolution and native schemas have not run on this safety refusal;
 		// the record deliberately hashes empty protocol representations.

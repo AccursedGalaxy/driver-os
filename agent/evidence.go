@@ -86,12 +86,14 @@ type ReviewEvidence struct {
 
 // Guarantees is the typed evidence report attached to every RunResult.
 type Guarantees struct {
-	Verification VerificationEvidence `json:"verification"`
-	Review       ReviewEvidence       `json:"review"`
-	CostBound    EvidenceStatus       `json:"cost_bound"`
-	Isolation    EvidenceStatus       `json:"isolation"`
-	Diff         DiffEvidence         `json:"diff"`
-	Degradations []Degradation        `json:"degradations,omitempty"`
+	Verification      VerificationEvidence `json:"verification"`
+	Review            ReviewEvidence       `json:"review"`
+	CostBound         EvidenceStatus       `json:"cost_bound"`
+	Isolation         EvidenceStatus       `json:"isolation"`
+	ObservedIsolation string               `json:"observed_isolation"`
+	ObservedNetwork   *bool                `json:"observed_network"`
+	Diff              DiffEvidence         `json:"diff"`
+	Degradations      []Degradation        `json:"degradations,omitempty"`
 }
 
 type verifyEvidenceEvent struct {
@@ -107,6 +109,8 @@ type evidenceLog struct {
 	verify                                             []verifyEvidenceEvent
 	mutGen                                             int
 	isolation                                          EvidenceStatus
+	observedIsolation                                  string
+	observedNetwork                                    *bool
 	verifyConfigured, reviewConfigured, costConfigured bool
 	verifyCommand                                      string
 	closingReady                                       bool
@@ -137,6 +141,11 @@ func finalizeGuarantees(l *evidenceLog, outcome Outcome, review *ReviewReport) G
 	}
 	g.Diff.WorkspaceEffect = WorkspaceUnknown
 	g.Isolation = l.isolation
+	g.ObservedIsolation = l.observedIsolation
+	if l.observedNetwork != nil {
+		observedNetwork := *l.observedNetwork
+		g.ObservedNetwork = &observedNetwork
+	}
 	g.CostBound = EvidencePassed
 	if !l.costConfigured {
 		g.CostBound = EvidenceAbsent

@@ -76,6 +76,7 @@ type EffectiveConfig struct {
 	StandingContext         bool              `json:"standing_context"`
 	Stream                  bool              `json:"stream"`
 	MinIsolation            sandbox.Isolation `json:"min_isolation"`
+	RequireNetworkOff       bool              `json:"require_network_off"`
 	MaxIterations           int               `json:"max_iterations"`
 	MaxTokens               int               `json:"max_tokens"`
 	RunTimeout              time.Duration     `json:"run_timeout"`
@@ -209,7 +210,7 @@ func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
 	return EffectiveConfig{
 		EffectiveProtocol:  effectiveProtocol,
 		DisableMemoryStore: cfg.DisableMemoryStore, Persona: cfg.Persona, MemoryScope: cfg.MemoryScope,
-		BootContext: cfg.BootContext, StandingContext: cfg.StandingContext, Stream: cfg.Stream, MinIsolation: cfg.MinIsolation,
+		BootContext: cfg.BootContext, StandingContext: cfg.StandingContext, Stream: cfg.Stream, MinIsolation: cfg.MinIsolation, RequireNetworkOff: cfg.RequireNetworkOff,
 		MaxIterations: maxIter, MaxTokens: maxTok, RunTimeout: runTimeout, VerifyTimeout: verifyTimeout(cfg, runTimeout),
 		ReasoningEffort: cfg.ReasoningEffort, PromptProfile: cfg.PromptProfile, CodeAct: cfg.CodeAct, ReproFirst: cfg.ReproFirst,
 		ReproGate: cfg.ReproGate, BatchReads: cfg.BatchReads, ReadWindow: cfg.ReadWindow, ReadOutline: cfg.ReadOutline,
@@ -252,7 +253,7 @@ const (
 // EffectiveConfig JSON keys for derived fields. A conformance test pins each
 // entry to a real EffectiveConfig JSON tag so the list cannot drift.
 var derivedProvenanceKeys = []string{
-	"effective_protocol", "memory_scope", "min_isolation", "verify_timeout",
+	"effective_protocol", "memory_scope", "min_isolation", "require_network_off", "verify_timeout",
 	"model_info", "model_configured", "memory_configured",
 	"verify_sandbox_configured", "cost_fn_configured", "spend_configured",
 	"reviewer_identity", "planner_identity", "review_configured",
@@ -264,7 +265,7 @@ var configFieldClasses = map[string]configFieldClass{
 	"RequestedProtocol": {recordedDerived, "ConfigRecord.RequestedProtocol"}, "ProtocolFallbackReason": {recordedDerived, "ConfigRecord.ProtocolFallbackReason"},
 	"TrustProfile": {recordedDerived, "ConfigRecord.TrustProfile"}, "ExecProfileName": {recordedDerived, "ConfigRecord.ExecProfile"}, "ExecProfileHash": {recordedDerived, "ConfigRecord.ExecProfileHash"}, "CLIOverrides": {recordedDerived, "ConfigRecord.CLIOverrides"}, "RequiredTrust": {recordedDerived, "ConfigRecord.RequiredTrust"}, "Canonical": {recordedDerived, "ConfigRecord.Canonical"}, "FieldProvenance": {recordedDerived, "ConfigRecord.FieldProvenance"}, "ApprovalPolicyName": {recordedDerived, "ConfigRecord.ApprovalPolicyName"}, "ApprovalPolicyHash": {recordedDerived, "ConfigRecord.ApprovalPolicyHash"},
 	"Model": {recordedDerived, "EffectiveConfig.ModelConfigured"}, "Sandbox": {excludedRuntime, ""}, "Memory": {recordedDerived, "EffectiveConfig.MemoryConfigured"}, "DisableMemoryStore": {recordedDirect, "DisableMemoryStore"}, "Persona": {recordedDirect, "Persona"}, "MemoryScope": {recordedDirect, "MemoryScope"}, "VerifySandbox": {recordedDerived, "EffectiveConfig.VerifySandboxConfigured"}, "Tools": {recordedDerived, "ConfigRecord.ToolSchemaSHA256"},
-	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"},
+	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"}, "RequireNetworkOff": {recordedDirect, "RequireNetworkOff"},
 	"MaxIterations": {recordedDirect, "MaxIterations"}, "MaxTokens": {recordedDirect, "MaxTokens"}, "RunTimeout": {recordedDirect, "RunTimeout"}, "VerifyTimeout": {recordedDirect, "VerifyTimeout"}, "ReasoningEffort": {recordedDirect, "ReasoningEffort"}, "PromptProfile": {recordedDirect, "PromptProfile"}, "CodeAct": {recordedDirect, "CodeAct"}, "ReproFirst": {recordedDirect, "ReproFirst"}, "ReproGate": {recordedDirect, "ReproGate"}, "BatchReads": {recordedDirect, "BatchReads"}, "ReadWindow": {recordedDirect, "ReadWindow"}, "ReadOutline": {recordedDirect, "ReadOutline"}, "MaxWallClock": {recordedDirect, "MaxWallClock"}, "MaxTotalTokens": {recordedDirect, "MaxTotalTokens"}, "MaxTotalCostUSD": {recordedDirect, "MaxTotalCostUSD"}, "AllowUnpricedSpend": {recordedDirect, "AllowUnpricedSpend"}, "CostFn": {recordedDerived, "EffectiveConfig.CostFnConfigured"}, "SolverModel": {recordedDirect, "SolverModel"}, "Spend": {recordedDerived, "EffectiveConfig.SpendConfigured"},
 	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "NavSpiralWindow": {recordedDirect, "NavSpiralWindow"}, "TerminationPolicy": {recordedDerived, "EffectiveConfig.TerminationPolicy"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
 }

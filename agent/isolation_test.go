@@ -30,10 +30,13 @@ func (p failIfCalled) Generate(context.Context, llm.Request) (*llm.Response, err
 // fakeIso is a no-op sandbox that advertises a configurable isolation level, so a
 // test can hand the gate exactly the capability it wants to check against without
 // standing up a real container.
-type fakeIso struct{ iso sandbox.Isolation }
+type fakeIso struct {
+	iso     sandbox.Isolation
+	network bool
+}
 
 func (f fakeIso) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{Isolation: f.iso}
+	return sandbox.Capabilities{Isolation: f.iso, Network: f.network}
 }
 func (f fakeIso) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
 	return &sandbox.Result{}, nil
@@ -121,5 +124,47 @@ func TestDefaultMinIsolationAdmitsLocal(t *testing.T) {
 	}
 	if len(sp.calls) == 0 {
 		t.Error("default run should reach the model")
+	}
+}
+
+// TestNetworkFloor verifies the network floor is enforced before either loop can
+// call the model, while an offline sandbox proceeds and reports what was observed.
+func TestNetworkFloor(t *testing.T) {
+	for _, loop := range []struct {
+		name string
+		run  func(context.Context, Config) (*RunResult, error)
+	}{{"text", Run}, {"native", RunNative}} {
+		t.Run(loop.name+"/refuses-network", func(t *testing.T) {
+			res, err := loop.run(context.Background(), Config{Model: failIfCalled{t}, Sandbox: fakeIso{network: true}, Task: "x", RequireNetworkOff: true, VerifyCmd: "must-not-run"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != RefusedUnsafe || !strings.Contains(res.Reason, "network floor was violated") {
+				t.Fatalf("got outcome=%q reason=%q, want network-floor refusal", res.Outcome, res.Reason)
+			}
+		})
+		t.Run(loop.name+"/admits-offline", func(t *testing.T) {
+			sp := &scripted{replies: []string{"answer done"}}
+			res, err := loop.run(context.Background(), Config{Model: sp, Sandbox: fakeIso{iso: sandbox.IsolationProcess}, Task: "x", RequireNetworkOff: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != Answered || res.Guarantees.ObservedNetwork == nil || *res.Guarantees.ObservedNetwork || res.Guarantees.ObservedIsolation != sandbox.IsolationProcess.String() {
+				t.Fatalf("offline sandbox was not admitted and recorded: %+v", res)
+			}
+		})
+	}
+}
+
+func TestNetworkFloorNilSandboxRefuses(t *testing.T) {
+	res, err := Run(context.Background(), Config{Model: failIfCalled{t}, Task: "x", RequireNetworkOff: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != RefusedUnsafe || !strings.Contains(res.Reason, "network floor was violated") {
+		t.Fatalf("got outcome=%q reason=%q, want network-floor refusal", res.Outcome, res.Reason)
+	}
+	if res.Guarantees.ObservedNetwork != nil || res.Guarantees.ObservedIsolation != "" {
+		t.Fatalf("nil sandbox should have unknown observed capabilities: %+v", res.Guarantees)
 	}
 }
