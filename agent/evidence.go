@@ -35,6 +35,7 @@ const (
 	ReasonNotReached    DegradationReason = "not-reached"
 	ReasonStaleEvidence DegradationReason = "stale-evidence"
 	ReasonNoOpAnswer    DegradationReason = "no-op-answer"
+	ReasonArtifactWrite DegradationReason = "artifact-write"
 )
 
 // WorkspaceEffect records whether the final workspace tree differs from the

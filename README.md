@@ -151,6 +151,19 @@ runs statelessly. Each mneme call is bounded by a 30s timeout.
   synchronous extraction + embedding call before the run returns, so you see the
   answer and then wait briefly.
 
+## Proof bundles
+
+Every completed headless run with transcript persistence writes `<run-id>.bundle/` beside its transcript. The canonical `manifest.json` separates reproducible artifacts (patch, transcript, and captured verifier output) from harness attestations and hashes every component. Inspect the JSON directly, then verify it offline without executing the recorded command:
+
+```sh
+driver run -format=json -task "fix the test" | jq '{bundle_path,bundle_manifest_sha256}'
+driver bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
+# Explicit opt-in only: re-run the recorded verifier command
+driver bundle verify -rerun-verify ~/.local/share/driver-os/runs/<run-id>.bundle
+```
+
+Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key to sign newly produced bundles. No credentials or environment dump are included. Bundle-write failures are warnings/degradations and never change the run outcome. A bundle proves artifact integrity and records verification evidence; it does **not** prove that the verifier fully captures task correctness. Proof-bundle v1 intentionally excludes transparency logs and multi-party signing.
+
 ## Running untrusted code (sandbox backends)
 
 Every effect the agent causes (running a command, reading or writing a file)
