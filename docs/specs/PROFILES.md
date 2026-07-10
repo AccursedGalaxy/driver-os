@@ -195,9 +195,13 @@ mark it noncanonical in the transcript.
   fail-closed headless and updated in-repo call sites (delegate.sh →
   `-trust trusted-local`; eval-on-public-repos → `container`) without a
   bypassable intermediate release.
-- **S3 — execution profiles (SHIPPED surfaces)**: built-ins, non-safety
-  precedence (CLI > profile > default), full override provenance, and
-  TUI/headless defaults become named profiles.
+- **S3 — execution profiles (SHIPPED)**: four active profiles (`coding-v2`,
+  `interactive-v2`, `observe-v1`, and `eval-swe-v1`; frozen v1 compatibility
+  profiles remain available), non-safety precedence (CLI > profile > default),
+  and full override provenance. The pure resolver is consumed by ordinary,
+  best-of, ladder, TUI, and eval construction paths. ConfigRecord v7 records
+  required trust, canonicality, and complete field provenance; canonical means
+  no profile-resolved field has CLI source.
 - **S4 — routing-policy artifact + campaign manifests** (spec may proceed in
   parallel earlier; binds to S3 identities).
 - **S5 — TOML user profiles; subcommand CLI rides the separate unification

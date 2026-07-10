@@ -15,9 +15,8 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// ConfigRecord schema v6 adds stable runtime-presence and implementation identities
-// needed to make the complete Config classification auditable.
-const configRecordSchemaVersion = 6
+// ConfigRecord schema v7 adds profile resolution provenance.
+const configRecordSchemaVersion = 7
 
 // Binary and invocation-surface identifiers are stable transcript values.
 const (
@@ -53,13 +52,16 @@ type ConfigRecord struct {
 	// unrecorded runtime state, or provider-side behavior.
 	ConfigSHA256 string `json:"config_sha256"`
 
-	Effective          EffectiveConfig `json:"effective"`
-	TrustProfile       *string         `json:"trust_profile"`
-	ExecProfile        *string         `json:"exec_profile"`
-	ExecProfileHash    string          `json:"exec_profile_hash,omitempty"`
-	CLIOverrides       []string        `json:"cli_overrides,omitempty"`
-	ApprovalPolicyName string          `json:"approval_policy_name,omitempty"`
-	ApprovalPolicyHash string          `json:"approval_policy_hash,omitempty"`
+	Effective          EffectiveConfig   `json:"effective"`
+	TrustProfile       *string           `json:"trust_profile"`
+	ExecProfile        *string           `json:"exec_profile"`
+	ExecProfileHash    string            `json:"exec_profile_hash,omitempty"`
+	CLIOverrides       []string          `json:"cli_overrides,omitempty"`
+	RequiredTrust      string            `json:"required_trust,omitempty"`
+	Canonical          bool              `json:"canonical"`
+	FieldProvenance    map[string]string `json:"field_provenance,omitempty"`
+	ApprovalPolicyName string            `json:"approval_policy_name,omitempty"`
+	ApprovalPolicyHash string            `json:"approval_policy_hash,omitempty"`
 }
 
 // EffectiveConfig is the serializable projection of Config fields that affect
@@ -141,6 +143,18 @@ func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, pr
 		// Preserve records produced by callers still using the v1-v3 Config field.
 		binaryIdentity = cfg.BinaryLabel
 	}
+	provenance := make(map[string]string, len(cfg.FieldProvenance)+len(derivedProvenanceKeys))
+	for key, source := range cfg.FieldProvenance {
+		provenance[key] = source
+	}
+	// Runtime-derived EffectiveConfig members are computed downstream of the
+	// profile resolver, so the record stamps them itself. A caller-supplied
+	// source wins (verify_timeout is derived unless the CLI set it).
+	for _, name := range derivedProvenanceKeys {
+		if _, ok := provenance[name]; !ok {
+			provenance[name] = "derived"
+		}
+	}
 	rec := &ConfigRecord{
 		SchemaVersion:          configRecordSchemaVersion,
 		Binary:                 binaryIdentity,
@@ -156,6 +170,9 @@ func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, pr
 		ApprovalPolicyHash:     cfg.ApprovalPolicyHash,
 		ExecProfileHash:        cfg.ExecProfileHash,
 		CLIOverrides:           append([]string(nil), cfg.CLIOverrides...),
+		RequiredTrust:          cfg.RequiredTrust,
+		Canonical:              cfg.Canonical,
+		FieldProvenance:        provenance,
 	}
 	if cfg.TrustProfile != "" {
 		trustProfile := cfg.TrustProfile
@@ -227,10 +244,24 @@ const (
 	excludedContent = "excluded-content"
 )
 
+// derivedProvenanceKeys are the EffectiveConfig JSON keys whose values are
+// computed downstream of the profile resolver (class D in PROFILES.md
+// Appendix A terms). field_provenance thus uses two disjoint key namespaces:
+// resolver FieldIDs (e.g. "max_iters") for resolution-time fields, and these
+// EffectiveConfig JSON keys for derived fields. A conformance test pins each
+// entry to a real EffectiveConfig JSON tag so the list cannot drift.
+var derivedProvenanceKeys = []string{
+	"effective_protocol", "memory_scope", "min_isolation", "verify_timeout",
+	"model_info", "model_configured", "memory_configured",
+	"verify_sandbox_configured", "cost_fn_configured", "spend_configured",
+	"reviewer_identity", "planner_identity", "review_configured",
+	"planner_configured", "finish_tool_configured",
+}
+
 var configFieldClasses = map[string]configFieldClass{
 	"BinaryLabel": {recordedDerived, "ConfigRecord.Binary"}, "BinaryIdentity": {recordedDerived, "ConfigRecord.BinaryIdentity"}, "InvocationSurface": {recordedDerived, "ConfigRecord.InvocationSurface"},
 	"RequestedProtocol": {recordedDerived, "ConfigRecord.RequestedProtocol"}, "ProtocolFallbackReason": {recordedDerived, "ConfigRecord.ProtocolFallbackReason"},
-	"TrustProfile": {recordedDerived, "ConfigRecord.TrustProfile"}, "ExecProfileName": {recordedDerived, "ConfigRecord.ExecProfile"}, "ExecProfileHash": {recordedDerived, "ConfigRecord.ExecProfileHash"}, "CLIOverrides": {recordedDerived, "ConfigRecord.CLIOverrides"}, "ApprovalPolicyName": {recordedDerived, "ConfigRecord.ApprovalPolicyName"}, "ApprovalPolicyHash": {recordedDerived, "ConfigRecord.ApprovalPolicyHash"},
+	"TrustProfile": {recordedDerived, "ConfigRecord.TrustProfile"}, "ExecProfileName": {recordedDerived, "ConfigRecord.ExecProfile"}, "ExecProfileHash": {recordedDerived, "ConfigRecord.ExecProfileHash"}, "CLIOverrides": {recordedDerived, "ConfigRecord.CLIOverrides"}, "RequiredTrust": {recordedDerived, "ConfigRecord.RequiredTrust"}, "Canonical": {recordedDerived, "ConfigRecord.Canonical"}, "FieldProvenance": {recordedDerived, "ConfigRecord.FieldProvenance"}, "ApprovalPolicyName": {recordedDerived, "ConfigRecord.ApprovalPolicyName"}, "ApprovalPolicyHash": {recordedDerived, "ConfigRecord.ApprovalPolicyHash"},
 	"Model": {recordedDerived, "EffectiveConfig.ModelConfigured"}, "Sandbox": {excludedRuntime, ""}, "Memory": {recordedDerived, "EffectiveConfig.MemoryConfigured"}, "DisableMemoryStore": {recordedDirect, "DisableMemoryStore"}, "Persona": {recordedDirect, "Persona"}, "MemoryScope": {recordedDirect, "MemoryScope"}, "VerifySandbox": {recordedDerived, "EffectiveConfig.VerifySandboxConfigured"}, "Tools": {recordedDerived, "ConfigRecord.ToolSchemaSHA256"},
 	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"},
 	"MaxIterations": {recordedDirect, "MaxIterations"}, "MaxTokens": {recordedDirect, "MaxTokens"}, "RunTimeout": {recordedDirect, "RunTimeout"}, "VerifyTimeout": {recordedDirect, "VerifyTimeout"}, "ReasoningEffort": {recordedDirect, "ReasoningEffort"}, "PromptProfile": {recordedDirect, "PromptProfile"}, "CodeAct": {recordedDirect, "CodeAct"}, "ReproFirst": {recordedDirect, "ReproFirst"}, "ReproGate": {recordedDirect, "ReproGate"}, "BatchReads": {recordedDirect, "BatchReads"}, "ReadWindow": {recordedDirect, "ReadWindow"}, "ReadOutline": {recordedDirect, "ReadOutline"}, "MaxWallClock": {recordedDirect, "MaxWallClock"}, "MaxTotalTokens": {recordedDirect, "MaxTotalTokens"}, "MaxTotalCostUSD": {recordedDirect, "MaxTotalCostUSD"}, "AllowUnpricedSpend": {recordedDirect, "AllowUnpricedSpend"}, "CostFn": {recordedDerived, "EffectiveConfig.CostFnConfigured"}, "SolverModel": {recordedDirect, "SolverModel"}, "Spend": {recordedDerived, "EffectiveConfig.SpendConfigured"},

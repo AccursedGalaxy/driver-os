@@ -173,6 +173,26 @@ go run ./cmd/driver run -sandbox=docker -task "..."
 go run ./cmd/driver run -trust untrusted -task "..."
 ```
 
+### Execution profiles
+
+Orthogonal to trust, `-profile` names the run's BEHAVIOR defaults (iteration
+caps, effort, worktree, verify posture) as one immutable, versioned identity
+recorded in every transcript — so "driver-os + model X" names a reproducible
+configuration. Pick by task:
+
+```sh
+driver run -trust trusted-local -task "fix the bug"            # coding-v2 (default): implementation runs; a run that changes nothing fails
+driver run -trust trusted-local -profile observe-v1 \
+  -task "why does startup read .env twice?"                    # read/answer runs; unchanged workspace is a valid answer
+driver -profile interactive-v2                                 # the TUI default
+# eval-swe-v1 is cmd/eval's benchmark treatment; campaigns pin it by name
+```
+
+Explicitly-set flags override the profile (the transcript records each
+field's source — profile, cli, or trust — and whether the run stayed
+`canonical`, i.e. fully described by the profile name). Trust floors can
+only tighten a profile, never the reverse. Details: `docs/specs/PROFILES.md`.
+
 Build the container image once (it carries `sh`, `rg`, `git`, `go`):
 
 ```sh

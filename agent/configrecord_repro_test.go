@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
@@ -93,8 +95,8 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
 	run := newConfigRecord(cfg, "system prompt", nil)
-	if run.SchemaVersion != 6 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
-		t.Fatalf("v6 identity record = %+v", run)
+	if run.SchemaVersion != 7 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v7 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
 	compat := newConfigRecord(cfg, "system prompt", nil)
@@ -169,6 +171,79 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 		g.BinaryIdentity != w.BinaryIdentity || g.InvocationSurface != w.InvocationSurface ||
 		g.RequestedProtocol != w.RequestedProtocol || g.ProtocolFallbackReason != w.ProtocolFallbackReason {
 		t.Fatalf("config record mutated in round trip:\ngot  %+v\nwant %+v", *g, *w)
+	}
+}
+
+func TestConfigRecordV7ResolutionProvenance(t *testing.T) {
+	cfg := Config{RequiredTrust: "reviewed-local", Canonical: true, FieldProvenance: map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli"}}
+	a := newConfigRecord(cfg, "system", nil)
+	b := newConfigRecord(cfg, "system", nil)
+	if a.SchemaVersion != 7 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
+		t.Fatalf("v7 resolution fields = %+v", a)
+	}
+	for key, source := range map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli", "model_configured": "derived", "finish_tool_configured": "derived"} {
+		if a.FieldProvenance[key] != source {
+			t.Fatalf("provenance[%q] = %q, want %q", key, a.FieldProvenance[key], source)
+		}
+	}
+	// COMPLETE key set: caller-supplied resolver identifiers UNION the
+	// derived-class keys, nothing more, nothing less.
+	want := map[string]bool{}
+	for k := range cfg.FieldProvenance {
+		want[k] = true
+	}
+	for _, k := range derivedProvenanceKeys {
+		want[k] = true
+	}
+	if len(a.FieldProvenance) != len(want) {
+		t.Fatalf("provenance key count = %d, want %d", len(a.FieldProvenance), len(want))
+	}
+	for k := range want {
+		if _, ok := a.FieldProvenance[k]; !ok {
+			t.Fatalf("provenance missing key %q", k)
+		}
+	}
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	if string(aj) != string(bj) {
+		t.Fatalf("v7 record marshal is not deterministic:\n%s\n%s", aj, bj)
+	}
+}
+
+// A caller-supplied source survives derived stamping (verify_timeout is
+// derived unless the CLI set it).
+func TestConfigRecordV7CallerSourceWinsOverDerived(t *testing.T) {
+	rec := newConfigRecord(Config{FieldProvenance: map[string]string{"verify_timeout": "cli"}}, "system", nil)
+	if rec.FieldProvenance["verify_timeout"] != "cli" {
+		t.Fatalf("verify_timeout = %q, want cli", rec.FieldProvenance["verify_timeout"])
+	}
+}
+
+// Every derivedProvenanceKeys entry must be a real EffectiveConfig JSON tag —
+// the list cannot name fields that do not exist (or drift after a rename).
+func TestDerivedProvenanceKeysAreEffectiveConfigTags(t *testing.T) {
+	tags := map[string]bool{}
+	rt := reflect.TypeOf(EffectiveConfig{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if tag != "" && tag != "-" {
+			tags[tag] = true
+		}
+	}
+	for _, k := range derivedProvenanceKeys {
+		if !tags[k] {
+			t.Errorf("derivedProvenanceKeys entry %q is not an EffectiveConfig JSON tag", k)
+		}
+	}
+}
+
+func TestConfigRecordV7DecodesV6WithoutProvenance(t *testing.T) {
+	var rec ConfigRecord
+	if err := json.Unmarshal([]byte(`{"schema_version":6,"effective":{}}`), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.SchemaVersion != 6 || rec.FieldProvenance != nil || rec.RequiredTrust != "" || rec.Canonical {
+		t.Fatalf("v6 decode invented v7 provenance: %+v", rec)
 	}
 }
 

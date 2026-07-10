@@ -444,6 +444,11 @@ type Config struct {
 	// TrustProfile.
 	CLIOverrides []string
 
+	// Resolution provenance is recording-only and never affects behavior.
+	RequiredTrust   string
+	Canonical       bool
+	FieldProvenance map[string]string
+
 	// ApprovalPolicyName identifies the selected approval policy for transcript
 	// config records. It is recording-only and never affects behavior.
 	ApprovalPolicyName string
