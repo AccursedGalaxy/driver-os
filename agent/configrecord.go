@@ -14,12 +14,12 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// v2: trust identity + approval policy identity.
-const configRecordSchemaVersion = 2
+// v3 = execution-profile identity + CLI-override provenance.
+const configRecordSchemaVersion = 3
 
 // ConfigRecord is the reproducibility record embedded in transcripts. It records
-// today's effective config plus stable hashes; ExecProfile remains a reserved
-// seam for later profile resolution slices.
+// today's effective config plus stable hashes and the selected profile identities
+// and override provenance.
 type ConfigRecord struct {
 	SchemaVersion      int             `json:"schema_version"`
 	Binary             string          `json:"binary,omitempty"`
@@ -31,6 +31,8 @@ type ConfigRecord struct {
 	Effective          EffectiveConfig `json:"effective"`
 	TrustProfile       *string         `json:"trust_profile"`
 	ExecProfile        *string         `json:"exec_profile"`
+	ExecProfileHash    string          `json:"exec_profile_hash,omitempty"`
+	CLIOverrides       []string        `json:"cli_overrides,omitempty"`
 	ApprovalPolicyName string          `json:"approval_policy_name,omitempty"`
 	ApprovalPolicyHash string          `json:"approval_policy_hash,omitempty"`
 }
@@ -99,10 +101,16 @@ func newConfigRecord(cfg Config, systemPrompt string, schemas []llm.Tool) *Confi
 		Effective:          eff,
 		ApprovalPolicyName: cfg.ApprovalPolicyName,
 		ApprovalPolicyHash: cfg.ApprovalPolicyHash,
+		ExecProfileHash:    cfg.ExecProfileHash,
+		CLIOverrides:       append([]string(nil), cfg.CLIOverrides...),
 	}
 	if cfg.TrustProfile != "" {
 		trustProfile := cfg.TrustProfile
 		rec.TrustProfile = &trustProfile
+	}
+	if cfg.ExecProfileName != "" {
+		execProfile := cfg.ExecProfileName
+		rec.ExecProfile = &execProfile
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range info.Settings {

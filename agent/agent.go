@@ -416,6 +416,21 @@ type Config struct {
 	// records. It is recording-only and never affects behavior.
 	TrustProfile string
 
+	// ExecProfileName identifies the selected execution profile for transcript
+	// config records. It is recording-only and never affects behavior, mirroring
+	// TrustProfile.
+	ExecProfileName string
+
+	// ExecProfileHash identifies the selected execution profile content for
+	// transcript config records. It is recording-only and never affects behavior,
+	// mirroring TrustProfile.
+	ExecProfileHash string
+
+	// CLIOverrides records the CLI override provenance for transcript config
+	// records. It is recording-only and never affects behavior, mirroring
+	// TrustProfile.
+	CLIOverrides []string
+
 	// ApprovalPolicyName identifies the selected approval policy for transcript
 	// config records. It is recording-only and never affects behavior.
 	ApprovalPolicyName string
