@@ -257,6 +257,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}
 
 	var costBudgetMissingNoted bool
+	var contextEstimateNoted bool
 	cs := &cacheStats{} // prompt-cache efficiency instrumentation per Measurement 3
 
 	for i := 1; i <= maxIter; i++ {
@@ -297,7 +298,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		var resp *llm.Response
 		var err error
 		modelStart := time.Now()
-		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
+		req := llm.Request{
 			System:          system,
 			Messages:        messages,
 			StandingContext: standingBlock,
@@ -305,7 +306,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			Temperature:     &temp,
 			MaxTokens:       maxTok,
 			ReasoningEffort: cfg.ReasoningEffort,
-		})
+		}
+		noteContextEstimate(cfg, req, &contextEstimateNoted)
+		resp, messages, err = generateWithEviction(loopCtx, cfg, req)
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
 			// A streamed turn that died mid-flight still returns the prose collected

@@ -302,6 +302,7 @@ func TestConformance_BudgetStops(t *testing.T) {
 				cfg.MaxIterations = 2
 				cfg.MaxTotalCostUSD = 0.01
 				obs := &recordObserver{}
+				cfg.AllowUnpricedSpend = true
 				cfg.Obs = obs
 				res, rec, err := loop.run(context.Background(), cfg)
 				if err != nil {
@@ -337,6 +338,7 @@ func TestConformance_BudgetStops(t *testing.T) {
 				cfg.MaxIterations = 2
 				cfg.MaxTotalCostUSD = 0.01
 				cfg.CostFn = func(llm.Usage) (float64, bool) { return 0, false }
+				cfg.AllowUnpricedSpend = true
 				obs := &recordObserver{}
 				cfg.Obs = obs
 				res, rec, err := loop.run(context.Background(), cfg)
@@ -359,6 +361,31 @@ func TestConformance_BudgetStops(t *testing.T) {
 			})
 		}
 	})
+	t.Run("dollar budget unpriceable fails closed", func(t *testing.T) {
+		for _, loop := range conformanceLoops(
+			[]string{"read_file missing-a", "read_file missing-b"},
+			[][]llm.ContentPart{
+				{structuredCall("c1", "read_file", map[string]any{"path": "missing-a"})},
+				{structuredCall("c2", "read_file", map[string]any{"path": "missing-b"})},
+			},
+		) {
+			t.Run(loop.name, func(t *testing.T) {
+				cfg := conformanceBaseConfig(t)
+				cfg.MaxIterations = 2
+				cfg.MaxTotalCostUSD = 0.01
+				cfg.CostFn = func(llm.Usage) (float64, bool) { return 0, false }
+				res, rec, err := loop.run(context.Background(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertOutcome(t, res, HitBudget, "spend is unpriceable; failing closed")
+				if got := providerCallCount(rec); got != 1 {
+					t.Fatalf("provider calls = %d, want 1", got)
+				}
+			})
+		}
+	})
+
 	t.Run("wall clock", func(t *testing.T) {
 		for _, tc := range []struct {
 			name string

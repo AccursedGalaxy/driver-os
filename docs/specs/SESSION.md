@@ -1,13 +1,15 @@
 # Session container — direction note
 
 Status: **Slice 1 (stateful `Session.Exec`) SHIPPED. Slice 2 (`ProcessHost`)
-designed — spec below.** This note records the decided design so we don't
-relitigate it. It is the foundation slice of the session-container build order
-(see `docs/specs/CODE-INTELLIGENCE.md` for the whole arc):
+SHIPPED** — `sandbox/proc` (shared Process impl), `sandbox/local/process.go`,
+`sandbox/docker/process.go`, conformance suite in `sandbox/sandboxtest/process.go`.
+The spec below is the as-built design record — kept so we don't relitigate it.
+It is the foundation slice of the session-container build order (see
+`docs/specs/CODE-INTELLIGENCE.md` for the whole arc):
 
 1. **`Session` — stateful Exec** *(shipped)* — successive `Exec` calls share
    cwd + environment.
-2. **`ProcessHost`** *(designed — see "Slice 2" below)* — an optional capability
+2. **`ProcessHost`** *(shipped — see "Slice 2" below)* — an optional capability
    for long-lived processes (`StartProcess` → held-open stdin/stdout + bounded
    stderr + `Wait`/`Kill`).
 3. **gopls driver + symbol tools** *(first tenant)* — JSON-RPC over the process
@@ -125,7 +127,7 @@ always; docker behind `docker_integration`):
 
 ---
 
-# Slice 2 — `ProcessHost` (designed, not yet built)
+# Slice 2 — `ProcessHost` (SHIPPED — as-built design record)
 
 Designed backward from its **only** near-term tenant: a persistent **gopls**
 spoken to as **JSON-RPC over stdio**. That, and nothing more, sets the

@@ -33,6 +33,38 @@ func usageReported(u llm.Usage) bool {
 	return u.PromptTokens != 0 || u.CompletionTokens != 0 || u.TotalTokens != 0 || u.CachedTokens != 0 || u.ReasoningTokens != 0
 }
 
+// noteContextEstimate emits a once-per-run warning when the byte-based prompt
+// estimate approaches a known model window. It is telemetry only: the request
+// is neither blocked nor changed, and reactive eviction remains authoritative.
+func noteContextEstimate(cfg Config, req llm.Request, noted *bool) {
+	if *noted || cfg.ModelInfo.ContextWindow <= 0 {
+		return
+	}
+	bytes := len(req.System) + len(req.StandingContext)
+	for _, msg := range req.Messages {
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llm.TextPart:
+				bytes += len(p.Text)
+			case llm.ImagePart:
+				bytes += len(p.URL) + len(p.Data) + len(p.MIME)
+			case llm.ToolCallPart:
+				bytes += len(p.ID) + len(p.Name) + len(p.Args)
+			case llm.ToolResultPart:
+				bytes += len(p.ToolCallID) + len(p.Content)
+			case llm.ReasoningPart:
+				bytes += len(p.Raw)
+			}
+		}
+	}
+	estimate := (bytes + 2) / 3
+	window := cfg.ModelInfo.ContextWindow
+	if estimate*100 >= window*80 {
+		cfg.Obs.Note(fmt.Sprintf("context estimate ~%d tokens >= 80%% of model window %d (byte-based estimate)", estimate, window))
+		*noted = true
+	}
+}
+
 // dollarBudgetStop checks Config.MaxTotalCostUSD at the same turn boundary as
 // MaxTotalTokens. It prices cumulative usage, so a crossing turn is already in
 // res.Usage and is not discarded; callers pass turns=i-1 from the loop header.
@@ -42,30 +74,42 @@ func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (b
 	}
 
 	var (
-		cost float64
-		ok   bool
+		cost       float64
+		ok         bool
+		missingMsg string
 	)
 	if cfg.Spend != nil {
 		cost, ok = cfg.Spend.Floor()
 		if !ok && !cfg.Spend.reported() {
 			return false, ""
 		}
+		if ok && cost >= cfg.MaxTotalCostUSD {
+			return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, cfg.MaxTotalCostUSD, turns)
+		}
+		_, complete := cfg.Spend.USD()
+		if !complete {
+			ok = false
+			missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
+		}
 	} else {
 		if !usageReported(u) {
 			return false, ""
 		}
 		if cfg.CostFn == nil {
-			if !*missingNoted {
-				cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
-				*missingNoted = true
+			missingMsg = fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
+		} else {
+			cost, ok = cfg.CostFn(u)
+			if !ok {
+				missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
 			}
-			return false, ""
 		}
-		cost, ok = cfg.CostFn(u)
 	}
 	if !ok {
+		if !cfg.AllowUnpricedSpend {
+			return true, fmt.Sprintf("dollar budget $%.6f configured but spend is unpriceable; failing closed — set AllowUnpricedSpend to continue unpriced", cfg.MaxTotalCostUSD)
+		}
 		if !*missingNoted {
-			cfg.Obs.Note(fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD))
+			cfg.Obs.Note(missingMsg)
 			*missingNoted = true
 		}
 		return false, ""

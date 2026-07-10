@@ -389,6 +389,10 @@ type Config struct {
 
 	Obs Observer // optional: live progress sink; nil = silent.
 
+	// ModelInfo describes the selected solver model's known limits. A zero value
+	// means unknown and disables proactive context-window telemetry.
+	ModelInfo llm.ModelInfo
+
 	// Stream opts this run into token streaming: when set AND the provider reports
 	// Capabilities().Streaming, each model call goes through Provider.Stream and the
 	// incremental text deltas are pushed to Obs if it implements DeltaObserver — the
@@ -504,10 +508,16 @@ type Config struct {
 	// HitBudget and closing verification may still upgrade it. 0 = off.
 	MaxTotalCostUSD float64
 
+	// AllowUnpricedSpend permits a configured dollar budget to continue when spend
+	// cannot be priced. The default false fails closed as HitBudget; set true only
+	// when an advisory budget is acceptable.
+	AllowUnpricedSpend bool
+
 	// CostFn prices this run's solver model from cumulative Usage. The agent does
 	// not know catalog model ids; callers close over the model id in this function.
 	// When MaxTotalCostUSD is set but CostFn is nil or returns ok=false, the loop
-	// notes the unenforceable dollar budget once through Obs and continues.
+	// fails closed unless AllowUnpricedSpend explicitly opts into note-once-and-
+	// continue behavior.
 	CostFn func(llm.Usage) (float64, bool)
 
 	// SolverModel is the solver model's id, so the loop can price solver turns into

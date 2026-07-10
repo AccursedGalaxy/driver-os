@@ -130,6 +130,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	}
 
 	var costBudgetMissingNoted bool
+	var contextEstimateNoted bool
 
 	for i := 1; i <= maxIter; i++ { // (P5) the hard cap lives in the loop header.
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -165,13 +166,15 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		var resp *llm.Response
 		var err error
 		modelStart := time.Now()
-		resp, messages, err = generateWithEviction(loopCtx, cfg, llm.Request{
+		req := llm.Request{
 			System:          system,
 			Messages:        messages,
 			Temperature:     &temp,
 			MaxTokens:       maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
 			ReasoningEffort: cfg.ReasoningEffort,
-		})
+		}
+		noteContextEstimate(cfg, req, &contextEstimateNoted)
+		resp, messages, err = generateWithEviction(loopCtx, cfg, req)
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
 			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, cfg, err); ok {
