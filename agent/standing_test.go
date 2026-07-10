@@ -151,6 +151,23 @@ func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 	}
 }
 
+func TestStandingTypedVerificationStatusesAndFreshReplacement(t *testing.T) {
+	cfg := Config{VerifyCmd: "go test ./..."}
+	tr := newTurnTracker(cfg, 8)
+
+	tr.recordRun(cfg.VerifyCmd, "exit 1 (2ms) [timed out — narrow the command's work or raise its own limits]", "old")
+	if got := renderVerification(tr, cfg.VerifyCmd, "current", false, false); !strings.Contains(got, "→ TIMEOUT  [STALE:") {
+		t.Fatalf("typed timeout/staleness not rendered:\n%s", got)
+	}
+	tr.recordRun(cfg.VerifyCmd, "exit 1 (2ms)\nstderr:\ndisk quota exceeded", "current")
+	if got := renderVerification(tr, cfg.VerifyCmd, "current", false, false); !strings.Contains(got, "→ ENV-FAULT") || strings.Contains(got, "[STALE:") {
+		t.Fatalf("fresh infra result was laundered or remained stale:\n%s", got)
+	}
+	if tr.lastVerify.Status != EvidenceInconclusive || tr.lastVerify.Cause != VerificationCauseEnvironment || tr.lastVerify.Attempts != 2 {
+		t.Fatalf("typed latest record = %+v", tr.lastVerify)
+	}
+}
+
 func TestStandingFreshnessUnknown(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
 	tr := newTurnTracker(cfg, 8)

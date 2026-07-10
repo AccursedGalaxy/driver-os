@@ -19,6 +19,61 @@ import (
 	"time"
 )
 
+// VerificationCause refines EvidenceStatus without creating a second status
+// taxonomy. It records why a check was failed or inconclusive.
+type VerificationCause string
+
+const (
+	VerificationCauseNone           VerificationCause = ""
+	VerificationCauseTestFailure    VerificationCause = "test-failure"
+	VerificationCauseTimeout        VerificationCause = "timeout"
+	VerificationCauseEnvironment    VerificationCause = "environment-fault"
+	VerificationCauseCancellation   VerificationCause = "cancellation"
+	VerificationCauseExecutionError VerificationCause = "execution-error"
+)
+
+// VerificationRecord is the single standing-context record for either a
+// model-issued check or the configured gate. Tree identifies the exact workspace
+// snapshot measured by the command — it is what the staleness label keys on —
+// and Attempts counts gate recurrences so replacement ordering is explicit.
+type VerificationRecord struct {
+	Status      EvidenceStatus
+	Cause       VerificationCause
+	Command     string
+	Output      string
+	Fingerprint string
+	Tree        string
+	Attempts    int
+}
+
+func classifyRunObservation(obs string) (EvidenceStatus, VerificationCause) {
+	switch {
+	case isRunSuccess(obs):
+		return EvidencePassed, VerificationCauseNone
+	case isRunTimeout(obs):
+		return EvidenceInconclusive, VerificationCauseTimeout
+	case isInfraFault(obs):
+		return EvidenceInconclusive, VerificationCauseEnvironment
+	case strings.HasPrefix(obs, "ERROR:") && strings.Contains(strings.ToLower(obs), "cancel"):
+		return EvidenceInconclusive, VerificationCauseCancellation
+	case strings.HasPrefix(obs, "ERROR:"):
+		return EvidenceInconclusive, VerificationCauseExecutionError
+	case isRunFailure(obs):
+		return EvidenceFailed, VerificationCauseTestFailure
+	default:
+		return EvidenceInconclusive, VerificationCauseExecutionError
+	}
+}
+
+func newVerificationRecord(cmd, obs, tree string) VerificationRecord {
+	status, cause := classifyRunObservation(obs)
+	return VerificationRecord{
+		Status: status, Cause: cause, Command: strings.TrimSpace(cmd),
+		Output: tailClip(obs, standingGateTailCap), Fingerprint: runFingerprint(obs),
+		Tree: tree, Attempts: 1,
+	}
+}
+
 type turnTracker struct {
 	cfg     Config
 	maxIter int
@@ -34,15 +89,8 @@ type turnTracker struct {
 
 	// Standing context records: generic last run and authoritative gate run are
 	// independent so a later non-gate command cannot clobber the last verify status.
-	lastRunCmd  string
-	lastRunTail string
-	lastRunTree string
-
-	lastVerifyCmd    string
-	lastVerifyPassed bool
-	lastVerifyFailed bool
-	lastVerifyTail   string
-	lastVerifyTree   string
+	lastRun    VerificationRecord
+	lastVerify VerificationRecord
 
 	// Churn signals + the once-only latch (see Config.ChurnNudgeRuns).
 	failRuns int // failing `run` results this session.
@@ -130,17 +178,12 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 }
 
 func (t *turnTracker) recordRun(cmd, obs, tree string) {
-	cmd = strings.TrimSpace(cmd)
-	t.lastRunCmd = cmd
-	t.lastRunTail = tailClip(obs, standingGateTailCap)
-	t.lastRunTree = tree
+	record := newVerificationRecord(cmd, obs, tree)
+	t.lastRun = record
 	verify := strings.TrimSpace(t.cfg.VerifyCmd)
-	if verify != "" && cmd == verify {
-		t.lastVerifyCmd = cmd
-		t.lastVerifyPassed = isRunSuccess(obs)
-		t.lastVerifyFailed = isRunFailure(obs)
-		t.lastVerifyTail = tailClip(obs, standingGateTailCap)
-		t.lastVerifyTree = tree
+	if verify != "" && record.Command == verify {
+		record.Attempts = t.lastVerify.Attempts + 1
+		t.lastVerify = record
 	}
 }
 

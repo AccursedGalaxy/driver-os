@@ -172,7 +172,7 @@ func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown b
 	}
 	var lines []string
 	if verifyCmd != "" {
-		if tr.lastVerifyCmd == "" {
+		if tr.lastVerify.Command == "" {
 			if unchanged {
 				lines = append(lines, fmt.Sprintf("gate: `%s` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)", verifyCmd))
 			} else {
@@ -183,38 +183,49 @@ func renderVerification(tr *turnTracker, verifyCmd, curTree string, curUnknown b
 				lines = append(lines, fmt.Sprintf("gate: `%s` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed.%s", verifyCmd, hint))
 			}
 		} else {
-			tag := freshnessTag(tr.lastVerifyTree, curTree, curUnknown)
+			tag := freshnessTag(tr.lastVerify.Tree, curTree, curUnknown)
 			if unchanged {
 				tag = ""
 			}
-			lines = append(lines, fmt.Sprintf("gate: `%s` → %s%s", tr.lastVerifyCmd, passFail(tr.lastVerifyPassed, tr.lastVerifyFailed), tag))
-			if tr.lastVerifyTail != "" {
-				lines = append(lines, tr.lastVerifyTail)
+			lines = append(lines, fmt.Sprintf("gate: `%s` → %s%s", tr.lastVerify.Command, verificationWord(tr.lastVerify), tag))
+			if tr.lastVerify.Output != "" {
+				lines = append(lines, tr.lastVerify.Output)
 			}
 		}
-		if tr.lastRunCmd != "" && strings.TrimSpace(tr.lastRunCmd) != strings.TrimSpace(tr.lastVerifyCmd) {
-			lines = append(lines, fmt.Sprintf("last check (not the gate): `%s` → %s%s", tr.lastRunCmd, passFail(tr.lastRunPassed, tr.lastRunFailed), freshnessTag(tr.lastRunTree, curTree, curUnknown)))
+		if tr.lastRun.Command != "" && strings.TrimSpace(tr.lastRun.Command) != strings.TrimSpace(tr.lastVerify.Command) {
+			lines = append(lines, fmt.Sprintf("last check (not the gate): `%s` → %s%s", tr.lastRun.Command, verificationWord(tr.lastRun), freshnessTag(tr.lastRun.Tree, curTree, curUnknown)))
 		}
 		return strings.Join(lines, "\n")
 	}
-	if tr.lastRunCmd != "" {
-		lines = append(lines, fmt.Sprintf("last check: `%s` → %s%s", tr.lastRunCmd, passFail(tr.lastRunPassed, tr.lastRunFailed), freshnessTag(tr.lastRunTree, curTree, curUnknown)))
-		if tr.lastRunTail != "" {
-			lines = append(lines, tr.lastRunTail)
+	if tr.lastRun.Command != "" {
+		lines = append(lines, fmt.Sprintf("last check: `%s` → %s%s", tr.lastRun.Command, verificationWord(tr.lastRun), freshnessTag(tr.lastRun.Tree, curTree, curUnknown)))
+		if tr.lastRun.Output != "" {
+			lines = append(lines, tr.lastRun.Output)
 		}
 		return strings.Join(lines, "\n")
 	}
 	return "last check: none yet"
 }
 
-func passFail(passed, failed bool) string {
-	if passed {
+func verificationWord(record VerificationRecord) string {
+	switch record.Status {
+	case EvidencePassed:
 		return "PASS"
-	}
-	if failed {
+	case EvidenceFailed:
 		return "FAIL"
 	}
-	return "UNKNOWN"
+	switch record.Cause {
+	case VerificationCauseTimeout:
+		return "TIMEOUT"
+	case VerificationCauseEnvironment:
+		return "ENV-FAULT"
+	case VerificationCauseCancellation:
+		return "CANCELED"
+	case VerificationCauseExecutionError:
+		return "EXEC-ERROR"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 func freshnessTag(runTree, curTree string, unknown bool) string {
