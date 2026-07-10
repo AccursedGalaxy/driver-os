@@ -1,0 +1,1 @@
+{"calls":[{"pre_delay_ms":300,"chunk_delay_ms":20,"chunks":["Hello ","world."],"tool_calls":[{"name":"bash","args":{"command":"echo hi"}}]},{"chunks":["All done."]}]}
