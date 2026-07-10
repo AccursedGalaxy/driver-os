@@ -20,8 +20,9 @@ runs `Exec` inside a locked-down container (network off, read-only root fs,
 CPU/memory/pids caps, non-root, all caps dropped), reachable at kernel-strength
 isolation with `--runtime=runsc` (gVisor). The `MinIsolation` gate
 (`agent.Config`) refuses to start a run on a sandbox weaker than the task
-requires — so `-untrusted` never executes code on the host or a shared-kernel
-container. See `README.md` ("Running untrusted code") for usage.
+requires — so the authoritative `untrusted` trust profile never executes code on
+the host or a shared-kernel container. See `README.md` ("Running untrusted
+code") for usage.
 
 ## The plan: one interface, swappable backends
 

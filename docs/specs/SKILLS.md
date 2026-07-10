@@ -139,7 +139,7 @@ Three sources, later wins on name collision (collision → stderr warning):
    dir of skill folders or a single skill folder (detected by SKILL.md
    presence). Highest precedence; also the eval/test hook.
 
-Trust gate: when the run is `-untrusted` (workspace contents are
+Trust gate: when the normalized trust profile is `untrusted` (workspace contents are
 attacker-controlled), **project skills are not loaded** — a cloned repo must
 not be able to inject standing instructions into the system prompt. User and
 explicit skills still load (the operator chose them). This is the OWASP
@@ -297,7 +297,7 @@ Threat model deltas (see docs/specs/SANDBOX.md for the base):
 - A skill body is **standing instructions injected into the agent's
   context** — equivalent in power to the persona. Therefore: source trust
   is the control. User + explicit dirs are operator-chosen (trusted);
-  project dirs are repo-controlled (excluded under `-untrusted`, §D3).
+  project dirs are repo-controlled (excluded by the `untrusted` trust profile, §D3).
 - Bundled scripts execute **inside the sandbox** via the normal `run` tool —
   they get exactly the isolation the run already has (P2: the sandbox is
   the boundary). Host-side code never executes skill content; it only reads

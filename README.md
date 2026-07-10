@@ -168,10 +168,9 @@ backend, not the tool, decides how strongly that boundary isolates:
 # (network off, root fs read-only, CPU/memory/pids capped, non-root user):
 go run ./cmd/driver run -sandbox=docker -task "..."
 
-# Treat the task's code as HOSTILE: require gVisor and refuse to start on
-# anything weaker. Fails closed: `-untrusted` without `-runtime=runsc` will not
-# run a single command:
-go run ./cmd/driver run -sandbox=docker -runtime=runsc -untrusted -task "..."
+# Treat the task's code as HOSTILE. The named profile is authoritative and
+# normalizes sandbox, runtime, network, secrets, worktree, and instruction policy:
+go run ./cmd/driver run -trust untrusted -task "..."
 ```
 
 Build the container image once (it carries `sh`, `rg`, `git`, `go`):
