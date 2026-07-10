@@ -155,6 +155,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		ev.isolation = EvidenceFailed
 		// Prompt resolution and native schemas have not run on this safety refusal;
 		// the record deliberately hashes empty protocol representations.
+		refusal.TerminationPolicy = resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)
 		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "tools")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
@@ -178,7 +179,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	ev.verifyConfigured = strings.TrimSpace(cfg.VerifyCmd) != ""
 	ev.verifyCommand = cfg.VerifyCmd
 	knobs := resolveKnobs(cfg)
-	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
+	maxIter, maxTok, runTimeout := knobs.maxIter, knobs.maxTok, knobs.runTimeout
+	policy := knobs.terminationPolicy
 	cfg.Tools = wrapTools(cfg, runTimeout)
 	gs, err := newGates(ctx, cfg, runTimeout)
 	if err != nil {
@@ -198,7 +200,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// nudge stays out (O3). Coding runs use FinishNudgeWindow instead.
 	answerNudgeOK := isObserveOnly(cfg.Tools)
 
-	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	res := &RunResult{Task: cfg.Task, Root: cfg.Root, TerminationPolicy: policy}
 	recordAutoVerifyResolution(res, cfg)
 	gs.applyBaseline(res)
 	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
@@ -256,7 +258,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (P5) Frontier/state-aware explore-spiral detector (deliverable 1): replaces
 	// the old fixed consecutive-discovery-turn count. spiralWindow is the cycle
 	// window (Config.NavSpiralWindow, default noProgressWindow); see spiralState.
-	spiral := newSpiralState(spiralWindow)
+	spiral := newSpiralState(policy, &res.DetectorCounters)
 	grounded := false // (P4) gates memory writes — only a verified answer is stored.
 
 	// (review #9) The stagnant/churn/diagnostics/finisher state shared with Run
@@ -264,7 +266,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// wire-format-specific (per-turn here, per-call in the text loop). The
 	// stagnant detector is still evaluated on each `run` result regardless of
 	// which turn it lands in.
-	tr := newTurnTracker(cfg, maxIter)
+	tr := newTurnTracker(cfg, maxIter, policy, &res.DetectorCounters)
 	var standing *standingState
 	if cfg.StandingContext {
 		standing = newStandingState()
@@ -563,7 +565,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// don't false-kill it mid-thought), a frozen or absent trace gets the strict
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
-			if repeats++; repeats >= repeatThreshold(reasoningAdvanced) {
+			if repeats++; repeats >= repeatThreshold(policy, reasoningAdvanced) {
 				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
 				// (deliverable 5) explicit killing-turn Observation, uniform with the
@@ -573,6 +575,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				}
 				res.Steps = append(res.Steps, steps...)
 				res.Outcome = KilledRepeat
+				if reasoningAdvanced {
+					res.DetectorCounters.ReasoningRepeat++
+				} else {
+					res.DetectorCounters.Repeat++
+				}
+				res.DetectorCounters.terminated("repeat", i)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		} else {
@@ -600,6 +608,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				}
 				res.Steps = append(res.Steps, steps...)
 				res.Outcome = KilledSpiral
+				if strings.Contains(reason, "revisiting") {
+					res.DetectorCounters.terminated("spiral_cycle", i)
+				} else {
+					res.DetectorCounters.terminated("spiral_wander", i)
+				}
 				res.Reason = reason
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
@@ -736,6 +749,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					messages = append(messages, llm.ToolResultMsg(rc.ID, "not executed: run stopped by the no-progress detector", true))
 				}
 				res.Outcome = KilledStagnant
+				res.DetectorCounters.Stagnant++
+				res.DetectorCounters.terminated("stagnant", i)
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", stagnantCount)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
@@ -749,9 +764,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// earlier no-reasoning KilledRepeat path and message shape.
 		if kill, count := tr.observeToolObservation(strings.Join(turnObservationFPs, "\n---CALL---\n")); kill {
 			res.Outcome = KilledRepeat
+			res.DetectorCounters.ToolObsRepeat++
+			res.DetectorCounters.terminated("tool_obs_repeat", i)
 			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, count)
 			return gs.upgradeIfVerified(ctx, res), nil
 		} else if msg := escalatingRepeatNudge(count); msg != "" {
+			res.DetectorCounters.ToolObsRepeat++
 			messages = append(messages, llm.User(msg))
 		}
 
@@ -762,6 +780,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// format), INFORMATION not a gate (see docs/specs/CODE-INTELLIGENCE.md).
 		if editedThisTurn {
 			if msg := tr.diagnostics(loopCtx, runTimeout); msg != "" {
+				res.DetectorCounters.Diagnostics++
 				messages = append(messages, llm.User(msg))
 			}
 		}
@@ -771,6 +790,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// conversation stays well-formed): a standalone hint the model reads next
 		// turn. See Config.FinishNudgeWindow.
 		if tr.finishNudge(i) {
+			res.DetectorCounters.FinishNudge++
 			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 			messages = append(messages, llm.User(finishNudgeNative))
 		}
@@ -782,6 +802,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			maxIter-i <= cfg.AnswerNudgeWindow {
 			cfg.Obs.Note("near cap — nudging the agent to stop exploring and answer")
 			messages = append(messages, llm.User(answerNudgeNative))
+			res.DetectorCounters.AnswerNudge++
 			answerNudged = true
 		}
 
@@ -794,6 +815,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// waiting for. Fires once, leaving a turn to act.
 		if !sayNudged && cfg.FinishTool != "" && i < maxIter && maxIter-i <= finishToolNudgeWindow {
 			cfg.Obs.Note("near cap — reminding the agent to finish with the " + cfg.FinishTool + " tool")
+			res.DetectorCounters.FinishNudge++
 			messages = append(messages, llm.User(fmt.Sprintf(
 				"[hint: your action budget is nearly spent (%d turn(s) left). Wrap up NOW: call the %q tool with a short message — your files are saved either way, but a message you never send is lost.]",
 				maxIter-i, cfg.FinishTool)))

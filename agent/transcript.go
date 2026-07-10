@@ -29,7 +29,8 @@ import (
 //	v6 = RunRecord carries typed guarantee evidence.
 //	v7 = RunRecord carries the config record: canonical effective config,
 //	     prompt/tool-schema/config hashes, build identity, and reserved profile fields.
-const TranscriptSchemaVersion = "7"
+//	v8 = RunRecord carries resolved termination policy and detector telemetry.
+const TranscriptSchemaVersion = "8"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -98,9 +99,11 @@ type RunRecord struct {
 	// usage) — the calibration telemetry the corpus tooling aggregates
 	// (FP rate per reviewer = refuted+expired / total blockers). Absent when
 	// the run had no Reviewer configured.
-	Review     *ReviewReport `json:"review,omitempty"`
-	Guarantees Guarantees    `json:"guarantees"`
-	Config     *ConfigRecord `json:"config,omitempty"`
+	Review            *ReviewReport     `json:"review,omitempty"`
+	Guarantees        Guarantees        `json:"guarantees"`
+	Config            *ConfigRecord     `json:"config,omitempty"`
+	TerminationPolicy TerminationPolicy `json:"termination_policy"`
+	DetectorCounters  DetectorCounters  `json:"detector_counters"`
 
 	// Plan is the plan-stage record (the plan handed to the solver, or why
 	// there was none, plus the planner's own usage — kept out of Usage so
@@ -125,19 +128,21 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		return RunRecord{SchemaVersion: TranscriptSchemaVersion}
 	}
 	rec := RunRecord{
-		SchemaVersion: TranscriptSchemaVersion,
-		ID:            res.ID,
-		Model:         model,
-		Task:          res.Task,
-		Outcome:       res.Outcome,
-		RescuedFrom:   res.RescuedFrom,
-		Answer:        res.Answer,
-		Reason:        res.Reason,
-		Iterations:    res.Iterations,
-		Usage:         res.Usage,
-		Review:        res.Review,
-		Guarantees:    res.Guarantees,
-		Config:        res.ConfigRecord,
+		SchemaVersion:     TranscriptSchemaVersion,
+		ID:                res.ID,
+		Model:             model,
+		Task:              res.Task,
+		Outcome:           res.Outcome,
+		RescuedFrom:       res.RescuedFrom,
+		Answer:            res.Answer,
+		Reason:            res.Reason,
+		Iterations:        res.Iterations,
+		Usage:             res.Usage,
+		Review:            res.Review,
+		Guarantees:        res.Guarantees,
+		Config:            res.ConfigRecord,
+		TerminationPolicy: res.TerminationPolicy,
+		DetectorCounters:  res.DetectorCounters,
 
 		Plan:         res.Plan,
 		SolverCost:   res.SolverCost,

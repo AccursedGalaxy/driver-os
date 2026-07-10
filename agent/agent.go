@@ -260,7 +260,9 @@ type RunResult struct {
 	Guarantees Guarantees `json:"guarantees"`
 	// ConfigRecord is the transcript reproducibility snapshot for this run. It is
 	// populated by the native loop after prompt and tool schemas are finalized.
-	ConfigRecord *ConfigRecord
+	ConfigRecord      *ConfigRecord
+	TerminationPolicy TerminationPolicy `json:"termination_policy"`
+	DetectorCounters  DetectorCounters  `json:"detector_counters"`
 	// Repro is the repro-first gate report. nil unless ReproFirst was enabled.
 	Repro *ReproReport
 	// Plan is the plan-stage record — the plan the solver was handed (or why
@@ -547,6 +549,9 @@ type Config struct {
 	MaxIterations int           // 0 = DefaultMaxIterations. The hard cap on think->act->observe turns.
 	MaxTokens     int           // 0 = DefaultMaxTokens. Per-turn output cap on the model call.
 	RunTimeout    time.Duration // 0 = defaultRunTimeout. Wall-clock kill for a single `run` command.
+
+	// TerminationPolicy groups no-progress detector thresholds. Its zero value resolves to DefaultTerminationPolicy.
+	TerminationPolicy TerminationPolicy
 
 	// VerifyTimeout bounds the closing VerifyCmd executions (final gate,
 	// pre-flight baseline, kill/cap upgrade check) separately from the

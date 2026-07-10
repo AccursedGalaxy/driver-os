@@ -95,8 +95,8 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
 	run := newConfigRecord(cfg, "system prompt", nil)
-	if run.SchemaVersion != 7 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
-		t.Fatalf("v7 identity record = %+v", run)
+	if run.SchemaVersion != 8 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v8 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
 	compat := newConfigRecord(cfg, "system prompt", nil)
@@ -128,7 +128,7 @@ func TestConfigRecordProtocolHashing(t *testing.T) {
 // The record survives the transcript write→read round trip, and the
 // transcript schema version is bumped for the new field.
 func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
-	if TranscriptSchemaVersion != "7" {
+	if TranscriptSchemaVersion != "8" {
 		t.Fatalf("TranscriptSchemaVersion = %q, want \"7\" (v7 adds the config record)", TranscriptSchemaVersion)
 	}
 	dir := t.TempDir()
@@ -174,12 +174,12 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 	}
 }
 
-func TestConfigRecordV7ResolutionProvenance(t *testing.T) {
+func TestConfigRecordV8ResolutionProvenance(t *testing.T) {
 	cfg := Config{RequiredTrust: "reviewed-local", Canonical: true, FieldProvenance: map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli"}}
 	a := newConfigRecord(cfg, "system", nil)
 	b := newConfigRecord(cfg, "system", nil)
-	if a.SchemaVersion != 7 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
-		t.Fatalf("v7 resolution fields = %+v", a)
+	if a.SchemaVersion != 8 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
+		t.Fatalf("v8 resolution fields = %+v", a)
 	}
 	for key, source := range map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli", "model_configured": "derived", "finish_tool_configured": "derived"} {
 		if a.FieldProvenance[key] != source {

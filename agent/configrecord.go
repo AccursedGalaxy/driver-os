@@ -15,8 +15,8 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// ConfigRecord schema v7 adds profile resolution provenance.
-const configRecordSchemaVersion = 7
+// ConfigRecord schema v8 adds resolved termination policy.
+const configRecordSchemaVersion = 8
 
 // Binary and invocation-surface identifiers are stable transcript values.
 const (
@@ -102,30 +102,31 @@ type EffectiveConfig struct {
 	ReviewerIdentity        string            `json:"reviewer_identity,omitempty"`
 	PlannerIdentity         string            `json:"planner_identity,omitempty"`
 
-	VerifyCmd              string   `json:"verify_cmd,omitempty"`
-	AutoVerify             bool     `json:"auto_verify"`
-	AutoVerifySoft         bool     `json:"auto_verify_soft"`
-	SkipVerifyBaseline     bool     `json:"skip_verify_baseline"`
-	AbortOnRedBaseline     bool     `json:"abort_on_red_baseline"`
-	VerifyLastRun          bool     `json:"verify_last_run"`
-	ChurnNudgeRuns         int      `json:"churn_nudge_runs"`
-	VerifyContinue         bool     `json:"verify_continue"`
-	TestFence              []string `json:"test_fence,omitempty"`
-	DiffScope              []string `json:"diff_scope,omitempty"`
-	RequireDiff            bool     `json:"require_diff"`
-	ReviewConfigured       bool     `json:"review_configured"`
-	ReviewPolicy           int      `json:"review_policy"`
-	ReviewUnverified       bool     `json:"review_unverified"`
-	ReviewRounds           int      `json:"review_rounds"`
-	PlannerConfigured      bool     `json:"planner_configured"`
-	FinishNudgeWindow      int      `json:"finish_nudge_window"`
-	DiagnoseCmd            string   `json:"diagnose_cmd,omitempty"`
-	DiagnoseAfterEdits     int      `json:"diagnose_after_edits"`
-	NavSpiralWindow        int      `json:"nav_spiral_window"`
-	AnswerNudgeWindow      int      `json:"answer_nudge_window"`
-	FinishTool             string   `json:"finish_tool,omitempty"`
-	FinishToolConfigured   bool     `json:"finish_tool_configured"`
-	FinishToolTrustsCaller bool     `json:"finish_tool_trusts_caller"`
+	VerifyCmd              string            `json:"verify_cmd,omitempty"`
+	AutoVerify             bool              `json:"auto_verify"`
+	AutoVerifySoft         bool              `json:"auto_verify_soft"`
+	SkipVerifyBaseline     bool              `json:"skip_verify_baseline"`
+	AbortOnRedBaseline     bool              `json:"abort_on_red_baseline"`
+	VerifyLastRun          bool              `json:"verify_last_run"`
+	ChurnNudgeRuns         int               `json:"churn_nudge_runs"`
+	VerifyContinue         bool              `json:"verify_continue"`
+	TestFence              []string          `json:"test_fence,omitempty"`
+	DiffScope              []string          `json:"diff_scope,omitempty"`
+	RequireDiff            bool              `json:"require_diff"`
+	ReviewConfigured       bool              `json:"review_configured"`
+	ReviewPolicy           int               `json:"review_policy"`
+	ReviewUnverified       bool              `json:"review_unverified"`
+	ReviewRounds           int               `json:"review_rounds"`
+	PlannerConfigured      bool              `json:"planner_configured"`
+	FinishNudgeWindow      int               `json:"finish_nudge_window"`
+	DiagnoseCmd            string            `json:"diagnose_cmd,omitempty"`
+	DiagnoseAfterEdits     int               `json:"diagnose_after_edits"`
+	NavSpiralWindow        int               `json:"nav_spiral_window"`
+	TerminationPolicy      TerminationPolicy `json:"termination_policy"`
+	AnswerNudgeWindow      int               `json:"answer_nudge_window"`
+	FinishTool             string            `json:"finish_tool,omitempty"`
+	FinishToolConfigured   bool              `json:"finish_tool_configured"`
+	FinishToolTrustsCaller bool              `json:"finish_tool_trusts_caller"`
 }
 
 // newConfigRecord constructs the single shared reproducibility record path. Callers
@@ -223,7 +224,7 @@ func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
 		TestFence: cfg.TestFence, DiffScope: cfg.DiffScope, RequireDiff: cfg.RequireDiff, ReviewConfigured: cfg.Reviewer != nil,
 		ReviewPolicy: int(cfg.ReviewPolicy), ReviewUnverified: cfg.ReviewUnverified, ReviewRounds: reviewRounds,
 		PlannerConfigured: cfg.Planner != nil, FinishNudgeWindow: cfg.FinishNudgeWindow, DiagnoseCmd: cfg.DiagnoseCmd,
-		DiagnoseAfterEdits: cfg.DiagnoseAfterEdits, NavSpiralWindow: spiralWindow, AnswerNudgeWindow: cfg.AnswerNudgeWindow,
+		DiagnoseAfterEdits: cfg.DiagnoseAfterEdits, NavSpiralWindow: spiralWindow, TerminationPolicy: knobs.terminationPolicy, AnswerNudgeWindow: cfg.AnswerNudgeWindow,
 		FinishTool: cfg.FinishTool, FinishToolConfigured: strings.TrimSpace(cfg.FinishTool) != "", FinishToolTrustsCaller: cfg.FinishToolTrustsCaller,
 	}
 }
@@ -265,7 +266,7 @@ var configFieldClasses = map[string]configFieldClass{
 	"Model": {recordedDerived, "EffectiveConfig.ModelConfigured"}, "Sandbox": {excludedRuntime, ""}, "Memory": {recordedDerived, "EffectiveConfig.MemoryConfigured"}, "DisableMemoryStore": {recordedDirect, "DisableMemoryStore"}, "Persona": {recordedDirect, "Persona"}, "MemoryScope": {recordedDirect, "MemoryScope"}, "VerifySandbox": {recordedDerived, "EffectiveConfig.VerifySandboxConfigured"}, "Tools": {recordedDerived, "ConfigRecord.ToolSchemaSHA256"},
 	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"},
 	"MaxIterations": {recordedDirect, "MaxIterations"}, "MaxTokens": {recordedDirect, "MaxTokens"}, "RunTimeout": {recordedDirect, "RunTimeout"}, "VerifyTimeout": {recordedDirect, "VerifyTimeout"}, "ReasoningEffort": {recordedDirect, "ReasoningEffort"}, "PromptProfile": {recordedDirect, "PromptProfile"}, "CodeAct": {recordedDirect, "CodeAct"}, "ReproFirst": {recordedDirect, "ReproFirst"}, "ReproGate": {recordedDirect, "ReproGate"}, "BatchReads": {recordedDirect, "BatchReads"}, "ReadWindow": {recordedDirect, "ReadWindow"}, "ReadOutline": {recordedDirect, "ReadOutline"}, "MaxWallClock": {recordedDirect, "MaxWallClock"}, "MaxTotalTokens": {recordedDirect, "MaxTotalTokens"}, "MaxTotalCostUSD": {recordedDirect, "MaxTotalCostUSD"}, "AllowUnpricedSpend": {recordedDirect, "AllowUnpricedSpend"}, "CostFn": {recordedDerived, "EffectiveConfig.CostFnConfigured"}, "SolverModel": {recordedDirect, "SolverModel"}, "Spend": {recordedDerived, "EffectiveConfig.SpendConfigured"},
-	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "NavSpiralWindow": {recordedDirect, "NavSpiralWindow"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
+	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "NavSpiralWindow": {recordedDirect, "NavSpiralWindow"}, "TerminationPolicy": {recordedDerived, "EffectiveConfig.TerminationPolicy"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
 }
 
 // checkConfigFieldClassifications is shared by the oracle and its negative test.

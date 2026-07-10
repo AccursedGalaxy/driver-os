@@ -45,10 +45,11 @@ func (d *obsDedup) stub(rawObs string, i int) (string, bool) {
 }
 
 type loopKnobs struct {
-	maxIter      int
-	maxTok       int
-	runTimeout   time.Duration
-	spiralWindow int
+	maxIter           int
+	maxTok            int
+	runTimeout        time.Duration
+	spiralWindow      int
+	terminationPolicy TerminationPolicy
 }
 
 func resolveKnobs(cfg Config) loopKnobs {
@@ -64,15 +65,14 @@ func resolveKnobs(cfg Config) loopKnobs {
 	if runTimeout <= 0 {
 		runTimeout = defaultRunTimeout
 	}
-	spiralWindow := cfg.NavSpiralWindow
-	if spiralWindow <= 0 {
-		spiralWindow = noProgressWindow
-	}
+	policy := resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)
+	spiralWindow := policy.NavSpiralWindow
 	return loopKnobs{
-		maxIter:      maxIter,
-		maxTok:       maxTok,
-		runTimeout:   runTimeout,
-		spiralWindow: spiralWindow,
+		maxIter:           maxIter,
+		maxTok:            maxTok,
+		runTimeout:        runTimeout,
+		spiralWindow:      spiralWindow,
+		terminationPolicy: policy,
 	}
 }
 

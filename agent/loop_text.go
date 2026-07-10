@@ -41,6 +41,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		ev.isolation = EvidenceFailed
 		// No protocol prompt or tool grammar has been built before this safety
 		// refusal; record that absence as hashes of empty representations.
+		refusal.TerminationPolicy = resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)
 		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "text")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
@@ -56,7 +57,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
 	// so the loop body reads from locals and the defaults live in exactly one place.
 	knobs := resolveKnobs(cfg)
-	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
+	maxIter, maxTok, runTimeout := knobs.maxIter, knobs.maxTok, knobs.runTimeout
+	policy := knobs.terminationPolicy
 	cfg.Tools = wrapTools(cfg, runTimeout)
 	gs, err := newGates(ctx, cfg, runTimeout)
 	if err != nil {
@@ -65,7 +67,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	ev.baseTree = gs.runBaseTree
 	ev.closingReady = true
 
-	res := &RunResult{Task: cfg.Task, Root: cfg.Root}
+	res := &RunResult{Task: cfg.Task, Root: cfg.Root, TerminationPolicy: policy}
 	recordAutoVerifyResolution(res, cfg)
 	gs.applyBaseline(res)
 	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
@@ -120,7 +122,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	repeats := 0
 	// (P5) Frontier/state-aware explore-spiral detector (deliverable 1), shared
 	// with the native loop via spiralState so the two protocols cannot drift.
-	spiral := newSpiralState(spiralWindow)
+	spiral := newSpiralState(policy, &res.DetectorCounters)
 	// lastReasoning holds the previous turn's opaque reasoning trace (concatenated
 	// ReasoningPart.Raw). A thinking model whose trace keeps changing while its
 	// visible action repeats gets the lenient tight-loop threshold (maxReasoningRepeats);
@@ -130,7 +132,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (review #9) The stagnant/churn/diagnostics/finisher state shared with
 	// RunNative lives in ONE tracker; the loop-local vars above stay local
 	// because they are wire-format-specific (per-call here, per-turn there).
-	tr := newTurnTracker(cfg, maxIter)
+	tr := newTurnTracker(cfg, maxIter, policy, &res.DetectorCounters)
 
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
@@ -279,9 +281,15 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// before cutting. Frozen or absent reasoning is a real stall -> strict threshold.
 		if verb+" "+arg == lastAction {
 			repeats++
-			if repeats >= repeatThreshold(reasoningAdvanced) {
+			if repeats >= repeatThreshold(policy, reasoningAdvanced) {
 				res.Steps = append(res.Steps, step)
 				res.Outcome = KilledRepeat
+				if reasoningAdvanced {
+					res.DetectorCounters.ReasoningRepeat++
+				} else {
+					res.DetectorCounters.Repeat++
+				}
+				res.DetectorCounters.terminated("repeat", i)
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", lastAction, repeats)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
@@ -306,6 +314,11 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// wandering dies at the hard bound. Deterministic — no reasoning variance.
 			if kill, reason := spiral.observeDiscoveryTurn([]string{textDiscoveryTarget(verb, arg)}); kill {
 				res.Outcome = KilledSpiral
+				if strings.Contains(reason, "revisiting") {
+					res.DetectorCounters.terminated("spiral_cycle", i)
+				} else {
+					res.DetectorCounters.terminated("spiral_wander", i)
+				}
 				res.Reason = reason
 				// (deliverable 5) explicit killing-turn Observation — no empty turn.
 				step.Observation = "harness: run killed by explore-spiral detector: " + reason
@@ -354,6 +367,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if verb == "run" {
 			if kill, count := tr.observeRun(observation); kill {
 				res.Outcome = KilledStagnant
+				res.DetectorCounters.Stagnant++
+				res.DetectorCounters.terminated("stagnant", i)
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", count)
 				step.Observation = observation // the kill returns before the shared record point below.
 				res.Steps = append(res.Steps, step)
@@ -366,6 +381,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// re-checking a read/run turn. Appended to the observation the model
 			// reads next (the text loop's wire format).
 			if msg := tr.diagnostics(loopCtx, runTimeout); msg != "" {
+				res.DetectorCounters.Diagnostics++
 				observation += "\n\n" + msg
 			}
 		}
@@ -378,6 +394,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (P3) Churn nudge, appended to whatever the current observation is so the
 		// model reads it next turn.
 		if tr.churnNudge() {
+			res.DetectorCounters.ChurnNudge++
 			observation += churnNudge
 		}
 
@@ -385,12 +402,14 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// with no file changes between. Appended to the observation the model
 		// reads next — a nudge, never a kill.
 		if tr.greenRepeatNudge() {
+			res.DetectorCounters.GreenRepeatNudge++
 			observation += greenRepeatNudgeText
 		}
 
 		// (HP-4) Near-cap finisher (shared tracker), appended to THIS observation
 		// so the model reads it next turn. See Config.FinishNudgeWindow.
 		if tr.finishNudge(i) {
+			res.DetectorCounters.FinishNudge++
 			observation += finishNudgeText
 			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 		}
@@ -403,6 +422,8 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		repeatNudge := ""
 		if kill, count := tr.observeToolObservation(rawObservationFP); kill {
 			res.Outcome = KilledRepeat
+			res.DetectorCounters.ToolObsRepeat++
+			res.DetectorCounters.terminated("tool_obs_repeat", i)
 			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", verb+" "+arg, count)
 			step.Observation = observation
 			res.Steps = append(res.Steps, step)
@@ -410,6 +431,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			return gs.upgradeIfVerified(ctx, res), nil
 		} else {
 			repeatNudge = escalatingRepeatNudge(count)
+			if repeatNudge != "" {
+				res.DetectorCounters.ToolObsRepeat++
+			}
 		}
 
 		// (Lever 2b) Wire dedup-at-source — placed AFTER the repeat detector above so

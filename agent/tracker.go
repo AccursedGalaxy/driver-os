@@ -75,8 +75,10 @@ func newVerificationRecord(cmd, obs, tree string) VerificationRecord {
 }
 
 type turnTracker struct {
-	cfg     Config
-	maxIter int
+	cfg      Config
+	maxIter  int
+	policy   TerminationPolicy
+	counters *DetectorCounters
 
 	// (P5) Stagnant-observation detector state + the last-run flags the
 	// verification fallback (VerifyLastRun) and HP-4 finisher read. lastRunFP
@@ -123,8 +125,17 @@ type turnTracker struct {
 	greenNudged bool
 }
 
-func newTurnTracker(cfg Config, maxIter int) *turnTracker {
-	return &turnTracker{cfg: cfg, maxIter: maxIter}
+func newTurnTracker(cfg Config, maxIter int, policies ...any) *turnTracker {
+	t := &turnTracker{cfg: cfg, maxIter: maxIter, policy: resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)}
+	for _, v := range policies {
+		switch x := v.(type) {
+		case TerminationPolicy:
+			t.policy = x
+		case *DetectorCounters:
+			t.counters = x
+		}
+	}
+	return t
 }
 
 // observeRun ingests one `run` observation. A `run` that keeps FAILING with the
@@ -133,6 +144,9 @@ func newTurnTracker(cfg Config, maxIter int) *turnTracker {
 // not the action. Returns whether the stagnant detector should kill the run and
 // the recurrence count (for the kill message).
 func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
+	if t.policy.MaxStagnant <= 0 {
+		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
+	}
 	t.lastRunFailed = isRunFailure(obs)
 	t.lastRunPassed = isRunSuccess(obs) // (HP-4) the green/red of the most recent run.
 	if t.lastRunPassed {
@@ -174,7 +188,7 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 		t.greenRepeat, t.lastGreenFP = 0, ""
 	}
 
-	return t.stagnant >= maxStagnant, t.stagnant
+	return t.stagnant >= t.policy.MaxStagnant, t.stagnant
 }
 
 func (t *turnTracker) recordRun(cmd, obs, tree string) {
@@ -195,6 +209,9 @@ func (t *turnTracker) recordRun(cmd, obs, tree string) {
 // "N consecutive times" wording and giving a max-iteration run set to the hard
 // ceiling a chance to terminate as killed_repeat instead of hit_cap.
 func (t *turnTracker) observeToolObservation(fp string) (kill bool, count int) {
+	if t.policy.MaxReasoningRepeats <= 0 {
+		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
+	}
 	if fp == "" {
 		t.lastToolObsFP, t.toolObsRepeat = "", 0
 		return false, 0
@@ -204,7 +221,7 @@ func (t *turnTracker) observeToolObservation(fp string) (kill bool, count int) {
 	} else {
 		t.lastToolObsFP, t.toolObsRepeat = fp, 1
 	}
-	return t.toolObsRepeat >= maxReasoningRepeats, t.toolObsRepeat
+	return t.toolObsRepeat >= t.policy.MaxReasoningRepeats, t.toolObsRepeat
 }
 
 // observeAction records a dispatched action's mutation/churn signals at
@@ -286,10 +303,13 @@ func (t *turnTracker) finishNudge(i int) bool {
 // comments in agent.go explain the measured false-kill tradeoff). The caller
 // appends greenRepeatNudgeText to whatever the model reads next.
 func (t *turnTracker) greenRepeatNudge() bool {
+	if t.policy.GreenRepeatThreshold <= 0 {
+		t.policy = resolveTerminationPolicy(t.cfg.TerminationPolicy, t.cfg.NavSpiralWindow)
+	}
 	if t.greenNudged {
 		return false
 	}
-	if t.greenRepeat >= 3 {
+	if t.greenRepeat >= t.policy.GreenRepeatThreshold {
 		t.greenNudged = true
 		return true
 	}
@@ -300,11 +320,11 @@ func (t *turnTracker) greenRepeatNudge() bool {
 // loops: a turn whose reasoning trace ADVANCED gets the lenient threshold (see
 // maxReasoningRepeats for the rationale and the known Gemini tradeoff); a
 // frozen or absent trace keeps the strict one.
-func repeatThreshold(reasoningAdvanced bool) int {
+func repeatThreshold(policy TerminationPolicy, reasoningAdvanced bool) int {
 	if reasoningAdvanced {
-		return maxReasoningRepeats
+		return policy.MaxReasoningRepeats
 	}
-	return maxRepeats
+	return policy.MaxRepeats
 }
 
 // spiralFrontierCap bounds the visited-target set the explore-spiral detector
@@ -343,6 +363,8 @@ const spiralWanderMultiple = 4
 // 2× leniency stays with the tight-loop repeat detector (repeatThreshold), which
 // is the only place it still applies (deliverable 2/4).
 type spiralState struct {
+	policy   TerminationPolicy
+	counters *DetectorCounters
 	window   int             // cycle window (Config.NavSpiralWindow, default noProgressWindow).
 	visited  map[string]bool // bounded frontier of discovery targets seen this run.
 	order    []string        // insertion order, for FIFO eviction at spiralFrontierCap.
@@ -350,11 +372,22 @@ type spiralState struct {
 	wander   int             // consecutive discovery-only turns (novel or not).
 }
 
-func newSpiralState(window int) *spiralState {
-	if window <= 0 {
-		window = noProgressWindow
+func newSpiralState(policyOrWindow any, counters ...*DetectorCounters) *spiralState {
+	policy := DefaultTerminationPolicy()
+	switch v := policyOrWindow.(type) {
+	case TerminationPolicy:
+		policy = v
+	case int:
+		policy.NavSpiralWindow = v
 	}
-	return &spiralState{window: window, visited: make(map[string]bool)}
+	if policy.NavSpiralWindow <= 0 {
+		policy.NavSpiralWindow = DefaultTerminationPolicy().NavSpiralWindow
+	}
+	var c *DetectorCounters
+	if len(counters) > 0 {
+		c = counters[0]
+	}
+	return &spiralState{policy: policy, counters: c, window: policy.NavSpiralWindow, visited: make(map[string]bool)}
 }
 
 // observeDiscoveryTurn ingests the normalized target set of a discovery-ONLY turn
@@ -378,9 +411,15 @@ func (s *spiralState) observeDiscoveryTurn(targets []string) (kill bool, reason 
 		s.cycleRun++
 	}
 	if s.cycleRun >= s.window {
+		if s.counters != nil {
+			s.counters.SpiralCycle++
+		}
 		return true, fmt.Sprintf("no progress: %d discovery turns revisiting only already-seen targets (list_dir/search) — read or edit a specific target, or answer", s.cycleRun)
 	}
-	if s.wander >= spiralWanderMultiple*s.window {
+	if s.wander >= s.policy.WanderMultiple*s.window {
+		if s.counters != nil {
+			s.counters.SpiralWander++
+		}
 		return true, fmt.Sprintf("no progress: %d discovery-only turns without reading, editing, or running anything — follow a pointer to a concrete target, or answer", s.wander)
 	}
 	return false, ""
@@ -391,7 +430,7 @@ func (s *spiralState) observeDiscoveryTurn(targets []string) (kill bool, reason 
 func (s *spiralState) add(tgt string) {
 	s.visited[tgt] = true
 	s.order = append(s.order, tgt)
-	if len(s.order) > spiralFrontierCap {
+	if len(s.order) > s.policy.FrontierCap {
 		delete(s.visited, s.order[0])
 		s.order = s.order[1:]
 	}
