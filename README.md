@@ -5,13 +5,23 @@
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An agent-harness research platform, built on a small Go library for driving LLM
-**model behavior** across providers behind one uniform interface. Swap providers
-freely, or run several at once to compare or race them. The library core
-(`llm/`) is modeled on the `database/sql` driver pattern; on top of it sit a
-think→act→observe agent loop, sandbox isolation tiers, an eval/dogfood harness,
-and an adversarial council review system (see the **Status** section below for
-the full surface).
+driver-os is an experimental agent operating system in Go: a think→act→observe
+coding agent with typed run outcomes, sandbox isolation tiers, verification and
+review gates, per-role cost accounting, and an eval harness that grades runs
+against external oracles rather than trusting the model's own "done". It runs
+any model behind one provider interface, so you can swap providers or race
+several at once.
+
+The repository is three layers with different stability promises. Experimental
+code depends on the engine, never the reverse:
+
+1. **Core library** (`llm/`, `provider/`, `sandbox/`): provider abstraction
+   modeled on the `database/sql` driver pattern, plus the sandbox interfaces.
+   The most stable surface.
+2. **Execution engine** (`agent/`, `cmd/agent`, `cmd/driver`): the agent loop,
+   gates, detectors, transcripts, and the headless + TUI binaries.
+3. **Research lab** (`eval/`, `council/`, benchmark tooling, `docs/findings/`):
+   the measurement machinery and its results. Changes fast, breaks freely.
 
 See [DESIGN.md](DESIGN.md) for the library spec and the reasoning behind each
 decision.
