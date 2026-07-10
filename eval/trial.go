@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/driver-os/sandbox/local"
+	"github.com/AccursedGalaxy/driver-os/vcs"
 )
 
 // Trial is one execution of a Case by a Model: the agent's typed self-report
@@ -157,10 +159,14 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 		return tr
 	}
 
-	// VCS baseline initialisation for runners that need a clean work tree.
-	// Must happen AFTER materialise because it operates on the fixture dir.
+	// VCS plumbing is initialized before Setup because Setup may invoke git.
+	// Fresh repositories deliberately defer their first commit until Setup has
+	// established the agent's true starting state.
+	freshVCS := false
 	if m.Run != nil && m.RequiresVCS {
-		if err := initVCSBaseline(dir); err != nil {
+		var err error
+		freshVCS, err = initVCSBaseline(dir)
+		if err != nil {
 			tr.Err = "ladder: vcs baseline: " + err.Error()
 			return tr
 		}
@@ -182,13 +188,37 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	defer sb.Close()
 
 	var setupLadderVerify *string
+	var setupCreated map[string]TreeEntry
 	if customRun != nil && c.Setup != nil {
+		// Existing repositories have an oracle baseline at HEAD. Snapshot the
+		// complete tree before Setup without touching its real index.
+		var before string
+		if c.VCSWorkspace && !freshVCS {
+			before, err = vcs.WriteTree(ctx, dir)
+			if err != nil {
+				tr.Err = "setup: snapshot before setup: " + err.Error()
+				return tr
+			}
+		}
 		res, err := c.Setup(ctx, dir, sb)
 		if err != nil {
 			tr.Err = "setup: " + err.Error()
 			return tr
 		}
 		setupLadderVerify = res.LadderVerify
+		if c.VCSWorkspace && !freshVCS {
+			setupCreated, err = setupMutationCheck(ctx, dir, before)
+			if err != nil {
+				tr.Err = "setup: " + err.Error()
+				return tr
+			}
+		}
+	}
+	if freshVCS {
+		if err := commitVCSBaseline(dir); err != nil {
+			tr.Err = "ladder: vcs baseline: " + err.Error()
+			return tr
+		}
 	}
 
 	cfg := c.Config // copy the knob template; fill the per-trial fields.
@@ -282,30 +312,28 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	// error or a hit-cap simply leaves the fixture unfinished, which the oracle
 	// will fail (correctly, and without counting as a false positive since the
 	// Outcome is not Answered).
-	g := c.Oracle.Grade(ctx, GradeInput{Root: dir, Sandbox: sb, Result: res})
+	g := c.Oracle.Grade(ctx, GradeInput{Root: dir, Sandbox: sb, Result: res, SetupCreated: setupCreated})
 	tr.Pass = g.Pass
 	tr.NoAttempt = g.NoAttempt
 	tr.Detail = g.Detail
 	return tr
 }
 
-// initVCSBaseline ensures dir is a git work tree with a clean baseline commit.
-// If the dir is already inside a git work tree (e.g. SWE-bench instances that
-// ship .git inside the image), it leaves it alone — ladder.Run will enforce
-// clean-tree. Otherwise it initialises a fresh repo, stages everything, and
-// commits a baseline so ladder's VCS operations have a starting tree to diff
-// against. This is needed because GitFixture uses `git archive` and does not
-// materialize the .git directory.
-func initVCSBaseline(dir string) error {
+// initVCSBaseline ensures dir is a git work tree. It returns true when it
+// created a fresh repository; its baseline commit is deliberately deferred
+// until after Setup.
+func initVCSBaseline(dir string) (bool, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
 	if err := cmd.Run(); err == nil {
-		// Already a git work tree — ladder's clean-tree check handles the rest.
-		return nil
+		return false, nil
 	}
-	// Init a fresh repo, stage everything, commit a baseline.
 	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
-		return fmt.Errorf("git init: %w (%s)", err, string(out))
+		return false, fmt.Errorf("git init: %w (%s)", err, string(out))
 	}
+	return true, nil
+}
+
+func commitVCSBaseline(dir string) error {
 	add := exec.Command("git", "-C", dir, "add", "-A")
 	if out, err := add.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add: %w (%s)", err, string(out))
@@ -318,4 +346,59 @@ func initVCSBaseline(dir string) error {
 		return fmt.Errorf("git commit: %w (%s)", err, string(out))
 	}
 	return nil
+}
+
+// setupMutationCheck rejects Setup changes to paths tracked by HEAD and returns
+// only newly-created untracked entries for the oracle to conditionally ignore.
+func setupMutationCheck(ctx context.Context, dir, before string) (map[string]TreeEntry, error) {
+	after, err := vcs.WriteTree(ctx, dir)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot after setup: %w", err)
+	}
+	head, err := gitTreeEntries(ctx, dir, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	beforeEntries, err := gitTreeEntries(ctx, dir, before)
+	if err != nil {
+		return nil, err
+	}
+	afterEntries, err := gitTreeEntries(ctx, dir, after)
+	if err != nil {
+		return nil, err
+	}
+	for path, entry := range head {
+		if afterEntries[path] != entry {
+			return nil, fmt.Errorf("setup polluted tracked path %q", path)
+		}
+	}
+	created := make(map[string]TreeEntry)
+	for path, entry := range afterEntries {
+		if _, tracked := head[path]; !tracked {
+			if _, existed := beforeEntries[path]; !existed {
+				created[path] = entry
+			}
+		}
+	}
+	return created, nil
+}
+
+func gitTreeEntries(ctx context.Context, dir, tree string) (map[string]TreeEntry, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "ls-tree", "-rz", tree).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree %s: %w", tree, err)
+	}
+	entries := make(map[string]TreeEntry)
+	for _, record := range strings.Split(string(out), "\x00") {
+		if record == "" {
+			continue
+		}
+		parts := strings.SplitN(record, "\t", 2)
+		fields := strings.Fields(parts[0])
+		if len(parts) != 2 || len(fields) != 3 {
+			return nil, fmt.Errorf("invalid git tree entry")
+		}
+		entries[parts[1]] = TreeEntry{Mode: fields[0], Type: fields[1], Object: fields[2]}
+	}
+	return entries, nil
 }

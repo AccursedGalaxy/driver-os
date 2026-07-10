@@ -29,6 +29,19 @@ type GradeInput struct {
 	Root    string
 	Sandbox sandbox.Sandbox
 	Result  *agent.RunResult
+
+	// SetupCreated records untracked paths that Setup created, keyed by path.
+	// The entry is the complete post-Setup git tree identity; an oracle may
+	// exclude a path only while its current entry remains exactly this value.
+	SetupCreated map[string]TreeEntry
+}
+
+// TreeEntry is a git tree entry's full identity. Object alone is insufficient:
+// mode distinguishes executable files and symlinks from regular files.
+type TreeEntry struct {
+	Mode   string
+	Type   string
+	Object string
 }
 
 // Grade is an oracle's verdict: did the run actually satisfy the case, and why.
