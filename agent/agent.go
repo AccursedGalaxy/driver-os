@@ -413,6 +413,10 @@ func (p ReviewPolicy) Optional() bool { return p.optional() }
 // recall, nil Obs -> silent).
 type Config struct {
 
+	// verifyBaselineCache is Session-owned state, injected by SendParts. It is
+	// deliberately unexported so one-shot runs always start cold.
+	verifyBaselineCache *verifyBaselineCache
+
 	// BinaryLabel is the legacy v1-v3 conflated binary label retained for
 	// transcript compatibility. New callers should set BinaryIdentity instead.
 	BinaryLabel string

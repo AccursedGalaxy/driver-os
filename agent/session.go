@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
@@ -11,6 +12,18 @@ import (
 // same multi-turn machinery drives either — the caller picks the loop that fits
 // its provider exactly as cmd/agent already does.
 type LoopFunc func(context.Context, Config) (*RunResult, error)
+
+// verifyBaselineCache retains the pre-flight result for a Session. Its tree key
+// makes a cached result valid only while the complete working tree is unchanged.
+type verifyBaselineCache struct {
+	mu       sync.Mutex
+	tree     string
+	cmd      string
+	measured bool
+	red      bool
+	out      string
+	infra    string
+}
 
 // Session is a CONTINUING conversation over the agent loop — the statefulness a
 // chat front-end needs that single-shot Run/RunNative lack. Each Send runs one
@@ -27,9 +40,10 @@ type LoopFunc func(context.Context, Config) (*RunResult, error)
 // Session is NOT safe for concurrent Sends; a conversation is inherently serial
 // (each turn depends on the last). Drive it from one goroutine.
 type Session struct {
-	cfg      Config        // base config; Task and History are set per Send, the rest is fixed.
-	loop     LoopFunc      // Run or RunNative.
-	messages []llm.Message // the full conversation carried across turns.
+	cfg            Config        // base config; Task and History are set per Send, the rest is fixed.
+	loop           LoopFunc      // Run or RunNative.
+	messages       []llm.Message // the full conversation carried across turns.
+	verifyBaseline *verifyBaselineCache
 }
 
 // NewSession returns a Session that runs each turn through loop with cfg as the
@@ -46,7 +60,7 @@ func NewSessionWith(cfg Config, loop LoopFunc, history []llm.Message) *Session {
 	if loop == nil {
 		loop = Run
 	}
-	return &Session{cfg: cfg, loop: loop, messages: append([]llm.Message(nil), history...)}
+	return &Session{cfg: cfg, loop: loop, messages: append([]llm.Message(nil), history...), verifyBaseline: &verifyBaselineCache{}}
 }
 
 // Send runs one user turn to completion and returns its result. The conversation
@@ -67,6 +81,7 @@ func (s *Session) SendParts(ctx context.Context, text string, images []llm.Image
 	cfg.Task = text
 	cfg.TaskImages = images
 	cfg.History = s.messages
+	cfg.verifyBaselineCache = s.verifyBaseline
 	res, err := s.loop(ctx, cfg)
 	s.persistAutoVerify(res)
 	// On cancellation (Ctrl-C interrupting a turn, or a deadline) the transcript may

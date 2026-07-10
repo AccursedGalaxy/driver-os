@@ -234,38 +234,53 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
-	// Run detached from cancellation (like verifyRun) but bounded by the
-	// verify timeout — the baseline runs the SAME VerifyCmd as the closing
-	// gate and must have the same time budget.
-	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, verifyTimeout(g.cfg, g.runTimeout))
-	if err != nil {
-		return // couldn't even start it — no signal.
-	}
-	if isRunFailure(out) {
-		if isRunTimeout(out) {
-			// A timed-out baseline is NO SIGNAL — the verify suite might
-			// pass given enough time. Do NOT set verifyBaselineRed, so
-			// -verify-baseline=abort does not falsely refuse the run.
-			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
-			return
+
+	// Sessions retain this result by complete git tree. A tree that cannot be
+	// captured is intentionally uncached, preserving the historical behavior for
+	// non-repositories and snapshot failures.
+	cache := g.cfg.verifyBaselineCache
+	var tree string
+	if cache != nil && g.cfg.Root != "" {
+		gctx, cancel := gateContext(ctx, gateDiffTimeout)
+		tree, _ = vcs.WriteTree(gctx, g.cfg.Root)
+		cancel()
+		if tree != "" {
+			cache.mu.Lock()
+			defer cache.mu.Unlock()
+			if cache.tree == tree && cache.cmd == g.cfg.VerifyCmd {
+				g.verifyBaselineMeasured = cache.measured
+				g.verifyBaselineRed = cache.red
+				g.verifyBaselineOut = cache.out
+				g.verifyInfraSignature = cache.infra
+				return
+			}
 		}
-		if sig := infraFaultSignature(out); sig != "" {
+	}
+	// Run detached from cancellation (like verifyRun) but bounded by the
+	// verify timeout — the baseline runs the SAME VerifyCmd as the closing gate.
+	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, verifyTimeout(g.cfg, g.runTimeout))
+	if err == nil && isRunFailure(out) {
+		if isRunTimeout(out) {
+			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
+		} else if sig := infraFaultSignature(out); sig != "" {
 			g.verifyInfraSignature = sig
 			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " hit environment fault (" + sig + ") on the untouched workspace")
-			return
+		} else {
+			g.verifyBaselineMeasured, g.verifyBaselineRed, g.verifyBaselineOut = true, true, out
+			g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable" + func() string {
+				if deliverableShapedGate(g.cfg.VerifyCmd) {
+					return " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
+				}
+				return ""
+			}())
 		}
+	} else if err == nil {
 		g.verifyBaselineMeasured = true
-		g.verifyBaselineRed = true
-		g.verifyBaselineOut = out
-		g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable" + func() string {
-			if deliverableShapedGate(g.cfg.VerifyCmd) {
-				return " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
-			}
-			return ""
-		}())
-		return
 	}
-	g.verifyBaselineMeasured = true
+	if cache != nil && tree != "" {
+		cache.tree, cache.cmd = tree, g.cfg.VerifyCmd
+		cache.measured, cache.red, cache.out, cache.infra = g.verifyBaselineMeasured, g.verifyBaselineRed, g.verifyBaselineOut, g.verifyInfraSignature
+	}
 }
 
 func (g *gates) applyBaseline(res *RunResult) {

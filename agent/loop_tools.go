@@ -227,7 +227,22 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+verifyGatePreamble(cfg)+gs.baselinePreamble())
+	// Environment observation and memory recall are independent. Complete both
+	// before seeding because their rendered blocks are part of the first request.
+	var environment, recalled string
+	scope := scopeOrDefault(cfg.MemoryScope)
+	var setupWG sync.WaitGroup
+	setupWG.Add(2)
+	go func() {
+		defer setupWG.Done()
+		environment = observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)
+	}()
+	go func() {
+		defer setupWG.Done()
+		recalled = recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+	}()
+	setupWG.Wait()
+	messages := seedMessages(seedCfg, environment+verifyGatePreamble(cfg)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
 	// registered after `messages` exists so the closure reads its final value.
@@ -237,8 +252,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 	}()
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
-	scope := scopeOrDefault(cfg.MemoryScope)
-	system := withPersona(cfg.Persona, basePrompt) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+	system := withPersona(cfg.Persona, basePrompt) + recalled
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
 	res.ConfigRecord = newConfigRecord(cfg, withPersona(cfg.Persona, basePrompt), schemas, "tools")
 
