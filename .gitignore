@@ -23,6 +23,7 @@ __debug_bin*
 /synthbank
 /mutspike
 /gobench-reproduce
+/gobench-validate-out
 # council scratch artifacts (real runs persist under $XDG_DATA_HOME/driver-os/council/)
 /_council_*
 
