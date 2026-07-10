@@ -59,6 +59,7 @@ approval-bypass.
   it must not teach a `-trust trusted-local` copy-paste ritual.
 - Refusal happens BEFORE any repository content is read: untrusted repo
   content must not be able to influence trust resolution.
+- This invariant is enforced and regression-tested in `internal/headless`.
 - Deliberately NO env-var form (council O2: persistent env destroys per-run
   friction; call-site visibility is the feature).
 - Interactive TUI (`cmd/driver`) defaults `reviewed-local` with
