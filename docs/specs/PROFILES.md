@@ -3,7 +3,9 @@
 Status: SPEC, council-grilled 2026-07-10 (grill-with-council, critic
 `openai/gpt-5.6-sol`, consult run `20260710-101650-c634ff`, 6 rounds; builds
 on decision run `20260710-094837-ce9409` = docs/specs/REVIEW-TRIAGE-2026-07-10.md
-R1+R2). Not yet implemented. Open items needing Robin are marked ⚑.
+R1+R2). SHIPPED: S1 recording, S2a/S2b trust layer, and the S3
+execution-profile surfaces recorded in §6. OPEN: S4 routing-policy artifact
+and S5 TOML user profiles. Open items needing Robin are marked ⚑.
 
 ## Problem
 
@@ -22,7 +24,7 @@ transcripts, and docs — no aliases:
 | profile | sandbox | min isolation | worktree | approval | secrets | network |
 |---|---|---|---|---|---|---|
 | `trusted-local` | local | none | auto (today's) | none | ambient | unrestricted |
-| `reviewed-local` | gated(local) | none | REQUIRED | REQUIRED (see §1.2) | clean-env allowlist | unrestricted |
+| `reviewed-local` | gated(local) | none | auto (amended; headless tightens to required) | REQUIRED (see §1.2) | clean-env allowlist | unrestricted |
 | `container` | docker | process | required | none (amended, see below) | clean-env allowlist | **off** (Robin 2026-07-10) |
 | `untrusted` | docker | ≥process | required | policy (default-deny) | none | off |
 
@@ -182,19 +184,19 @@ mark it noncanonical in the transcript.
 
 ## 6. Slices
 
-- **S1 — recording** (zero behavior change): versioned canonical
+- **S1 — recording (SHIPPED)** (zero behavior change): versioned canonical
   serialization of TODAY'S effective config + hashes (prompt, tool-schema,
   config), binary/invocation identity, dirty-build marker. Profile fields
   reserved/nullable. Ships alone; immediate reproducibility win.
-- **S2 — trust layer** (two sub-slices, atomic activation):
-  S2a lands the resolver package, descriptor table, predicates, conformance
-  tests, gated reviewed-local mechanics — inert. S2b atomically flips
-  fail-closed headless + updates every in-repo call site (delegate.sh →
-  `-trust trusted-local`; eval-on-public-repos → `container`) in one
-  commit. No bypassable intermediate release.
-- **S3 — execution profiles**: built-ins, non-safety precedence (CLI >
-  profile > default), full override provenance, TUI/headless defaults
-  become named profiles.
+- **S2 — trust layer (SHIPPED)** (two sub-slices, atomic activation):
+  S2a landed the resolver package, descriptor table, predicates, conformance
+  tests, and gated reviewed-local mechanics. S2b atomically flipped
+  fail-closed headless and updated in-repo call sites (delegate.sh →
+  `-trust trusted-local`; eval-on-public-repos → `container`) without a
+  bypassable intermediate release.
+- **S3 — execution profiles (SHIPPED surfaces)**: built-ins, non-safety
+  precedence (CLI > profile > default), full override provenance, and
+  TUI/headless defaults become named profiles.
 - **S4 — routing-policy artifact + campaign manifests** (spec may proceed in
   parallel earlier; binds to S3 identities).
 - **S5 — TOML user profiles; subcommand CLI rides the separate unification
