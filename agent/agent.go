@@ -258,6 +258,9 @@ type RunResult struct {
 
 	// Guarantees is the typed, machine-readable evidence report for this run.
 	Guarantees Guarantees `json:"guarantees"`
+	// ConfigRecord is the transcript reproducibility snapshot for this run. It is
+	// populated by the native loop after prompt and tool schemas are finalized.
+	ConfigRecord *ConfigRecord
 	// Repro is the repro-first gate report. nil unless ReproFirst was enabled.
 	Repro *ReproReport
 	// Plan is the plan-stage record — the plan the solver was handed (or why
@@ -404,6 +407,10 @@ func (p ReviewPolicy) Optional() bool { return p.optional() }
 // rest default sensibly (nil Tools -> DefaultTools, nil Memory -> no cross-run
 // recall, nil Obs -> silent).
 type Config struct {
+
+	// BinaryLabel identifies the invoking binary (for example, "cmd/agent") for
+	// transcript config records. It is recording-only and never affects behavior.
+	BinaryLabel string
 
 	// evidence is run-local observation state threaded through gates and helpers.
 	evidence *evidenceLog

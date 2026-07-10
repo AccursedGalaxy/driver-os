@@ -27,7 +27,9 @@ import (
 //	     cap/kill/deadline/budget runs rescued by harness gates.
 //	v5 = RunRecord carries per-role cost fields shared with the delegation ledger.
 //	v6 = RunRecord carries typed guarantee evidence.
-const TranscriptSchemaVersion = "6"
+//	v7 = RunRecord carries the config record: canonical effective config,
+//	     prompt/tool-schema/config hashes, build identity, and reserved profile fields.
+const TranscriptSchemaVersion = "7"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.
@@ -98,6 +100,8 @@ type RunRecord struct {
 	// the run had no Reviewer configured.
 	Review     *ReviewReport `json:"review,omitempty"`
 	Guarantees Guarantees    `json:"guarantees"`
+	Config     *ConfigRecord `json:"config,omitempty"`
+
 	// Plan is the plan-stage record (the plan handed to the solver, or why
 	// there was none, plus the planner's own usage — kept out of Usage so
 	// per-role spend stays attributable). Absent when the run had no Planner.
@@ -133,15 +137,17 @@ func RecordFrom(res *RunResult, model string) RunRecord {
 		Usage:         res.Usage,
 		Review:        res.Review,
 		Guarantees:    res.Guarantees,
-		Plan:          res.Plan,
-		SolverCost:    res.SolverCost,
-		ReviewerCost:  res.ReviewerCost,
-		PlannerCost:   res.PlannerCost,
-		SelectorCost:  res.SelectorCost,
-		TotalCost:     res.TotalCost,
-		CostSource:    res.CostSource,
-		Messages:      res.Messages,
-		Steps:         res.Steps,
+		Config:        res.ConfigRecord,
+
+		Plan:         res.Plan,
+		SolverCost:   res.SolverCost,
+		ReviewerCost: res.ReviewerCost,
+		PlannerCost:  res.PlannerCost,
+		SelectorCost: res.SelectorCost,
+		TotalCost:    res.TotalCost,
+		CostSource:   res.CostSource,
+		Messages:     res.Messages,
+		Steps:        res.Steps,
 	}
 	if !res.StartedAt.IsZero() {
 		rec.StartedAt = res.StartedAt.UTC().Format(time.RFC3339Nano)

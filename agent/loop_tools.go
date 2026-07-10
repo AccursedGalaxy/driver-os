@@ -232,6 +232,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	scope := scopeOrDefault(cfg.MemoryScope)
 	system := withPersona(cfg.Persona, basePrompt) + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
+	res.ConfigRecord = newConfigRecord(cfg, withPersona(cfg.Persona, basePrompt), schemas)
+
 	temp := 0.0
 
 	// (P5) No-progress state. Unlike the text loop these are evaluated PER TURN, not
