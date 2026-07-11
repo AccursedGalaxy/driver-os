@@ -71,7 +71,6 @@ func (c Config) Requested() runspec.RequestedConfig {
 		FinishNudgeWindow:      optNZ(c.FinishNudgeWindow),
 		DiagnoseCmd:            optNZ(c.DiagnoseCmd),
 		DiagnoseAfterEdits:     optNZ(c.DiagnoseAfterEdits),
-		NavSpiralWindow:        optNZ(c.NavSpiralWindow),
 		AnswerNudgeWindow:      optNZ(c.AnswerNudgeWindow),
 		FinishTool:             optNZ(c.FinishTool),
 		FinishToolTrustsCaller: optNZ(c.FinishToolTrustsCaller),

@@ -253,9 +253,6 @@ func newReviewState(ctx context.Context, d gateDeps) (*reviewState, error) {
 	// sessionKey is a fresh nonce per run (not the run ID — the state exists
 	// before the result is stamped); its only contract is same-run stability.
 	rv := &reviewState{root: d.root, maxRounds: d.pol.ReviewRounds, alias: sandboxAlias(d.rt.Sandbox), sessionKey: newRunID()}
-	if rv.maxRounds <= 0 {
-		rv.maxRounds = DefaultReviewRounds
-	}
 	switch {
 	case d.root == "":
 		rv.skip = "review skipped: no workspace root configured"

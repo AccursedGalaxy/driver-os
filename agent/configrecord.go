@@ -234,55 +234,10 @@ func effectiveConfigFromSpec(pol runspec.PolicyValue, rt Runtime, vs *verifyStat
 
 // EffectiveConfigFromSpec is the exported golden-test projection for a spec +
 // runtime pair OUTSIDE a running loop (pre-run verification state, native
-// protocol) — the spec-side twin of the legacy EffectiveConfigOf.
+// protocol).
 func EffectiveConfigFromSpec(spec runspec.ResolvedSpec, rt Runtime) EffectiveConfig {
 	pol := spec.Policy()
 	return effectiveConfigFromSpec(pol, rt, newVerifyState(pol), "tools")
-}
-
-// EffectiveConfigOf returns the effective behavior configuration for cfg.
-// It uses the native-tools protocol, the compatibility default for Config values
-// constructed outside a running loop.
-//
-// S6a: this LEGACY projection (and the lazy effectiveConfig re-derivation
-// below) is no longer reachable from any loop or binary — it survives solely
-// as the equivalence anchor pinning effectiveConfigFromSpec byte-identical to
-// the historical lazy path, and is deleted in S6b.
-func EffectiveConfigOf(cfg Config) EffectiveConfig {
-	return effectiveConfig(cfg, "tools")
-}
-
-func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
-	// RequestedProtocol and ProtocolFallbackReason are provenance rather than
-	// behavior. EffectiveProtocol is included because it changes the model API.
-	// InvocationSurface likewise describes CLI routing, not agent behavior.
-	knobs := resolveKnobs(cfg)
-	maxIter, maxTok, runTimeout, spiralWindow := knobs.maxIter, knobs.maxTok, knobs.runTimeout, knobs.spiralWindow
-	reviewRounds := cfg.ReviewRounds
-	if reviewRounds <= 0 {
-		reviewRounds = DefaultReviewRounds
-	}
-	return EffectiveConfig{
-		EffectiveProtocol:  effectiveProtocol,
-		DisableMemoryStore: cfg.DisableMemoryStore, Persona: cfg.Persona, MemoryScope: cfg.MemoryScope,
-		BootContext: cfg.BootContext, StandingContext: cfg.StandingContext, Stream: cfg.Stream, MinIsolation: cfg.MinIsolation, RequireNetworkOff: cfg.RequireNetworkOff,
-		MaxIterations: maxIter, MaxTokens: maxTok, RunTimeout: runTimeout, VerifyTimeout: verifyTimeout(cfg, runTimeout),
-		ReasoningEffort: cfg.ReasoningEffort, PromptProfile: cfg.PromptProfile, CodeAct: cfg.CodeAct, ReproFirst: cfg.ReproFirst,
-		ReproGate: cfg.ReproGate, BatchReads: cfg.BatchReads, ReadWindow: cfg.ReadWindow, ReadOutline: cfg.ReadOutline,
-		MaxWallClock: cfg.MaxWallClock, MaxTotalTokens: cfg.MaxTotalTokens, MaxTotalCostUSD: cfg.MaxTotalCostUSD,
-		AllowUnpricedSpend: cfg.AllowUnpricedSpend, SolverModel: cfg.SolverModel,
-		ModelConfigured: cfg.Model != nil, MemoryConfigured: cfg.Memory != nil, VerifySandboxConfigured: cfg.VerifySandbox != nil,
-		CostFnConfigured: cfg.CostFn != nil, SpendConfigured: cfg.Spend != nil, ModelInfo: cfg.ModelInfo,
-		ReviewerIdentity: runtimeImplementationIdentity(cfg.Reviewer), PlannerIdentity: runtimeImplementationIdentity(cfg.Planner),
-		VerifyCmd: cfg.VerifyCmd, AutoVerify: cfg.AutoVerify,
-		AutoVerifySoft: cfg.AutoVerifySoft, SkipVerifyBaseline: cfg.SkipVerifyBaseline, AbortOnRedBaseline: cfg.AbortOnRedBaseline,
-		VerifyLastRun: cfg.VerifyLastRun, ChurnNudgeRuns: cfg.ChurnNudgeRuns, VerifyContinue: cfg.VerifyContinue,
-		TestFence: cfg.TestFence, DiffScope: cfg.DiffScope, RequireDiff: cfg.RequireDiff, ReviewConfigured: cfg.Reviewer != nil,
-		ReviewPolicy: int(cfg.ReviewPolicy), ReviewUnverified: cfg.ReviewUnverified, ReviewRounds: reviewRounds,
-		PlannerConfigured: cfg.Planner != nil, FinishNudgeWindow: cfg.FinishNudgeWindow, DiagnoseCmd: cfg.DiagnoseCmd,
-		DiagnoseAfterEdits: cfg.DiagnoseAfterEdits, NavSpiralWindow: spiralWindow, TerminationPolicy: knobs.terminationPolicy, AnswerNudgeWindow: cfg.AnswerNudgeWindow,
-		FinishTool: cfg.FinishTool, FinishToolConfigured: strings.TrimSpace(cfg.FinishTool) != "", FinishToolTrustsCaller: cfg.FinishToolTrustsCaller,
-	}
 }
 
 // configFieldClass is an external completeness anchor for Config. Keep this table
@@ -322,7 +277,7 @@ var configFieldClasses = map[string]configFieldClass{
 	"Model": {recordedDerived, "EffectiveConfig.ModelConfigured"}, "Sandbox": {excludedRuntime, ""}, "Memory": {recordedDerived, "EffectiveConfig.MemoryConfigured"}, "DisableMemoryStore": {recordedDirect, "DisableMemoryStore"}, "Persona": {recordedDirect, "Persona"}, "MemoryScope": {recordedDirect, "MemoryScope"}, "VerifySandbox": {recordedDerived, "EffectiveConfig.VerifySandboxConfigured"}, "Tools": {recordedDerived, "ConfigRecord.ToolSchemaSHA256"},
 	"Task": {excludedContent, ""}, "TaskImages": {excludedContent, ""}, "History": {excludedContent, ""}, "Root": {excludedContent, ""}, "BootContext": {recordedDirect, "BootContext"}, "StandingContext": {recordedDirect, "StandingContext"}, "Obs": {excludedRuntime, ""}, "PerfMark": {excludedRuntime, ""}, "ModelInfo": {recordedDirect, "ModelInfo"}, "Stream": {recordedDirect, "Stream"}, "MinIsolation": {recordedDirect, "MinIsolation"}, "RequireNetworkOff": {recordedDirect, "RequireNetworkOff"},
 	"MaxIterations": {recordedDirect, "MaxIterations"}, "MaxTokens": {recordedDirect, "MaxTokens"}, "RunTimeout": {recordedDirect, "RunTimeout"}, "VerifyTimeout": {recordedDirect, "VerifyTimeout"}, "ReasoningEffort": {recordedDirect, "ReasoningEffort"}, "PromptProfile": {recordedDirect, "PromptProfile"}, "CodeAct": {recordedDirect, "CodeAct"}, "ReproFirst": {recordedDirect, "ReproFirst"}, "ReproGate": {recordedDirect, "ReproGate"}, "BatchReads": {recordedDirect, "BatchReads"}, "ReadWindow": {recordedDirect, "ReadWindow"}, "ReadOutline": {recordedDirect, "ReadOutline"}, "MaxWallClock": {recordedDirect, "MaxWallClock"}, "MaxTotalTokens": {recordedDirect, "MaxTotalTokens"}, "MaxTotalCostUSD": {recordedDirect, "MaxTotalCostUSD"}, "AllowUnpricedSpend": {recordedDirect, "AllowUnpricedSpend"}, "CostFn": {recordedDerived, "EffectiveConfig.CostFnConfigured"}, "SolverModel": {recordedDirect, "SolverModel"}, "Spend": {recordedDerived, "EffectiveConfig.SpendConfigured"},
-	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "NavSpiralWindow": {recordedDirect, "NavSpiralWindow"}, "TerminationPolicy": {recordedDerived, "EffectiveConfig.TerminationPolicy"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
+	"VerifyCmd": {recordedDirect, "VerifyCmd"}, "AutoVerify": {recordedDirect, "AutoVerify"}, "AutoVerifySoft": {recordedDirect, "AutoVerifySoft"}, "SkipVerifyBaseline": {recordedDirect, "SkipVerifyBaseline"}, "AbortOnRedBaseline": {recordedDirect, "AbortOnRedBaseline"}, "VerifyLastRun": {recordedDirect, "VerifyLastRun"}, "ChurnNudgeRuns": {recordedDirect, "ChurnNudgeRuns"}, "VerifyContinue": {recordedDirect, "VerifyContinue"}, "TestFence": {recordedDirect, "TestFence"}, "DiffScope": {recordedDirect, "DiffScope"}, "Reviewer": {recordedDerived, "EffectiveConfig.ReviewerIdentity"}, "ReviewPolicy": {recordedDirect, "ReviewPolicy"}, "RequireDiff": {recordedDirect, "RequireDiff"}, "ReviewUnverified": {recordedDirect, "ReviewUnverified"}, "ReviewRounds": {recordedDirect, "ReviewRounds"}, "Planner": {recordedDerived, "EffectiveConfig.PlannerIdentity"}, "FinishNudgeWindow": {recordedDirect, "FinishNudgeWindow"}, "DiagnoseCmd": {recordedDirect, "DiagnoseCmd"}, "DiagnoseAfterEdits": {recordedDirect, "DiagnoseAfterEdits"}, "TerminationPolicy": {recordedDerived, "EffectiveConfig.TerminationPolicy"}, "AnswerNudgeWindow": {recordedDirect, "AnswerNudgeWindow"}, "FinishTool": {recordedDirect, "FinishTool"}, "FinishToolTrustsCaller": {recordedDirect, "FinishToolTrustsCaller"},
 }
 
 // checkConfigFieldClassifications is shared by the oracle and its negative test.

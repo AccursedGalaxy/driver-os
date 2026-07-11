@@ -26,7 +26,6 @@ func TestConfigValidate(t *testing.T) {
 		{"negative cost", func(c *Config) { c.MaxTotalCostUSD = -1 }},
 		{"negative review rounds", func(c *Config) { c.ReviewRounds = -1 }},
 		{"negative finish window", func(c *Config) { c.FinishNudgeWindow = -1 }},
-		{"negative navigation window", func(c *Config) { c.NavSpiralWindow = -1 }},
 		{"negative answer window", func(c *Config) { c.AnswerNudgeWindow = -1 }},
 		{"negative churn threshold", func(c *Config) { c.ChurnNudgeRuns = -1 }},
 		{"negative read window", func(c *Config) { c.ReadWindow = -1 }},

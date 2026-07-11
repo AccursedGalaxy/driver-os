@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"strings"
 	"testing"
 	"time"
@@ -450,22 +451,27 @@ func TestBaselineTimeoutIsNotRed(t *testing.T) {
 	}
 }
 
-// TestVerifyTimeoutResolution tests the verifyTimeout resolver directly.
+// TestVerifyTimeoutResolution pins the verify-timeout schema at its ONE
+// remaining home, runspec.Resolve (the lazy in-loop resolver was deleted in
+// S6b): explicit wins; unset = max(resolved RunTimeout, 5m).
 func TestVerifyTimeoutResolution(t *testing.T) {
-	// Explicit VerifyTimeout wins.
-	if got := verifyTimeout(Config{VerifyTimeout: 42 * time.Second, RunTimeout: 30 * time.Second}, 30*time.Second); got != 42*time.Second {
+	resolve := func(r runspec.RequestedConfig) time.Duration {
+		spec, _, err := runspec.Resolve(r)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		return spec.Policy().VerifyTimeout
+	}
+	if got := resolve(runspec.RequestedConfig{VerifyTimeout: rsDuration(42 * time.Second), RunTimeout: rsDuration(30 * time.Second)}); got != 42*time.Second {
 		t.Errorf("explicit VerifyTimeout=42s: got %v, want 42s", got)
 	}
-	// VerifyTimeout=0, RunTimeout=30s -> floor of 5m.
-	if got := verifyTimeout(Config{}, 30*time.Second); got != 5*time.Minute {
-		t.Errorf("VerifyTimeout=0, RunTimeout=30s: got %v, want 5m", got)
+	if got := resolve(runspec.RequestedConfig{RunTimeout: rsDuration(30 * time.Second)}); got != 5*time.Minute {
+		t.Errorf("VerifyTimeout unset, RunTimeout=30s: got %v, want 5m", got)
 	}
-	// VerifyTimeout=0, RunTimeout=10m -> resolves to 10m (larger than floor).
-	if got := verifyTimeout(Config{}, 10*time.Minute); got != 10*time.Minute {
-		t.Errorf("VerifyTimeout=0, RunTimeout=10m: got %v, want 10m", got)
+	if got := resolve(runspec.RequestedConfig{RunTimeout: rsDuration(10 * time.Minute)}); got != 10*time.Minute {
+		t.Errorf("VerifyTimeout unset, RunTimeout=10m: got %v, want 10m", got)
 	}
-	// VerifyTimeout=0, RunTimeout=0 (use defaultRunTimeout=30s) -> floor 5m.
-	if got := verifyTimeout(Config{}, 0); got != 5*time.Minute {
-		t.Errorf("VerifyTimeout=0, RunTimeout=0: got %v, want 5m", got)
+	if got := resolve(runspec.RequestedConfig{}); got != 5*time.Minute {
+		t.Errorf("VerifyTimeout unset, RunTimeout unset: got %v, want 5m", got)
 	}
 }

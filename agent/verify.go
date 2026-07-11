@@ -63,22 +63,6 @@ func diagnosticsMessage(cmd, report string) string {
 		"Fix these errors and continue. This is informational, not a stop.", cmd, report)
 }
 
-// verifyTimeout resolves the bound for closing VerifyCmd executions. When
-// Config.VerifyTimeout is explicitly set it wins; otherwise the bound is the
-// LARGER of the resolved per-`run`-tool RunTimeout and 5 minutes — a verify
-// suite is routinely slower than a single interactive command, and a too-short
-// bound turns "couldn't finish checking" into a false "did not pass".
-func verifyTimeout(cfg Config, runTimeout time.Duration) time.Duration {
-	if cfg.VerifyTimeout > 0 {
-		return cfg.VerifyTimeout
-	}
-	const floor = 5 * time.Minute
-	if runTimeout > floor {
-		return runTimeout
-	}
-	return floor
-}
-
 // verifyRun executes cfg.VerifyCmd under the ONE context policy every closing
 // verification gate shares — answer, FinishTool, kill, cap, and deadline paths
 // alike (review #3; the paths used to diverge, so a cancel at the instant the

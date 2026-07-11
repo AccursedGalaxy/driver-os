@@ -873,24 +873,6 @@ type Config struct {
 	// clearly not converging. 0 = off (DiagnoseCmd is also required to arm).
 	DiagnoseAfterEdits int
 
-	// NavSpiralWindow overrides the explore-spiral detector's CYCLE window — the
-	// number of discovery-only turns REVISITING only already-seen targets
-	// (list_dir paths / search queries) that ends the run as KilledSpiral. 0 = the
-	// default noProgressWindow. The detector is frontier/state-aware (spiralState):
-	// a discovery turn that reveals any NEW target is orientation and never counts
-	// toward this window, so novel top-down orientation of a large repo is never
-	// false-killed; a hard wandering bound (spiralWanderMultiple × this window)
-	// caps endless novel discovery. The bounds are deterministic — no model-family
-	// or reasoning variance. It exists
-	// for the OBSERVE-only agent whose whole job is to survey a tree: a read-only
-	// critic legitimately does a top-down `list_dir .`, `cmd`, `internal`, `pkg` sweep
-	// (or a burst of `search`es) before reading, which is several discovery turns in a
-	// row and would trip the default detector before it critiques anything (council
-	// code mode, docs/specs/COUNCIL.md slice 4 / objection O7). Raising it for that caller is an
-	// OPT-IN relaxation — every other caller (issue-bot, eval, plan mode) leaves it 0
-	// and keeps the strict default, so the harness is not weakened.
-	NavSpiralWindow int
-
 	// AnswerNudgeWindow arms a near-cap answer-forcer (native loop) for an OBSERVE-ONLY
 	// agent: when > 0 and the run is within this many turns of the iteration cap, a
 	// one-time hint tells the model to stop using tools and give its final answer NOW.
@@ -953,7 +935,7 @@ func (c Config) Validate() error {
 	}
 	if c.MaxIterations < 0 || c.MaxTokens < 0 || c.RunTimeout < 0 || c.VerifyTimeout < 0 ||
 		c.MaxWallClock < 0 || c.MaxTotalTokens < 0 || c.MaxTotalCostUSD < 0 ||
-		c.ReviewRounds < 0 || c.FinishNudgeWindow < 0 || c.NavSpiralWindow < 0 ||
+		c.ReviewRounds < 0 || c.FinishNudgeWindow < 0 ||
 		c.AnswerNudgeWindow < 0 || c.ChurnNudgeRuns < 0 || c.ReadWindow < 0 {
 		return setupErr("invalid_config", "budgets, caps, timeouts, rounds, and windows must not be negative")
 	}

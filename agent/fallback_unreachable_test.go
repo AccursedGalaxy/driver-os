@@ -17,7 +17,6 @@ package agent
 //     byte-identical (effectiveConfigFromSpec vs the legacy lazy projection).
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -47,19 +46,9 @@ func unreachabilityVariants() map[string]runspec.RequestedConfig {
 	}
 }
 
-// configFromPolicy projects a resolved policy back onto the legacy Config
-// shape so the legacy fallback helpers can be fed exactly what a loop holds.
-func configFromPolicy(p runspec.PolicyValue) Config {
-	return Config{
-		MaxIterations: p.MaxIterations, MaxTokens: p.MaxTokens, RunTimeout: p.RunTimeout,
-		VerifyTimeout: p.VerifyTimeout, ReviewRounds: p.ReviewRounds,
-		TerminationPolicy: p.TerminationPolicy,
-	}
-}
-
-// TestLegacyFallbacksUnreachableOnResolvedSpecs proves each S6b-deletable
+// TestResolvedSpecsAreCompleteEverywhere proves each S6b-deletable
 // branch dead: fed a Resolve output, the legacy helper returns its input.
-func TestLegacyFallbacksUnreachableOnResolvedSpecs(t *testing.T) {
+func TestResolvedSpecsAreCompleteEverywhere(t *testing.T) {
 	for name, req := range unreachabilityVariants() {
 		t.Run(name, func(t *testing.T) {
 			spec, _, err := runspec.Resolve(req)
@@ -70,32 +59,19 @@ func TestLegacyFallbacksUnreachableOnResolvedSpecs(t *testing.T) {
 				t.Fatalf("Resolve output failed Complete(): %v", err)
 			}
 			p := spec.Policy()
-			cfg := configFromPolicy(p)
 
-			// resolveKnobs: every `<= 0 → default` branch must be a no-op.
-			knobs := resolveKnobs(cfg)
-			if knobs.maxIter != p.MaxIterations || knobs.maxTok != p.MaxTokens || knobs.runTimeout != p.RunTimeout {
-				t.Fatalf("resolveKnobs repaired a resolved spec: %+v vs policy %d/%d/%s", knobs, p.MaxIterations, p.MaxTokens, p.RunTimeout)
+			// S6b deleted the lazy helpers; the invariants they used to
+			// repair are now guaranteed by Resolve alone.
+			if p.MaxIterations <= 0 || p.MaxTokens <= 0 || p.RunTimeout <= 0 || p.VerifyTimeout <= 0 {
+				t.Fatalf("resolved knobs incomplete: %d/%d/%s/%s", p.MaxIterations, p.MaxTokens, p.RunTimeout, p.VerifyTimeout)
 			}
-			if knobs.spiralWindow != p.TerminationPolicy.NavSpiralWindow {
-				t.Fatalf("resolveKnobs spiral window %d != resolved %d", knobs.spiralWindow, p.TerminationPolicy.NavSpiralWindow)
+			tp := p.TerminationPolicy
+			if tp.Version == "" || tp.MaxRepeats <= 0 || tp.MaxReasoningRepeats <= 0 || tp.MaxStagnant <= 0 ||
+				tp.NavSpiralWindow <= 0 || tp.WanderMultiple <= 0 || tp.FrontierCap <= 0 || tp.GreenRepeatThreshold <= 0 {
+				t.Fatalf("resolved termination policy incomplete: %+v", tp)
 			}
-
-			// resolveTerminationPolicy: the default-filling half must be inert.
-			if got := resolveTerminationPolicy(p.TerminationPolicy, 0); got != p.TerminationPolicy {
-				t.Fatalf("resolveTerminationPolicy repaired a resolved policy: %+v vs %+v", got, p.TerminationPolicy)
-			}
-
-			// verifyTimeout: the lazy max(runTimeout, 5m) branch must never be
-			// consulted — Resolve already materialized it.
-			if got := verifyTimeout(cfg, p.RunTimeout); got != p.VerifyTimeout {
-				t.Fatalf("verifyTimeout(%s) = %s, resolved %s", p.RunTimeout, got, p.VerifyTimeout)
-			}
-
-			// The triple ReviewRounds default (review.go / review_pass.go /
-			// configrecord.go) keys on ReviewRounds <= 0.
 			if p.ReviewRounds <= 0 {
-				t.Fatalf("resolved ReviewRounds = %d — the legacy `<= 0 → default` branches would fire", p.ReviewRounds)
+				t.Fatalf("resolved ReviewRounds = %d", p.ReviewRounds)
 			}
 			rv := &reviewState{maxRounds: p.ReviewRounds}
 			if rv.maxRounds <= 0 {
@@ -139,47 +115,6 @@ func TestLoopsAssertCompletenessAtEntry(t *testing.T) {
 			var serr *SetupError
 			if !errors.As(err, &serr) || serr.Kind != "invalid_config" {
 				t.Fatalf("want invalid_config SetupError, got %v", err)
-			}
-		})
-	}
-}
-
-// TestRecordProjectionMatchesLegacyLazyPath: for every variant, the S6a
-// record projection built from the HELD resolved value is byte-identical to
-// the legacy lazy re-derivation the goldens were built on — the "record path
-// re-deriving from the same complete value stays byte-identical" clause.
-func TestRecordProjectionMatchesLegacyLazyPath(t *testing.T) {
-	for name, req := range unreachabilityVariants() {
-		t.Run(name, func(t *testing.T) {
-			spec, _, err := runspec.Resolve(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := spec.Policy()
-			legacyCfg := Config{
-				DisableMemoryStore: p.DisableMemoryStore, Persona: p.Persona, MemoryScope: p.MemoryScope,
-				BootContext: p.BootContext, StandingContext: p.StandingContext, Stream: p.Stream,
-				MinIsolation: p.MinIsolation, RequireNetworkOff: p.RequireNetworkOff,
-				MaxIterations: p.MaxIterations, MaxTokens: p.MaxTokens, RunTimeout: p.RunTimeout, VerifyTimeout: p.VerifyTimeout,
-				ReasoningEffort: p.ReasoningEffort, PromptProfile: p.PromptProfile, CodeAct: p.CodeAct,
-				ReproFirst: p.ReproFirst, ReproGate: p.ReproGate, BatchReads: p.BatchReads,
-				ReadWindow: p.ReadWindow, ReadOutline: p.ReadOutline, MaxWallClock: p.MaxWallClock,
-				MaxTotalTokens: p.MaxTotalTokens, MaxTotalCostUSD: p.MaxTotalCostUSD, AllowUnpricedSpend: p.AllowUnpricedSpend,
-				SolverModel: p.SolverModel, VerifyCmd: p.VerifyCmd, AutoVerify: p.AutoVerify, AutoVerifySoft: p.AutoVerifySoft,
-				SkipVerifyBaseline: p.SkipVerifyBaseline, AbortOnRedBaseline: p.AbortOnRedBaseline, VerifyLastRun: p.VerifyLastRun,
-				ChurnNudgeRuns: p.ChurnNudgeRuns, VerifyContinue: p.VerifyContinue,
-				TestFence: p.TestFence, DiffScope: p.DiffScope, ReviewPolicy: ReviewPolicy(p.ReviewPolicy),
-				RequireDiff: p.RequireDiff, ReviewUnverified: p.ReviewUnverified, ReviewRounds: p.ReviewRounds,
-				FinishNudgeWindow: p.FinishNudgeWindow, DiagnoseCmd: p.DiagnoseCmd, DiagnoseAfterEdits: p.DiagnoseAfterEdits,
-				TerminationPolicy: p.TerminationPolicy, AnswerNudgeWindow: p.AnswerNudgeWindow,
-				FinishTool: p.FinishTool, FinishToolTrustsCaller: p.FinishToolTrustsCaller,
-			}
-			legacy := effectiveConfig(legacyCfg, "tools")
-			got := EffectiveConfigFromSpec(spec, Runtime{})
-			lb, _ := json.Marshal(legacy)
-			gb, _ := json.Marshal(got)
-			if string(lb) != string(gb) {
-				t.Fatalf("record projections diverge:\nlegacy: %s\nspec:   %s", lb, gb)
 			}
 		})
 	}

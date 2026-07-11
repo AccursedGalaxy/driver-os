@@ -65,14 +65,3 @@ func TestDefaultTerminationPolicyHistoricalValues(t *testing.T) {
 		t.Errorf("DefaultTerminationPolicy() = %+v, want %+v", got, want)
 	}
 }
-
-func TestResolveTerminationPolicyNavSpiralWindowPrecedence(t *testing.T) {
-	policy := DefaultTerminationPolicy()
-	policy.NavSpiralWindow = 9
-	if got := resolveTerminationPolicy(policy, 7).NavSpiralWindow; got != 7 {
-		t.Errorf("override window = %d, want 7", got)
-	}
-	if got := resolveTerminationPolicy(TerminationPolicy{}, 0); got != DefaultTerminationPolicy() {
-		t.Errorf("zero policy = %+v, want defaults %+v", got, DefaultTerminationPolicy())
-	}
-}

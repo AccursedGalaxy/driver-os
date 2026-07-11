@@ -87,9 +87,6 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, spec runspec.Resolved
 	pol := spec.Policy()
 
 	maxRounds := pol.ReviewRounds
-	if maxRounds <= 0 {
-		maxRounds = DefaultReviewRounds
-	}
 	sessionKey := opts.SessionKey
 	if sessionKey == "" {
 		sessionKey = newRunID()

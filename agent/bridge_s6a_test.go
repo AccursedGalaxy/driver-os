@@ -154,7 +154,13 @@ func seedMessagesT(cfg Config, env string) []llm.Message {
 // verification fields off the Config, timeout via the legacy lazy rule).
 func verifyTerminationT(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) (reason, verifyOut string) {
 	vs := verifyStateT(cfg)
-	vs.Timeout = verifyTimeout(cfg, runTimeout)
+	vs.Timeout = cfg.VerifyTimeout
+	if vs.Timeout <= 0 { // the deleted lazy rule, preserved for old-shaped unit tests only.
+		vs.Timeout = 5 * time.Minute
+		if runTimeout > vs.Timeout {
+			vs.Timeout = runTimeout
+		}
+	}
 	rt := Runtime{Sandbox: cfg.Sandbox, VerifySandbox: cfg.VerifySandbox, Obs: cfg.Obs}
 	if rt.Obs == nil {
 		rt.Obs = nopObserver{}

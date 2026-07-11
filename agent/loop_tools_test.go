@@ -736,7 +736,7 @@ func TestRunNativeNavSpiralWindowRelaxes(t *testing.T) {
 		{llm.Text("[]")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10, NavSpiralWindow: 8})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10, TerminationPolicy: TerminationPolicy{NavSpiralWindow: 8}})
 	if err != nil {
 		t.Fatal(err)
 	}

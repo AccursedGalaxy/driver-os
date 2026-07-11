@@ -24,7 +24,7 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	}
 	ss := newStandingState()
 	defer ss.cleanup()
-	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil)
 	cur, err := ss.currentTree(ctx, cfg.Root)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestStandingDiffRenderSpy(t *testing.T) {
 		calls++
 		return vcs.DiffTrees(ctx, dir, base, cur)
 	}
-	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStandingDirtyBaselineScopesToModelChanges(t *testing.T) {
 	}
 	ss := newStandingState()
 	defer ss.cleanup()
-	got := ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil), 1)
+	got := ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil), 1)
 	if strings.Contains(got, "a.txt") || !strings.Contains(got, "b.txt") {
 		t.Fatalf("diff should show only model-edited b.txt, not pre-existing a.txt:\n%s", got)
 	}
@@ -136,7 +136,7 @@ func TestStandingDirtyBaselineScopesToModelChanges(t *testing.T) {
 
 func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil)
 	tr.observeRun("exit 0 (1ms)\nstdout:\ngreen")
 	tr.recordRun("go test ./...", "exit 0 (1ms)\nstdout:\ngreen", "tree1")
 	tr.observeRun("exit 0 (1ms)\nstdout:\nlisting")
@@ -152,7 +152,7 @@ func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 
 func TestStandingTypedVerificationStatusesAndFreshReplacement(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil)
 
 	tr.recordRun(cfg.VerifyCmd, "exit 1 (2ms) [timed out — narrow the command's work or raise its own limits]", "old")
 	if got := renderVerification(tr, cfg.VerifyCmd, "current", false, false); !strings.Contains(got, "→ TIMEOUT  [STALE:") {
@@ -169,7 +169,7 @@ func TestStandingTypedVerificationStatusesAndFreshReplacement(t *testing.T) {
 
 func TestStandingFreshnessUnknown(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, DefaultTerminationPolicy(), nil)
 	tr.observeRun("exit 0 (1ms)")
 	tr.recordRun("go test ./...", "exit 0 (1ms)", "tree1")
 	got := renderVerification(tr, cfg.VerifyCmd, "", true, false)

@@ -94,11 +94,11 @@ func TestRunNativeRepeatedFrontierDiesAtWindow(t *testing.T) {
 // Native protocol.
 func TestRunNativeEquivalentPathSpellingsAreOneTarget(t *testing.T) {
 	turns := [][]llm.ContentPart{
-		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},   // novel
-		{structuredCall("2", "list_dir", map[string]any{"path": "b"})},   // novel
-		{structuredCall("3", "list_dir", map[string]any{"path": "./a"})}, // revisits a
-		{structuredCall("4", "list_dir", map[string]any{"path": "b/"})},  // revisits b
-		{structuredCall("5", "list_dir", map[string]any{"path": "a/."})}, // revisits a
+		{structuredCall("1", "list_dir", map[string]any{"path": "a"})},    // novel
+		{structuredCall("2", "list_dir", map[string]any{"path": "b"})},    // novel
+		{structuredCall("3", "list_dir", map[string]any{"path": "./a"})},  // revisits a
+		{structuredCall("4", "list_dir", map[string]any{"path": "b/"})},   // revisits b
+		{structuredCall("5", "list_dir", map[string]any{"path": "a/."})},  // revisits a
 		{structuredCall("6", "list_dir", map[string]any{"path": "./b/"})}, // revisits b
 	}
 	ns := &nativeScript{turns: turns}

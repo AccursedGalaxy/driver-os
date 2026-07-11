@@ -7,38 +7,6 @@ type TerminationPolicy = runspec.TerminationPolicy
 
 func DefaultTerminationPolicy() TerminationPolicy { return runspec.DefaultTerminationPolicy() }
 
-func resolveTerminationPolicy(p TerminationPolicy, navOverride int) TerminationPolicy {
-	d := DefaultTerminationPolicy()
-	if p.Version == "" {
-		p.Version = d.Version
-	}
-	if p.MaxRepeats <= 0 {
-		p.MaxRepeats = d.MaxRepeats
-	}
-	if p.MaxReasoningRepeats <= 0 {
-		p.MaxReasoningRepeats = d.MaxReasoningRepeats
-	}
-	if p.MaxStagnant <= 0 {
-		p.MaxStagnant = d.MaxStagnant
-	}
-	if p.NavSpiralWindow <= 0 {
-		p.NavSpiralWindow = d.NavSpiralWindow
-	}
-	if p.WanderMultiple <= 0 {
-		p.WanderMultiple = d.WanderMultiple
-	}
-	if p.FrontierCap <= 0 {
-		p.FrontierCap = d.FrontierCap
-	}
-	if p.GreenRepeatThreshold <= 0 {
-		p.GreenRepeatThreshold = d.GreenRepeatThreshold
-	}
-	if navOverride > 0 {
-		p.NavSpiralWindow = navOverride
-	}
-	return p
-}
-
 // DetectorCounters is write-only run telemetry. It must never affect control flow.
 type DetectorCounters struct {
 	Repeat           int    `json:"repeat"`
