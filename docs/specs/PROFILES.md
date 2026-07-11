@@ -372,6 +372,18 @@ or shadowed by the loop):
 
 ### 7.5 Slices
 
+> **STATUS 2026-07-12: S6a, S6b, S6c ALL SHIPPED** (commits 4373ecd,
+> 23ff45e, b2db2d3, 05195b3). Ship gate green: behavioral consumption
+> oracle over all profile FieldIDs in both loops
+> (agent/consumption_oracle_test.go); structural oracles #1/#2 in
+> agent/policy_oracle_test.go; record schema v9. One deviation from the
+> letter of S6a/S6b, recorded in docs/backlog.md: `agent.Config` survives
+> as the sanctioned REQUESTED-SIDE input shape (one canonical converter,
+> `Config.Split()` — never seen by the loops) because headless/driver/eval
+> still assemble it from their flag layers; the native
+> RequestedConfig-from-flags builders (and with them Config's deletion)
+> are the owed follow-up.
+
 - **S6a — full eager resolution + shared builder + loop signature, zero
   behavior change.** The ResolvedSpec invariant holds from day one of S6a:
   `Resolve` performs COMPLETE eager default-filling (exactly once), all
