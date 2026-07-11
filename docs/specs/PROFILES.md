@@ -6,8 +6,11 @@ on decision run `20260710-094837-ce9409` = docs/specs/REVIEW-TRIAGE-2026-07-10.m
 R1+R2). SHIPPED: S1 recording, S2a/S2b trust layer, and the S3
 execution-profile surfaces recorded in §6. OPEN: S4 routing-policy artifact,
 S5 TOML user profiles, and §7/S6 requested-vs-resolved run specification
-(drafted 2026-07-11 from external review round 3 — NOT yet council-grilled).
-Open items needing Robin are marked ⚑.
+(drafted 2026-07-11 from external review round 3; council-grilled same day —
+critic `openai/gpt-5.6-sol`, run `20260711-153523-5f88a4`, 4 rounds,
+hit_cap with signal 1.00: 13 objections, 11 critic/referee-closed, final 2
+(O12 append-only runtime-resolution sequence, O13 S6a behavioral ship gate)
+folded in without a re-read). Open items needing Robin are marked ⚑.
 
 ## Problem
 
@@ -209,7 +212,7 @@ mark it noncanonical in the transcript.
 - **S5 — TOML user profiles; subcommand CLI rides the separate unification
   decision.**
 
-## 7. Requested vs Resolved run specification (S6 — DRAFT 2026-07-11)
+## 7. Requested vs Resolved run specification (S6 — council-grilled 2026-07-11)
 
 Adopted from external review round 3 (backlog §round-3). The disease: a
 run's policy exists in ~10 overlapping representations (CLI strings, profile
@@ -237,10 +240,24 @@ council ×3, issue-bot, chat) is the structural cause.
 `agent.Config` today mixes three different kinds of thing. Separate them:
 
 - **`ResolvedSpec`** — pure policy DATA: every knob the loop, gates,
-  detectors, review, and recording consume. Complete (every field explicitly
-  set — zero is a value, never "use default"), validated, immutable after
-  construction, serializable. Carries per-field provenance (the existing
-  `FieldProvenance` machinery, widened to all fields).
+  detectors, review, and recording consume. Complete (every field carries an
+  explicitly resolved value — unset state exists only in `RequestedConfig`,
+  never here), validated per-field (each field has its own valid range and
+  disable semantics; see §7.2), and serializable. Per-field provenance (the
+  existing `FieldProvenance` machinery, widened to all fields) travels WITH
+  the spec but is a separate serialization from the policy value (§7.3).
+  Immutability is enforced by ACCESS STRUCTURE, not by convention or
+  after-the-fact checking: policy storage lives in unexported fields of the
+  spec type (its own package), construction deep-copies all referenced
+  storage (slices/maps/pointers, including `TerminationPolicy`), and
+  consumers cannot reach mutable state — components receive small
+  BY-VALUE per-domain projections (loop knobs, gate config, review config,
+  termination policy — a handful of group structs, not ~77 accessors), and
+  any accessor returning referenced data returns a copy. The canonical
+  policy serialization + hash are captured AT construction; run teardown
+  re-serializes and compares as DEFENSE-IN-DEPTH (it detects a bug in the
+  copy discipline; it is not the enforcement mechanism, since a mutate-and-
+  restore or an already-consumed mutation would evade an end-of-run check).
 - **Runtime bindings** — injected dependencies: `Model`, `Sandbox`,
   `VerifySandbox`, `Memory`, `Tools`, `Obs`, `PerfMark`, `Spend`, `CostFn`.
   Never serialized; identity (model slugs, sandbox kind) lives in the spec.
@@ -254,69 +271,152 @@ parallel one:
 
     runspec.Resolve(RequestedConfig) → (ResolvedSpec, Trace, error)
 
-- `RequestedConfig` = trust selection + exec-profile name + explicit CLI
-  overrides + CLI-only fields, preserving UNSET state (the §3 resolver's
-  `Overrides` shape, widened from ~19 profile fields to the full policy
-  surface).
-- Resolution order (unchanged from §3): profile declarations → CLI
-  overrides → trust-floor predicates → compatibility aliases → validation.
-  Contradictions are startup errors, before any sandbox or provider session
-  exists.
-- ALL `<= 0 means default` filling moves here. `resolveKnobs`,
-  the default-filling half of `resolveTerminationPolicy`, and the scattered
-  `ReviewRounds`/`verifyTimeout` fallbacks are deleted from loop/record
-  code; the loop reads spec fields directly and may assert completeness,
-  never repair it.
+- `RequestedConfig` is TRANSPORT-NEUTRAL: an optional-valued (presence-
+  preserving) struct over the FULL policy surface — trust selection,
+  exec-profile name, and per-field optional overrides. CLI flag parsing is
+  merely one PRODUCER of it; programmatic callers (council, chat,
+  issue-bot, tests, future API) construct it directly and may set any
+  policy field without needing a named profile to bless the value. A named
+  internal profile supplies their DEFAULTS, not their ceiling.
+- Resolution order: profile declarations → explicit overrides →
+  **compatibility-alias normalization** → trust-floor predicates →
+  validation. Aliases normalize BEFORE floor enforcement so no alias can
+  alter a policy value after the non-weakening check; an alias and its
+  canonical field both explicitly set to conflicting values is a startup
+  ERROR, never a silent precedence win. Contradictions are startup errors,
+  before any sandbox or provider session exists.
+- ALL default filling moves here. `resolveKnobs`, the default-filling half
+  of `resolveTerminationPolicy`, and the scattered `ReviewRounds`/
+  `verifyTimeout` fallbacks are deleted from loop/record code; the loop
+  reads spec fields directly and may assert completeness, never repair it.
+  Unset-vs-zero is carried by PRESENCE in `RequestedConfig` (option types),
+  not by sentinel values: each field has its own declared valid range and
+  disable semantics (zero legitimately means "disabled" for some windows/
+  counts), and resolved-field validation is per-field schema, not a blanket
+  `<= 0` rule.
 - `NavSpiralWindow` dual-source collapses: the standalone field becomes a
-  resolve-time alias into `TerminationPolicy.NavSpiralWindow` (standalone
-  wins, provenance says so), and only the policy value exists downstream.
+  compatibility alias of `TerminationPolicy.NavSpiralWindow`, normalized in
+  the alias phase above (conflict = error), and only the policy value
+  exists downstream.
 - One shared builder replaces the 6+ hand-assembled `agent.Config{}`
-  literals. Internal callers (council, chat, issue-bot) go through a
-  minimal builder entry with a named internal profile — no bare literals.
+  literals. No bare literals anywhere: every construction path produces a
+  `RequestedConfig` and goes through `Resolve`.
 
 ### 7.3 Record = the spec, not a re-derivation
 
 `ConfigRecord`'s `EffectiveConfig` is replaced by the canonical
 serialization of the `ResolvedSpec` VALUE that the loop actually held —
-`effectiveConfig()` (and its second `resolveKnobs` call) is deleted.
-`ConfigSHA256` hashes that serialization. Bundle identity and report fields
-derive from the same value. There is exactly one place a policy number can
-come from.
+`effectiveConfig()` (and its second `resolveKnobs` call) is deleted. Two
+distinct canonical serializations with distinct hashes:
+
+- **Policy value** → `ConfigSHA256`. Two runs with the same effective
+  policy share this hash regardless of HOW each value was reached (profile
+  default vs explicit override).
+- **Resolution trace** (per-field provenance, requested inputs, alias
+  normalizations, canonicality) → recorded alongside under its own field
+  and hash (`ResolutionTraceSHA256`). Identity questions ("same policy?")
+  and audit questions ("same way of asking for it?") stay separable.
+
+Bundle identity and report fields derive from the same values. There is
+exactly one place a policy number can come from.
 
 Values derived DURING the run (e.g. `resolveAutoVerify`'s harness-derived
-`VerifyCmd`) are not config and must not mutate the spec: they are recorded
-as runtime-derived evidence (the existing `autoVerifyResolved` /
-derived-provenance channel), with the spec keeping the pre-run value. Fixes
-the current silent mid-run `cfg` copy mutation (loop_shared.go:153).
+`VerifyCmd`) are not config and must not mutate the spec — but they DO
+control behavior (the derived command executes code), so they get the same
+integrity treatment as config, not a loose evidence side-channel: a
+canonical **runtime-resolution record** — an APPEND-ONLY, canonically
+ordered event sequence, not a singular value (derivation is per-turn and
+workspace markers can change mid-run; a single "the selected value" slot
+would let overwrites hide temporal divergence). Each entry carries
+turn/phase, the derived value, derivation-input digests (which project
+markers matched, workspace state consulted), provenance, and the consuming
+gate/action; the hash of the complete sequence is included in bundle
+identity. The spec keeps the pre-run value; the runtime-resolution
+sequence explains the rest. Fixes the current silent mid-run `cfg` copy
+mutation (loop_shared.go:153), and closes the gap where two runs sharing
+`ConfigSHA256` execute different derived verify commands invisibly.
 
 ### 7.4 Conformance (the anti-drift teeth)
 
-No hand-maintained parallel structs with field copying. Two reflection
-oracles, extending the existing `configFieldClasses` mechanism:
+No hand-maintained parallel structs with field copying. Three oracles —
+two structural (reflection, extending `configFieldClasses`) and one
+BEHAVIORAL (structure alone cannot prove a resolved value reaches its
+consumption point; a field can serialize exactly once and still be ignored
+or shadowed by the loop):
 
-1. **Consumed-and-recorded-exactly-once**: every `ResolvedSpec` field is
-   classified (loop-consumed / gate-consumed / record-only / excluded-with-
-   reason) and appears in the canonical serialization exactly once. A new
-   field fails the test until classified.
-2. **Profile-threading completeness**: every `profile.FieldID` declared by
-   any registered exec profile provably lands in `ResolvedSpec` (this test
-   alone would have caught the headless AutoVerify drop).
+1. **Consumed-and-recorded-exactly-once** (structural): every
+   `ResolvedSpec` field is classified (loop-consumed / gate-consumed /
+   record-only / excluded-with-reason) and appears in the canonical policy
+   serialization exactly once. A new field fails the test until classified.
+2. **Profile-threading completeness** (structural): every `profile.FieldID`
+   declared by any registered exec profile provably lands in
+   `ResolvedSpec`.
+3. **Consumption dataflow** (behavioral): a table-driven test varies each
+   profile-declared field to a distinguishable non-default value and
+   asserts the value observed AT ITS ACTUAL CONSUMPTION SITE, in BOTH
+   `Run` and `RunNative`. "Consumption site" is per-field and named in the
+   field's classification entry (oracle 1), so the mapping field →
+   consuming component is itself recorded and reviewable: the tracker's
+   spiral window state for `NavSpiralWindow`, the constructed gate chain
+   for fence/verify/review fields, the review pass's round budget for
+   `ReviewRounds`, etc. Observation is a test-only hook AT the consuming
+   component — not a central startup snapshot, which a loop could populate
+   correctly and then ignore. For fields whose consumption is an
+   arm/disarm decision (e.g. `AutoVerify`), the assertion is behavioral:
+   the derived gate actually appears (or doesn't) in the constructed gate
+   chain. A field whose classification names no consumption site cannot be
+   classified loop- or gate-consumed. This is the oracle that would have
+   caught the headless AutoVerify drop end-to-end; oracle 2 alone only
+   proves the resolver's side. Scope: all profile FieldIDs at minimum;
+   loop-consumed non-profile fields are added as they migrate in S6b.
 
 ### 7.5 Slices
 
-- **S6a — widen the resolver + shared builder, zero behavior change.**
-  `ResolvedSpec` introduced; all binaries construct through it; golden test:
-  byte-identical `ConfigRecord` across a matrix of trust × profile × CLI
-  combinations vs the pre-S6a binary. EXCEPTION carved out explicitly: the
-  headless profile-field drop (above) — preserving it byte-identical means
-  reproducing a bug, so S6a either replicates it behind a named compat
-  shim or takes the behavior change consciously (⚑ below).
-- **S6b — delete lazy defaults from loop/record code.** `resolveKnobs`
-  fallbacks, `effectiveConfig`, triple `ReviewRounds` default, dual
-  `verifyTimeout`, `NavSpiralWindow` standalone field. Loop signature takes
-  the spec; `<= 0` in a spec field is a validation error, not a default.
-- **S6c — conformance oracles** (7.4), plus schema bump for the record
-  (EffectiveConfig → canonical ResolvedSpec serialization).
+- **S6a — full eager resolution + shared builder + loop signature, zero
+  behavior change.** The ResolvedSpec invariant holds from day one of S6a:
+  `Resolve` performs COMPLETE eager default-filling (exactly once), all
+  binaries construct through the shared builder, and BOTH loop signatures
+  change in S6a itself to take the split directly —
+  `Run(ctx, spec ResolvedSpec, rt Runtime, content Content)` and likewise
+  `RunNative` — with NO `agent.Config`-shaped adapter in between (an
+  adapter that copies fields is exactly the manual-copy drift class this
+  design deletes; if it existed it would need its own totality proof, so it
+  doesn't exist). `agent.Config` survives S6a only as an input shape on the
+  requested side, consumed by `Resolve`, never seen by the loops. The
+  legacy fallbacks inside loop/record code are not yet deleted but are
+  PROVEN DEAD in S6a itself: a completeness assertion at loop entry plus a
+  test that every fallback branch is unreachable given any `Resolve`
+  output (resolution is pure, so the record path re-deriving from the same
+  complete value stays byte-identical). No transitional "ResolvedSpec that
+  isn't actually complete" exists at any point. Golden test: byte-identical
+  `ConfigRecord` across a matrix of trust × profile × CLI combinations vs
+  the pre-S6a binary. SHIP GATE: S6a is non-shippable until the
+  profile-FieldID portion of the behavioral consumption oracle (§7.4 #3)
+  passes for BOTH loops — S6a rewrites every construction path and both
+  loop APIs, exactly the area where fields were previously dropped, and
+  completeness assertions + record goldens cannot prove consumers USE the
+  resolved values; broader non-profile coverage stays in S6c. EXCEPTION
+  carved out explicitly: the headless profile-field drop (above) — a
+  wiring bug, not a semantics question. S6a honors the declared
+  `coding-v2` semantics in ALL binaries (profiles are global contracts; a
+  `coding-v3` with `AutoVerify=false` would change every consumer to
+  preserve one binary's bug). If migration compatibility is needed for
+  in-flight tooling, an explicitly named `legacy-headless-v1` profile
+  replicates the dropped-field behavior, opt-in, with a recorded removal
+  date (⚑ below: confirm behavior change vs legacy profile).
+- **S6b — delete the (now-dead) fallbacks.** Pure removal of the code S6a
+  made unreachable: `resolveKnobs` fallbacks, the default-filling half of
+  `resolveTerminationPolicy`, `effectiveConfig`, triple `ReviewRounds`
+  default, dual `verifyTimeout`, plus the `NavSpiralWindow` standalone
+  field. No API changes here — the loop signatures already changed in S6a;
+  S6b removes dead branches only. An out-of-range spec field per its own
+  declared schema is a validation error, not a default (zero stays valid
+  where it means "disabled").
+- **S6c — conformance oracles** (§7.4: two structural + the full
+  behavioral consumption matrix beyond S6a's profile-FieldID ship gate),
+  plus schema bump for the record (EffectiveConfig → canonical
+  policy-value + resolution-trace serializations, runtime-resolution
+  sequence in bundle identity).
 
 Interaction with CONTROL-PLANE Design 1 (loop unification): independent and
 prior — a single `ResolvedSpec` shrinks both loops' shared wiring and makes
@@ -324,13 +424,14 @@ the eventual unification diff smaller. Do S6 first; do not couple them.
 
 ## Open for Robin ⚑
 
-6. **Headless `AutoVerify` semantics (S6a gate)**: fixing the profile-field
-   drop flips headless `coding-v2` runs to `AutoVerify=true` (soft
-   auto-derived verify gate when `-verify-cmd` is empty) — a behavior change
-   for every delegation run that omits `-verify-cmd`. Take the change as
-   intended-profile-semantics, or amend `coding-v2`→`coding-v3` with
-   `AutoVerify=false` for headless parity? Same question for
-   `StandingContext`/`AnswerNudgeWindow`/`NavSpiralWindow` threading.
+6. **Headless profile-field fix — migration shape only** (narrowed by
+   council O6: profiles are global contracts, wiring bugs don't get
+   versioned into them — S6a honors declared `coding-v2` semantics in ALL
+   binaries). Remaining call: take the behavior change directly (headless
+   runs without `-verify-cmd` gain the soft auto-derived verify gate;
+   StandingContext/nudge windows likewise start applying), or also ship an
+   opt-in `legacy-headless-v1` compat profile with a recorded removal date
+   for in-flight tooling.
 
 ## Older open items ⚑
 
