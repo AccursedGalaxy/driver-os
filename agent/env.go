@@ -222,19 +222,19 @@ func verifySkipFilter(verifyCmd string) string {
 	return ""
 }
 
-func verifyGatePreamble(cfg Config) string {
-	if cfg.VerifyCmd == "" {
+func verifyGatePreamble(vs *verifyState) string {
+	if vs.Cmd == "" {
 		return ""
 	}
 	prov := ""
-	if cfg.autoVerifyProvenance != "" {
-		prov = " (auto-derived from " + cfg.autoVerifyProvenance + ")"
+	if vs.provenance != "" {
+		prov = " (auto-derived from " + vs.provenance + ")"
 	}
 	example := "go test ./pkg/you/changed/"
 	hint := ""
-	if filter := verifySkipFilter(cfg.VerifyCmd); filter != "" {
+	if filter := verifySkipFilter(vs.Cmd); filter != "" {
 		example += " " + filter
 		hint = " The gate deliberately skips these — carry the filter or you will see unrelated red tests."
 	}
-	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `%s`).%s NEVER run the full suite or the full verify command yourself.", cfg.VerifyCmd, prov, example, hint)
+	return fmt.Sprintf("\n\nVERIFY GATE: `%s`%s. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `%s`).%s NEVER run the full suite or the full verify command yourself.", vs.Cmd, prov, example, hint)
 }

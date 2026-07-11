@@ -49,7 +49,7 @@ func TestMatchesFence(t *testing.T) {
 // the append path included — while non-fenced writes pass through untouched.
 func TestFenceToolRefusal(t *testing.T) {
 	sb := sbWith(t, map[string]string{"calc.go": "package calc\n", "calc_test.go": "package calc // test\n"})
-	tools := applyTestFence(DefaultTools(sb, defaultRunTimeout), []string{"*_test.go", "testdata/**"}, sb)
+	tools := applyTestFence(DefaultTools(sb, defaultRunTimeout), []string{"*_test.go", "testdata/**"}, sb, false, "")
 	ctx := context.Background()
 
 	// Structured write_file (the append flag flows through the same handler).
@@ -89,7 +89,7 @@ func TestFenceToolRefusal(t *testing.T) {
 func TestFenceMountAliasPath(t *testing.T) {
 	sb := sbWith(t, map[string]string{"calc_test.go": "package calc\n"})
 	sb.(*local.Sandbox).SetMountAlias("/workspace")
-	tools := applyTestFence(DefaultTools(sb, defaultRunTimeout), []string{"*_test.go"}, sb)
+	tools := applyTestFence(DefaultTools(sb, defaultRunTimeout), []string{"*_test.go"}, sb, false, "")
 	if _, err := tools["write_file"].RunJSON(context.Background(), []byte(`{"path":"/workspace/calc_test.go","content":"x"}`)); err == nil || !strings.Contains(err.Error(), "test fence") {
 		t.Fatalf("alias path: want fence refusal, got %v", err)
 	}
@@ -100,10 +100,10 @@ func TestFenceMountAliasPath(t *testing.T) {
 func TestFenceEmptyIsNoOp(t *testing.T) {
 	sb := sbWith(t, map[string]string{"a_test.go": "old"})
 	tools := DefaultTools(sb, defaultRunTimeout)
-	if got := applyTestFence(tools, nil, sb); &got == &tools || len(got) != len(tools) {
+	if got := applyTestFence(tools, nil, sb, false, ""); &got == &tools || len(got) != len(tools) {
 		// same underlying map returned (no copy, no wrap)
 	}
-	out, err := applyTestFence(tools, nil, sb)["write_file"].RunJSON(context.Background(), []byte(`{"path":"a_test.go","content":"new"}`))
+	out, err := applyTestFence(tools, nil, sb, false, "")["write_file"].RunJSON(context.Background(), []byte(`{"path":"a_test.go","content":"new"}`))
 	if err != nil || !strings.Contains(out, "wrote") {
 		t.Fatalf("empty fence must not refuse test writes: %v %q", err, out)
 	}
@@ -118,7 +118,7 @@ func TestFenceViolationViaRunIsUnverified(t *testing.T) {
 		{structuredCall("c1", "run", map[string]any{"command": "echo sabotage >> calc_test.go"})},
 		{llm.Text("done")},
 	}}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t",
 		TestFence: []string{"*_test.go"},
 		VerifyCmd: "true", // execution gate green — only the fence stands in the way.
@@ -142,7 +142,7 @@ func TestFenceViolationBlocksUpgrade(t *testing.T) {
 		{structuredCall("c1", "run", map[string]any{"command": "echo x >> calc_test.go"})},
 		{structuredCall("c2", "run", map[string]any{"command": "echo probe"})},
 	}}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t",
 		TestFence:     []string{"*_test.go"},
 		VerifyCmd:     "true",
@@ -167,7 +167,7 @@ func TestFenceDeletionIsDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sb.Close() })
-	f := newFenceState(context.Background(), Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f := newFenceStateT(context.Background(), Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	if err := os.Remove(filepath.Join(root, "a_test.go")); err != nil {
 		t.Fatal(err)
 	}

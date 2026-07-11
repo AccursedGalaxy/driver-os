@@ -22,7 +22,7 @@ func TestRunNativeWireDedupStubsRepeatObservations(t *testing.T) {
 
 	ns := &nativeScript{turns: turns}
 	sb := sbWith(t, nil)
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sb,
 		Tools:         stableRunTools(sb, longObs),
@@ -71,7 +71,7 @@ func TestRunNativeWireDedupKeepsCountSixKill(t *testing.T) {
 	longObs := strings.Repeat("FAILED tests/test_spectree.py::test_something - assert 1 == 2\n", 10)
 	ns := &nativeScript{turns: repeatedStableRunTurns(6)}
 	sb := sbWith(t, nil)
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sb,
 		Tools:         stableRunTools(sb, longObs),
@@ -109,7 +109,7 @@ func TestRunTextWireDedupStubsRepeatObservations(t *testing.T) {
 		},
 	}
 
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Tools:   tools,
 		Sandbox: sbWith(t, nil),

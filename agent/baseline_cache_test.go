@@ -24,13 +24,13 @@ func TestVerifyBaselineCacheReusesUnchangedTree(t *testing.T) {
 		verifyBaselineCache: cache,
 	}
 
-	first := &gates{cfg: cfg, runTimeout: defaultRunTimeout}
+	first := &gates{d: gateDepsT(t, cfg), runTimeout: defaultRunTimeout}
 	first.measureVerifyBaseline(context.Background())
 	if !first.verifyBaselineMeasured || !first.verifyBaselineRed {
 		t.Fatalf("first baseline measured=%v red=%v, want both true", first.verifyBaselineMeasured, first.verifyBaselineRed)
 	}
 
-	second := &gates{cfg: cfg, runTimeout: defaultRunTimeout}
+	second := &gates{d: gateDepsT(t, cfg), runTimeout: defaultRunTimeout}
 	second.measureVerifyBaseline(context.Background())
 	if !second.verifyBaselineMeasured || !second.verifyBaselineRed {
 		t.Fatalf("cached baseline measured=%v red=%v, want both true", second.verifyBaselineMeasured, second.verifyBaselineRed)
@@ -51,7 +51,7 @@ func TestVerifyBaselineCacheReusesUnchangedTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("modified\n"), 0o644); err != nil {
 		t.Fatalf("modify tracked file: %v", err)
 	}
-	third := &gates{cfg: cfg, runTimeout: defaultRunTimeout}
+	third := &gates{d: gateDepsT(t, cfg), runTimeout: defaultRunTimeout}
 	third.measureVerifyBaseline(context.Background())
 
 	count, err = os.ReadFile(countPath)

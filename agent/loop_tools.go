@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
 
@@ -122,10 +123,17 @@ func prefetchLeadingReadOnly(ctx context.Context, tools map[string]Tool, calls [
 
 // RunNative executes the agent against a tool-capable provider. Its signature and
 // RunResult match Run exactly, so a caller swaps loops without other changes.
-func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
+//
+// The spec is COMPLETE by construction (runspec.Resolve) — the loop asserts
+// that at entry and never repairs a field (PROFILES.md §7.5 S6a).
+func RunNative(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content) (out *RunResult, err error) {
+	if err := spec.Complete(); err != nil {
+		return nil, setupErr("invalid_config", err.Error())
+	}
+	pol := spec.Policy()
+	vs := runVerifyState(pol, rt)
 
-	ev := &evidenceLog{root: cfg.Root, verifyConfigured: strings.TrimSpace(cfg.VerifyCmd) != "", reviewConfigured: cfg.Reviewer != nil, costConfigured: cfg.MaxTotalCostUSD > 0}
-	cfg.evidence = ev
+	ev := &evidenceLog{root: content.Root, verifyConfigured: strings.TrimSpace(vs.Cmd) != "", reviewConfigured: rt.Reviewer != nil, costConfigured: pol.MaxTotalCostUSD > 0}
 	defer func() {
 		if out != nil {
 			out.Guarantees = finalizeGuarantees(ev, out.Outcome, out.Review)
@@ -135,7 +143,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// refusal so a refused run is addressable too (its transcript write won't fail
 	// on an empty ID).
 	runID, startedAt := newRunID(), time.Now()
-	if err := cfg.Validate(); err != nil {
+	if err := validateRun(pol, rt); err != nil {
 		return nil, err
 	}
 	// (N1) Last prose the model produced this run, captured even on iterations that
@@ -151,12 +159,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		stampRun(out, runID, startedAt)
 	}()
-	if refusal := checkSandboxFloor(cfg); refusal != nil {
+	if refusal := checkSandboxFloor(pol, rt, content, ev); refusal != nil {
 		ev.isolation = EvidenceFailed
 		// Prompt resolution and native schemas have not run on this safety refusal;
 		// the record deliberately hashes empty protocol representations.
-		refusal.TerminationPolicy = resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)
-		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "tools")
+		refusal.TerminationPolicy = pol.TerminationPolicy
+		refusal.ConfigRecord = newConfigRecord(pol, rt, vs, "", nil, "tools")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
@@ -165,36 +173,37 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// mislabeled. Once Obs exists, its routing note is emitted for every run that
 	// reaches prompt setup; pre-prompt refusals instead carry the empty-representation
 	// ConfigRecord documented in BINARY-UNIFICATION.md.
-	basePrompt, promptNote, err := resolveSystemPrompt(cfg)
+	basePrompt, promptNote, err := resolveSystemPrompt(pol, rt.Model)
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Obs == nil {
-		cfg.Obs = nopObserver{}
-	}
+	rt.Obs = rt.obs()
 	if promptNote != "" {
-		cfg.Obs.Note(promptNote)
+		rt.Obs.Note(promptNote)
 	}
-	resolveAutoVerify(ctx, &cfg)
-	ev.verifyConfigured = strings.TrimSpace(cfg.VerifyCmd) != ""
-	ev.verifyCommand = cfg.VerifyCmd
-	knobs := resolveKnobs(cfg)
-	maxIter, maxTok, runTimeout := knobs.maxIter, knobs.maxTok, knobs.runTimeout
-	policy := knobs.terminationPolicy
-	cfg.Tools = wrapTools(cfg, runTimeout)
-	if cfg.PerfMark != nil {
-		cfg.PerfMark("gates_start", nil)
+	resolveAutoVerify(ctx, vs, pol, rt, content.Root)
+	ev.verifyConfigured = strings.TrimSpace(vs.Cmd) != ""
+	ev.verifyCommand = vs.Cmd
+	// The knobs are read straight off the complete spec (P5/P7): resolution
+	// happened exactly once, in runspec.Resolve — never here.
+	maxIter, maxTok, runTimeout := pol.MaxIterations, pol.MaxTokens, pol.RunTimeout
+	policy := pol.TerminationPolicy
+	tools := wrapTools(pol, rt, content.Root, runTimeout)
+	rt.Tools = tools
+	if rt.PerfMark != nil {
+		rt.PerfMark("gates_start", nil)
 	}
-	gs, err := newGates(ctx, cfg, runTimeout)
-	if cfg.PerfMark != nil {
-		cfg.PerfMark("gates_done", nil)
+	gs, err := newGates(ctx, gateDeps{pol: pol, rt: rt, vs: vs, ev: ev, task: content.Task, root: content.Root, baselineCache: rt.verifyBaselineCache}, runTimeout)
+	if rt.PerfMark != nil {
+		rt.PerfMark("gates_done", nil)
 	}
 	if err != nil {
 		return nil, err
 	}
 	ev.baseTree = gs.runBaseTree
 	ev.closingReady = true
-	cfg.Tools = gs.addReproTools(cfg.Tools)
+	tools = gs.addReproTools(tools)
+	rt.Tools = tools
 
 	// The answer-forcer (AnswerNudgeWindow) is only SAFE for an OBSERVE-ONLY agent: one
 	// that can't have left work half-done, so a forced "stop and answer" can't mask an
@@ -204,12 +213,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ALLOWLIST (every tool is a known read-only built-in) so it FAILS CLOSED: a custom
 	// effectful tool the harness doesn't recognize makes the run not-observe-only and the
 	// nudge stays out (O3). Coding runs use FinishNudgeWindow instead.
-	answerNudgeOK := isObserveOnly(cfg.Tools)
+	answerNudgeOK := isObserveOnly(tools)
 
-	res := &RunResult{Task: cfg.Task, Root: cfg.Root, TerminationPolicy: policy}
-	recordAutoVerifyResolution(res, cfg)
+	res := &RunResult{Task: content.Task, Root: content.Root, TerminationPolicy: policy}
+	recordAutoVerifyResolution(res, vs)
 	gs.applyBaseline(res)
-	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
+	if refusal := redBaselineRefusal(vs, gs); refusal != nil {
 		res.Outcome, res.Reason, res.Iterations = refusal.Outcome, refusal.Reason, refusal.Iterations
 		return res, nil
 	}
@@ -226,32 +235,30 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 	// (TRIAD) The opening PLAN stage — see Run's twin for the ordering notes
 	// (after newGates so the reviewer judges the original task; fails open).
-	planTask, planRep := runPlanStage(ctx, cfg)
+	planTask, planRep := runPlanStage(ctx, rt, content)
 	res.Plan = planRep
-	seedCfg := cfg
-	seedCfg.Task = planTask
 
 	// (P1) State lives HERE; we re-send the whole conversation each turn. A
 	// continuing chat seeds it with the prior turns (Config.History); see Session.
 	// Environment observation and memory recall are independent. Complete both
 	// before seeding because their rendered blocks are part of the first request.
 	var environment, recalled string
-	scope := scopeOrDefault(cfg.MemoryScope)
+	scope := scopeOrDefault(pol.MemoryScope)
 	var setupWG sync.WaitGroup
 	setupWG.Add(2)
 	go func() {
 		defer setupWG.Done()
-		environment = observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)
+		environment = observeEnvironment(ctx, rt.Sandbox, pol.BootContext)
 	}()
 	go func() {
 		defer setupWG.Done()
-		recalled = recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
+		recalled = recall(ctx, rt.Obs, rt.Memory, scope, content.Task)
 	}()
 	setupWG.Wait()
-	if cfg.PerfMark != nil {
-		cfg.PerfMark("setup_done", nil)
+	if rt.PerfMark != nil {
+		rt.PerfMark("setup_done", nil)
 	}
-	messages := seedMessages(seedCfg, environment+verifyGatePreamble(cfg)+gs.baselinePreamble())
+	messages := seedMessages(planTask, content, environment+verifyGatePreamble(vs)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
 	// registered after `messages` exists so the closure reads its final value.
@@ -261,9 +268,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 	}()
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
-	system := withPersona(cfg.Persona, basePrompt) + recalled
-	schemas := nativeSchemas(cfg.Tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
-	res.ConfigRecord = newConfigRecord(cfg, withPersona(cfg.Persona, basePrompt), schemas, "tools")
+	system := withPersona(pol.Persona, basePrompt) + recalled
+	schemas := nativeSchemas(tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
+	res.ConfigRecord = newConfigRecord(pol, rt, vs, withPersona(pol.Persona, basePrompt), schemas, "tools")
 
 	temp := 0.0
 
@@ -290,9 +297,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// wire-format-specific (per-turn here, per-call in the text loop). The
 	// stagnant detector is still evaluated on each `run` result regardless of
 	// which turn it lands in.
-	tr := newTurnTracker(cfg, maxIter, policy, &res.DetectorCounters)
+	tr := newTurnTracker(newTrackerDeps(pol, vs, rt), maxIter, policy, &res.DetectorCounters)
 	var standing *standingState
-	if cfg.StandingContext {
+	if pol.StandingContext {
 		standing = newStandingState()
 		defer standing.cleanup()
 	}
@@ -305,9 +312,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// a hung provider) is cancelled AT the budget — the between-turn check alone
 	// can't interrupt a call already in progress (the gpt-oss exit-124 case).
 	loopCtx := ctx
-	if cfg.MaxWallClock > 0 {
+	if pol.MaxWallClock > 0 {
 		var cancel context.CancelFunc
-		loopCtx, cancel = context.WithTimeout(ctx, cfg.MaxWallClock)
+		loopCtx, cancel = context.WithTimeout(ctx, pol.MaxWallClock)
 		defer cancel()
 	}
 
@@ -322,28 +329,28 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Iterations = i - 1
 			return res, nil
 		}
-		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
+		if pol.MaxWallClock > 0 && time.Since(start) > pol.MaxWallClock {
 			res.Outcome = HitDeadline
-			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
+			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", pol.MaxWallClock, i-1)
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
 		// the turn that crossed the cap was still processed (it may have answered);
 		// the NEXT one is not paid for. See Config.MaxTotalTokens.
-		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
+		if pol.MaxTotalTokens > 0 && res.Usage.TotalTokens >= pol.MaxTotalTokens {
 			res.Outcome = HitBudget
-			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
+			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, pol.MaxTotalTokens, i-1)
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
-		if stop, reason := dollarBudgetStop(cfg, res.Usage, i-1, &costBudgetMissingNoted); stop {
+		if stop, reason := dollarBudgetStop(pol.MaxTotalCostUSD, pol.AllowUnpricedSpend, rt, ev, res.Usage, i-1, &costBudgetMissingNoted); stop {
 			res.Outcome = HitBudget
 			res.Reason = reason
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
-		cfg.Obs.Iteration(i, maxIter)
+		rt.Obs.Iteration(i, maxIter)
 
-		if cfg.StandingContext && standing != nil {
-			standingBlock := standing.block(loopCtx, cfg, gs, tr, i)
+		if pol.StandingContext && standing != nil {
+			standingBlock := standing.block(loopCtx, content.Root, vs.Cmd, gs, tr, i)
 			if standingBlock != "" && standingBlock != lastStandingBlock {
 				messages = append(messages, llm.Message{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.TextPart{Text: standingBlock}}})
 				lastStandingBlock = standingBlock
@@ -362,15 +369,15 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			Tools:           schemas,
 			Temperature:     &temp,
 			MaxTokens:       maxTok,
-			ReasoningEffort: cfg.ReasoningEffort,
+			ReasoningEffort: pol.ReasoningEffort,
 		}
-		noteContextEstimate(cfg, req, &contextEstimateNoted)
-		if cfg.PerfMark != nil {
-			cfg.PerfMark("model_start", map[string]any{"iter": i})
+		noteContextEstimate(rt, req, &contextEstimateNoted)
+		if rt.PerfMark != nil {
+			rt.PerfMark("model_start", map[string]any{"iter": i})
 		}
-		resp, messages, err = generateWithEviction(loopCtx, cfg, req)
-		if cfg.PerfMark != nil {
-			cfg.PerfMark("model_done", map[string]any{"iter": i})
+		resp, messages, err = generateWithEviction(loopCtx, rt, pol.Stream, req)
+		if rt.PerfMark != nil {
+			rt.PerfMark("model_done", map[string]any{"iter": i})
 		}
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
@@ -383,7 +390,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					lastAssistantText = txt
 				}
 			}
-			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, cfg, err); ok {
+			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, pol.MaxWallClock, err); ok {
 				res.Outcome, res.Reason, res.Err = outcome, reason, returnErr
 				if returnErr != nil {
 					return res, returnErr
@@ -396,10 +403,10 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
-		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
-		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
+		rt.Spend.Add(pol.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
+		noteUsage(rt.Obs, i, res.Usage, pol.MaxTotalTokens)
 		ctxTok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
-		notifyUsage(cfg.Obs, res.Usage, ctxTok)
+		notifyUsage(rt.Obs, res.Usage, ctxTok)
 
 		// Prompt-cache efficiency tracking (Measurement 3).
 		cs.observe(resp.Usage.PromptTokens, resp.Usage.CachedTokens)
@@ -448,7 +455,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// budget remains, reject it and nudge the model to finish via the finish tool
 			// instead. No FinishTool configured => the historical behavior (an empty
 			// answer is accepted), so no other caller is affected.
-			if answer == "" && cfg.FinishTool != "" && i < maxIter {
+			if answer == "" && pol.FinishTool != "" && i < maxIter {
 				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 				// A reasoning model (deepseek-v4-flash via openaicompat) routinely emits a
 				// THINK-ONLY turn — reasoning advanced, but no text and no tool call yet —
@@ -461,11 +468,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				// and falls through to the genuine-silence nudge.
 				if reasoningAdvanced {
 					lastReasoningSig = reasoningSig
-					cfg.Obs.Note("empty turn — reasoning advanced, continuing")
+					rt.Obs.Note("empty turn — reasoning advanced, continuing")
 					continue
 				}
-				messages = append(messages, llm.User(fmt.Sprintf("You ended your turn without saying anything. Use the %q tool to send a short message — that is how you finish your turn.", cfg.FinishTool)))
-				cfg.Obs.Note("empty finish — nudging to use the " + cfg.FinishTool + " tool")
+				messages = append(messages, llm.User(fmt.Sprintf("You ended your turn without saying anything. Use the %q tool to send a short message — that is how you finish your turn.", pol.FinishTool)))
+				rt.Obs.Note("empty finish — nudging to use the " + pol.FinishTool + " tool")
 				continue
 			}
 			res.Steps = append(res.Steps, Step{Iter: i, Reply: answer, Verb: "answer", Arg: answer, Grounded: grounded, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason})
@@ -497,7 +504,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 		}
 
-		cfg.Obs.Model(callsSummary(calls, cfg.Tools))
+		rt.Obs.Model(callsSummary(calls, tools))
 
 		// (FinishTool) First-class terminal finish: the model called the designated
 		// finish tool to deliberately end its turn (see Config.FinishTool). Any other
@@ -511,8 +518,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// (harness review finding #1). The finish path needs it appended before its
 		// tool results, and pairs the finish call itself with a synthetic result so no
 		// tool call is left unanswered when a Session continues past the finish.
-		if cfg.FinishTool != "" {
-			if fin := findCall(calls, cfg.FinishTool); fin != nil {
+		if pol.FinishTool != "" {
+			if fin := findCall(calls, pol.FinishTool); fin != nil {
 				messages = append(messages, llm.Message{Role: llm.RoleAssistant, Parts: resp.Content})
 				usageForFinish, modelMsForFinish := resp.Usage, modelMs
 				replyForFinish := turnReply // the turn's narration rides its first recorded step (review #6).
@@ -520,9 +527,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					if c.ID == fin.ID {
 						continue
 					}
-					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
+					step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, tools), Usage: usageForFinish, ModelMs: modelMsForFinish, Reply: replyForFinish, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 					usageForFinish, modelMsForFinish, replyForFinish = llm.Usage{}, 0, ""
-					obs, isErr := dispatchNative(loopCtx, cfg.Tools, c)
+					obs, isErr := dispatchNative(loopCtx, tools, c)
 					if isMutatingTool(c.Name) && !isErr {
 						ev.mutation()
 					}
@@ -531,12 +538,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					}
 					if c.Name == "run" {
 						tr.observeRun(obs) // so a VerifyLastRun gate reads this turn's last run (kill ignored — we're finishing).
-						recordNativeRun(loopCtx, cfg, standing, tr, c, obs)
+						recordNativeRun(loopCtx, pol.StandingContext, content.Root, tools, standing, tr, c, obs)
 					}
 					step.Grounded = grounded
 					step.Observation = obs
 					res.Steps = append(res.Steps, step)
-					cfg.Obs.Observation(obs)
+					rt.Obs.Observation(obs)
 					messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
 				}
 				msg := finishToolMessage(*fin)
@@ -549,7 +556,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					answer:               msg,
 					lastRunFailed:        tr.lastRunFailed,
 					canContinue:          i < maxIter,
-					trusted:              cfg.FinishToolTrustsCaller,
+					trusted:              pol.FinishToolTrustsCaller,
 					verifyContinuePhrase: "you called the finish tool",
 					grounded:             grounded,
 					memoryScope:          scope,
@@ -581,7 +588,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		//     nav turn, not N — so real parallel exploration is never mistaken for a
 		//     spiral. (b) keys on the discovery CLASS so search-churn and mixed
 		//     list_dir/search wandering trip the same net the list_dir-only case did.
-		sig := turnSignature(calls, cfg.Tools)
+		sig := turnSignature(calls, tools)
 		// A repeat counts toward the tight-loop kill ONLY if the model's reasoning
 		// also didn't advance. A thinking model (Gemini) re-issues the SAME visible
 		// action across turns while its encrypted chain of thought moves forward — the
@@ -599,7 +606,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// one (a true tight loop). Either way the spiral is bounded — the lenient
 			// ceiling still cuts a 20x re-read long before the iteration cap.
 			if repeats++; repeats >= repeatThreshold(policy, reasoningAdvanced) {
-				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
+				steps := turnSteps(i, calls, tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
 				res.Reason = fmt.Sprintf("no progress: repeated %q %d times", sig, repeats)
 				// (deliverable 5) explicit killing-turn Observation, uniform with the
 				// spiral kill below — an empty turn reads as a broken checkout in traces.
@@ -632,8 +639,8 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// already-seen targets is a cycle and counts toward the window; endless
 			// novel wandering still dies at the hard bound. Bounds are deterministic
 			// — no model-family or reasoning variance (spiralState).
-			if kind, reason := spiral.observeDiscoveryTurn(discoveryTargets(calls, cfg.Tools)); kind != spiralKillNone {
-				steps := turnSteps(i, calls, cfg.Tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
+			if kind, reason := spiral.observeDiscoveryTurn(discoveryTargets(calls, tools)); kind != spiralKillNone {
+				steps := turnSteps(i, calls, tools, grounded, resp.Usage, modelMs, reasoningAdvanced, turnReply, resp.FinishReason)
 				// (deliverable 5) Record an explicit Observation on the killing turn so
 				// the trace doesn't read as a broken checkout / empty turn.
 				if len(steps) > 0 {
@@ -672,11 +679,11 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			c0 := calls[0]
 			readOnly0 := c0.Name == "read_file" || c0.Name == "search" || c0.Name == "list_dir"
 			if readOnly0 && !reasoningAdvanced {
-				sig0 := c0.Name + " " + signatureArg(c0, cfg.Tools)
+				sig0 := c0.Name + " " + signatureArg(c0, tools)
 				skipLeading = sig0 == lastReadSig && sig0 == lastExecutedSig
 			}
 		}
-		prefetched, prefetchK := prefetchLeadingReadOnly(loopCtx, cfg.Tools, calls, skipLeading)
+		prefetched, prefetchK := prefetchLeadingReadOnly(loopCtx, tools, calls, skipLeading)
 
 		// ACT: run every requested call in order, appending one result per id (a
 		// missing result for any call would make the next request malformed).
@@ -685,14 +692,14 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		editedThisTurn := false    // (code-intel slice 1) did any call this turn mutate a file?
 		turnObservationFPs := make([]string, 0, len(calls))
 		for idx, c := range calls {
-			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, cfg.Tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
+			step := Step{Iter: i, Verb: c.Name, Arg: callArg(c, tools), Usage: usageForTurn, ModelMs: modelMsForTurn, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 			if idx == 0 {
 				step.Reply = turnReply // the turn's narration rides its first step (review #6).
 			}
 			usageForTurn, modelMsForTurn = llm.Usage{}, 0
 
 			toolStart := time.Now()
-			sig := c.Name + " " + signatureArg(c, cfg.Tools)
+			sig := c.Name + " " + signatureArg(c, tools)
 			readOnly := c.Name == "read_file" || c.Name == "search" || c.Name == "list_dir"
 			var obs string
 			var isErr bool
@@ -705,7 +712,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 					obs, isErr = prefetched[idx].obs, prefetched[idx].isErr
 					step.ToolMs = prefetched[idx].dur.Milliseconds()
 				} else {
-					obs, isErr = dispatchNative(loopCtx, cfg.Tools, c)
+					obs, isErr = dispatchNative(loopCtx, tools, c)
 					step.ToolMs = time.Since(toolStart).Milliseconds()
 				}
 				lastExecutedSig = sig
@@ -731,7 +738,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			stagnantCount := 0
 			if c.Name == "run" {
 				kill, stagnantCount = tr.observeRun(obs)
-				recordNativeRun(loopCtx, cfg, standing, tr, c, obs)
+				recordNativeRun(loopCtx, pol.StandingContext, content.Root, tools, standing, tr, c, obs)
 			}
 			if tr.observeAction(i, c.Name) {
 				editedThisTurn = true
@@ -742,7 +749,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			// at counts 3/4/5, and baking them in would reset the counter before the
 			// count-6 KilledRepeat backstop can fire.
 			rawObs := obs
-			turnObservationFPs = append(turnObservationFPs, c.Name+" "+signatureArg(c, cfg.Tools)+"\nOBSERVATION:\n"+rawObs)
+			turnObservationFPs = append(turnObservationFPs, c.Name+" "+signatureArg(c, tools)+"\nOBSERVATION:\n"+rawObs)
 
 			// (P3) Churn nudge. Skipped on a kill turn (we're terminating anyway).
 			if !kill && tr.churnNudge() {
@@ -769,7 +776,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			step.Grounded = grounded
 			step.Observation = obs
 			res.Steps = append(res.Steps, step)
-			cfg.Obs.Observation(obs)
+			rt.Obs.Observation(obs)
 			// (P6) A tool failure is an observation the model reacts to, tagged so
 			// the provider marks it an error result — never a crash for us.
 			messages = append(messages, llm.ToolResultMsg(c.ID, obs, isErr))
@@ -825,16 +832,16 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// turn. See Config.FinishNudgeWindow.
 		if tr.finishNudge(i) {
 			res.DetectorCounters.FinishNudge++
-			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
+			rt.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 			messages = append(messages, llm.User(finishNudgeNative))
 		}
 
 		// Unconditional near-cap answer-forcer for an observe-only agent (no build
 		// signal to gate on). Fires at most once, leaving a turn to act. See
 		// Config.AnswerNudgeWindow (council code critic).
-		if !answerNudged && cfg.AnswerNudgeWindow > 0 && answerNudgeOK && i < maxIter &&
-			maxIter-i <= cfg.AnswerNudgeWindow {
-			cfg.Obs.Note("near cap — nudging the agent to stop exploring and answer")
+		if !answerNudged && pol.AnswerNudgeWindow > 0 && answerNudgeOK && i < maxIter &&
+			maxIter-i <= pol.AnswerNudgeWindow {
+			rt.Obs.Note("near cap — nudging the agent to stop exploring and answer")
 			messages = append(messages, llm.User(answerNudgeNative))
 			res.DetectorCounters.AnswerNudge++
 			answerNudged = true
@@ -847,12 +854,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		// HP-4 finisher this needs no green-build gate — calling the finish tool
 		// can't mask broken state, it just delivers the message the partner is
 		// waiting for. Fires once, leaving a turn to act.
-		if !sayNudged && cfg.FinishTool != "" && i < maxIter && maxIter-i <= finishToolNudgeWindow {
-			cfg.Obs.Note("near cap — reminding the agent to finish with the " + cfg.FinishTool + " tool")
+		if !sayNudged && pol.FinishTool != "" && i < maxIter && maxIter-i <= finishToolNudgeWindow {
+			rt.Obs.Note("near cap — reminding the agent to finish with the " + pol.FinishTool + " tool")
 			res.DetectorCounters.FinishNudge++
 			messages = append(messages, llm.User(fmt.Sprintf(
 				"[hint: your action budget is nearly spent (%d turn(s) left). Wrap up NOW: call the %q tool with a short message — your files are saved either way, but a message you never send is lost.]",
-				maxIter-i, cfg.FinishTool)))
+				maxIter-i, pol.FinishTool)))
 			sayNudged = true
 		}
 	}
@@ -880,14 +887,14 @@ func isObserveOnly(tools map[string]Tool) bool {
 	return true
 }
 
-func recordNativeRun(ctx context.Context, cfg Config, standing *standingState, tr *turnTracker, c llm.ToolCallPart, obs string) {
+func recordNativeRun(ctx context.Context, standingContext bool, root string, tools map[string]Tool, standing *standingState, tr *turnTracker, c llm.ToolCallPart, obs string) {
 	if tr == nil {
 		return
 	}
-	cmd := runCommandArg(c, cfg.Tools)
+	cmd := runCommandArg(c, tools)
 	tree := ""
-	if cfg.StandingContext && standing != nil {
-		if cur, err := standing.currentTree(ctx, cfg); err == nil {
+	if standingContext && standing != nil {
+		if cur, err := standing.currentTree(ctx, root); err == nil {
 			tree = cur
 		}
 	}

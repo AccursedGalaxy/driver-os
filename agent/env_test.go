@@ -61,7 +61,7 @@ func TestObserveEnvironmentCapsListing(t *testing.T) {
 
 func TestSeedMessagesEnvOnlyWhenFresh(t *testing.T) {
 	env := "\n\nENVIRONMENT (observed at start):\n- working directory: /w"
-	fresh := seedMessages(Config{Task: "t"}, env)
+	fresh := seedMessagesT(Config{Task: "t"}, env)
 	if len(fresh) != 1 || !strings.HasPrefix(fresh[0].Text(), "TASK: t") {
 		t.Fatalf("fresh seed must keep the TASK framing first; got %v", fresh)
 	}
@@ -69,7 +69,7 @@ func TestSeedMessagesEnvOnlyWhenFresh(t *testing.T) {
 		t.Error("fresh seed must carry the preamble")
 	}
 	// A continuing conversation already holds its grounding — no re-seeding.
-	cont := seedMessages(Config{Task: "next", History: []llm.Message{llm.User("TASK: earlier"), llm.Assistant("ok")}}, env)
+	cont := seedMessagesT(Config{Task: "next", History: []llm.Message{llm.User("TASK: earlier"), llm.Assistant("ok")}}, env)
 	if got := cont[len(cont)-1].Text(); strings.Contains(got, "ENVIRONMENT") {
 		t.Errorf("continuation turn must NOT repeat the preamble; got %q", got)
 	}

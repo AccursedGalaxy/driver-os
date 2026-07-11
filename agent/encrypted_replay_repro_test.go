@@ -59,7 +59,7 @@ func TestEncryptedReplayRejectionRecovers(t *testing.T) {
 	}
 	m := &poisonedReplayModel{nativeScript: nativeScript{turns: turns}}
 	sb := sbWith(t, map[string]string{"a": "1\n", "b": "2\n"})
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         m,
 		Sandbox:       sb,
 		Task:          "test task",

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/vcs"
 )
 
@@ -66,8 +67,22 @@ func gateContext(parent context.Context, timeout time.Duration) (context.Context
 	}
 }
 
+// gateDeps is everything the composed closing gates consume: the resolved
+// policy (by value, immutable), the runtime bindings, the run-local mutable
+// verification state, and the run's evidence log. It replaces the old
+// whole-Config capture (PROFILES.md §7.1).
+type gateDeps struct {
+	pol           runspec.PolicyValue
+	rt            Runtime
+	vs            *verifyState
+	ev            *evidenceLog
+	task          string
+	root          string
+	baselineCache *verifyBaselineCache
+}
+
 type gates struct {
-	cfg        Config
+	d          gateDeps
 	runTimeout time.Duration
 	fence      *fenceState
 	scope      *scopeState
@@ -115,26 +130,27 @@ type gates struct {
 // solver's diff will be taken against (slice 1a). It also measures the
 // VerifyCmd baseline (pre-flight) when configured, and captures the run-start
 // git tree for the upgradeIfVerified empty-diff guard.
-func effectiveReviewRequired(cfg Config) bool {
-	if cfg.ReviewPolicy.failOpen() {
+func effectiveReviewRequired(d gateDeps) bool {
+	rp := ReviewPolicy(d.pol.ReviewPolicy)
+	if rp.failOpen() {
 		return false
 	}
-	return cfg.ReviewPolicy.required() || cfg.Reviewer != nil
+	return rp.required() || d.rt.Reviewer != nil
 }
 
-func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates, error) {
-	if cfg.Obs == nil {
-		cfg.Obs = nopObserver{}
+func newGates(ctx context.Context, d gateDeps, runTimeout time.Duration) (*gates, error) {
+	if d.rt.Obs == nil {
+		d.rt.Obs = nopObserver{}
 	}
-	review, err := newReviewState(ctx, cfg)
+	review, err := newReviewState(ctx, d)
 	if err != nil {
 		return nil, err
 	}
 	g := &gates{
-		cfg:        cfg,
+		d:          d,
 		runTimeout: runTimeout,
-		fence:      newFenceState(ctx, cfg),
-		scope:      newScopeState(ctx, cfg),
+		fence:      newFenceState(ctx, d.pol.TestFence, d.rt.Sandbox, d.rt.Obs),
+		scope:      newScopeState(ctx, d.pol.DiffScope, d.root, d.rt.Obs),
 		review:     review,
 	}
 	g.measureVerifyBaseline(ctx)
@@ -150,23 +166,23 @@ func newGates(ctx context.Context, cfg Config, runTimeout time.Duration) (*gates
 // configured (the only path the guard affects). A failed snapshot leaves
 // runBaseTree empty — the upgrade path degrades to the historical behavior.
 func (g *gates) captureRunBaseTree(ctx context.Context) error {
-	if (!g.cfg.RequireDiff && !g.cfg.ReproFirst && g.cfg.VerifyCmd == "") || g.cfg.Root == "" {
-		if g.cfg.RequireDiff {
+	if (!g.d.pol.RequireDiff && !g.d.pol.ReproFirst && g.d.vs.Cmd == "") || g.d.root == "" {
+		if g.d.pol.RequireDiff {
 			return setupErr("require_diff", "require-diff needs a git workspace root to define an empty diff")
 		}
 		return nil
 	}
-	if (g.cfg.RequireDiff || g.cfg.ReproFirst) && !vcs.IsRepo(ctx, g.cfg.Root) {
-		if g.cfg.ReproFirst {
+	if (g.d.pol.RequireDiff || g.d.pol.ReproFirst) && !vcs.IsRepo(ctx, g.d.root) {
+		if g.d.pol.ReproFirst {
 			return setupErr("repro_first", "repro-first needs a git repository to validate the base tree")
 		}
 		return setupErr("require_diff", "require-diff needs a git repository to define an empty diff")
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	tree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	tree, err := vcs.WriteTree(gctx, g.d.root)
 	cancel()
 	if err != nil {
-		if g.cfg.RequireDiff {
+		if g.d.pol.RequireDiff {
 			return setupErr("require_diff", "require-diff could not capture the run baseline: "+err.Error())
 		}
 		return nil
@@ -176,7 +192,7 @@ func (g *gates) captureRunBaseTree(ctx context.Context) error {
 }
 
 func (g *gates) captureStandingBaseTree(ctx context.Context) {
-	if !g.cfg.StandingContext || g.cfg.Root == "" {
+	if !g.d.pol.StandingContext || g.d.root == "" {
 		return
 	}
 	if g.runBaseTree != "" {
@@ -192,10 +208,10 @@ func (g *gates) captureStandingBaseTree(ctx context.Context) {
 		return
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	tree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	tree, err := vcs.WriteTree(gctx, g.d.root)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("standing context: baseline tree snapshot failed (" + err.Error() + ") — diff section disabled")
+		g.d.rt.Obs.Note("standing context: baseline tree snapshot failed (" + err.Error() + ") — diff section disabled")
 		return
 	}
 	g.stdBaseTree = tree
@@ -227,7 +243,7 @@ func deliverableShapedGate(cmd string) bool {
 }
 
 func (g *gates) measureVerifyBaseline(ctx context.Context) {
-	if g.cfg.VerifyCmd == "" || g.cfg.SkipVerifyBaseline {
+	if g.d.vs.Cmd == "" || g.d.vs.SkipVerifyBaseline {
 		return
 	}
 	// A user cancel skips the baseline like it skips the final check.
@@ -238,16 +254,16 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	// Sessions retain this result by complete git tree. A tree that cannot be
 	// captured is intentionally uncached, preserving the historical behavior for
 	// non-repositories and snapshot failures.
-	cache := g.cfg.verifyBaselineCache
+	cache := g.d.baselineCache
 	var tree string
-	if cache != nil && g.cfg.Root != "" {
+	if cache != nil && g.d.root != "" {
 		gctx, cancel := gateContext(ctx, gateDiffTimeout)
-		tree, _ = vcs.WriteTree(gctx, g.cfg.Root)
+		tree, _ = vcs.WriteTree(gctx, g.d.root)
 		cancel()
 		if tree != "" {
 			cache.mu.Lock()
 			defer cache.mu.Unlock()
-			if cache.tree == tree && cache.cmd == g.cfg.VerifyCmd {
+			if cache.tree == tree && cache.cmd == g.d.vs.Cmd {
 				g.verifyBaselineMeasured = cache.measured
 				g.verifyBaselineRed = cache.red
 				g.verifyBaselineOut = cache.out
@@ -258,17 +274,17 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	}
 	// Run detached from cancellation (like verifyRun) but bounded by the
 	// verify timeout — the baseline runs the SAME VerifyCmd as the closing gate.
-	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.cfg.VerifyCmd, verifyTimeout(g.cfg, g.runTimeout))
+	out, err := runOp(context.WithoutCancel(ctx), g.d.rt.verifySandbox(), g.d.vs.Cmd, g.d.vs.Timeout)
 	if err == nil && isRunFailure(out) {
 		if isRunTimeout(out) {
-			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " timed out on the untouched workspace (raise -verify-timeout)")
+			g.d.rt.Obs.Note("verify baseline: INCONCLUSIVE — " + g.d.vs.Cmd + " timed out on the untouched workspace (raise -verify-timeout)")
 		} else if sig := infraFaultSignature(out); sig != "" {
 			g.verifyInfraSignature = sig
-			g.cfg.Obs.Note("verify baseline: INCONCLUSIVE — " + g.cfg.VerifyCmd + " hit environment fault (" + sig + ") on the untouched workspace")
+			g.d.rt.Obs.Note("verify baseline: INCONCLUSIVE — " + g.d.vs.Cmd + " hit environment fault (" + sig + ") on the untouched workspace")
 		} else {
 			g.verifyBaselineMeasured, g.verifyBaselineRed, g.verifyBaselineOut = true, true, out
-			g.cfg.Obs.Note("verify baseline: RED — " + g.cfg.VerifyCmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable" + func() string {
-				if deliverableShapedGate(g.cfg.VerifyCmd) {
+			g.d.rt.Obs.Note("verify baseline: RED — " + g.d.vs.Cmd + " already fails on the untouched workspace; if the task is not about fixing this, the gate may be unsatisfiable" + func() string {
+				if deliverableShapedGate(g.d.vs.Cmd) {
 					return " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
 				}
 				return ""
@@ -278,7 +294,7 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 		g.verifyBaselineMeasured = true
 	}
 	if cache != nil && tree != "" {
-		cache.tree, cache.cmd = tree, g.cfg.VerifyCmd
+		cache.tree, cache.cmd = tree, g.d.vs.Cmd
 		cache.measured, cache.red, cache.out, cache.infra = g.verifyBaselineMeasured, g.verifyBaselineRed, g.verifyBaselineOut, g.verifyInfraSignature
 	}
 }
@@ -311,7 +327,7 @@ func (g *gates) baselinePreamble() string {
 		out = clip(out, 2000)
 	}
 	annotation := ""
-	if deliverableShapedGate(g.cfg.VerifyCmd) {
+	if deliverableShapedGate(g.d.vs.Cmd) {
 		annotation = " (the gate contains grep/test -f style deliverable checks — a red baseline may be BY DESIGN until the task's artifacts exist)"
 	}
 	return fmt.Sprintf(
@@ -324,7 +340,7 @@ func (g *gates) baselinePreamble() string {
 			"If your task is unrelated, the gate may be unsatisfiable%s — "+
 			"complete your task, then answer explaining that the verify command "+
 			"was already red before any changes rather than grinding against it.",
-		g.cfg.VerifyCmd, out, annotation,
+		g.d.vs.Cmd, out, annotation,
 	)
 }
 
@@ -345,16 +361,16 @@ type scopeState struct {
 // scope is off (empty globs). A failed snapshot records a Note; because the
 // armed scope cannot later be re-verified, answer/cap-rescue gates fail closed
 // rather than passing or fabricating a violation.
-func newScopeState(ctx context.Context, cfg Config) *scopeState {
-	if len(cfg.DiffScope) == 0 {
+func newScopeState(ctx context.Context, globs []string, root string, obs Observer) *scopeState {
+	if len(globs) == 0 {
 		return nil
 	}
-	s := &scopeState{globs: cfg.DiffScope}
+	s := &scopeState{globs: globs}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	s.base, s.snapErr = vcs.WriteTree(gctx, cfg.Root)
+	s.base, s.snapErr = vcs.WriteTree(gctx, root)
 	cancel()
-	if s.snapErr != nil && cfg.Obs != nil {
-		cfg.Obs.Note("diff scope: snapshot failed (" + s.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
+	if s.snapErr != nil && obs != nil {
+		obs.Note("diff scope: snapshot failed (" + s.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
 	}
 	return s
 }
@@ -375,20 +391,20 @@ func (g *gates) scopeCheck(ctx context.Context) gateCheck {
 		return gateCheck{reason: "diff scope could not be re-verified: run-start snapshot failed (" + g.scope.snapErr.Error() + ")", unverifiable: true}
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	cur, err := vcs.WriteTree(gctx, g.cfg.Root)
+	cur, err := vcs.WriteTree(gctx, g.d.root)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("diff scope: closing-gate tree snapshot failed (" + err.Error() + ") — failing closed")
+		g.d.rt.Obs.Note("diff scope: closing-gate tree snapshot failed (" + err.Error() + ") — failing closed")
 		return gateCheck{reason: "diff scope could not be re-verified: closing-gate tree snapshot failed (" + err.Error() + ")", unverifiable: true}
 	}
 	if cur == g.scope.base {
 		return gateCheck{}
 	}
 	gctx, cancel = gateContext(ctx, gateDiffTimeout)
-	changed, err := vcs.DiffTreeNames(gctx, g.cfg.Root, g.scope.base, cur)
+	changed, err := vcs.DiffTreeNames(gctx, g.d.root, g.scope.base, cur)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("diff scope: tree diff failed (" + err.Error() + ") — failing closed")
+		g.d.rt.Obs.Note("diff scope: tree diff failed (" + err.Error() + ") — failing closed")
 		return gateCheck{reason: "diff scope could not be re-verified: tree diff failed (" + err.Error() + ")", unverifiable: true}
 	}
 	var out []string
@@ -419,7 +435,7 @@ func (g *gates) fenceCheck(ctx context.Context) gateCheck {
 	}
 	gctx, cancel := gateContext(ctx, fenceWalkTimeout)
 	defer cancel()
-	reason, err := g.fence.violationCheck(gctx, g.cfg.Sandbox)
+	reason, err := g.fence.violationCheck(gctx, g.d.rt.Sandbox)
 	if err != nil {
 		return gateCheck{reason: "test fence could not be re-verified: " + err.Error(), unverifiable: true}
 	}
@@ -444,23 +460,23 @@ func (g *gates) unchangedRunTree(ctx context.Context) bool {
 		return false
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	curTree, err := vcs.WriteTree(gctx, g.cfg.Root)
+	curTree, err := vcs.WriteTree(gctx, g.d.root)
 	cancel()
 	return err == nil && curTree == g.runBaseTree
 }
 
 func (g *gates) requireDiffFailure(ctx context.Context) (Outcome, string, bool) {
-	if g.cfg.RequireDiff && g.unchangedRunTree(ctx) {
+	if g.d.pol.RequireDiff && g.unchangedRunTree(ctx) {
 		return Unverified, "require-diff: run completed with no changes", true
 	}
 	return "", "", false
 }
 
 func (g *gates) captureClosingVerification(out, tree string) {
-	record := newVerificationRecord(g.cfg.VerifyCmd, out, tree)
+	record := newVerificationRecord(g.d.vs.Cmd, out, tree)
 	g.closingVerification = &record
-	if g.cfg.evidence != nil {
-		g.closingVerifyGen = g.cfg.evidence.mutGen
+	if g.d.ev != nil {
+		g.closingVerifyGen = g.d.ev.mutGen
 	}
 }
 
@@ -469,7 +485,7 @@ func (g *gates) applyClosingVerification(res *RunResult) {
 		return
 	}
 	record := *g.closingVerification
-	if g.cfg.evidence != nil && g.closingVerifyGen < g.cfg.evidence.mutGen {
+	if g.d.ev != nil && g.closingVerifyGen < g.d.ev.mutGen {
 		record.Status = EvidenceDegraded
 	}
 	res.ClosingVerification = &record
@@ -478,7 +494,7 @@ func (g *gates) applyClosingVerification(res *RunResult) {
 func (g *gates) verificationTree(ctx context.Context) string {
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
 	defer cancel()
-	tree, _ := vcs.WriteTree(gctx, g.cfg.Root)
+	tree, _ := vcs.WriteTree(gctx, g.d.root)
 	return tree
 }
 
@@ -486,22 +502,22 @@ func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outco
 	if out, reason, stop := g.requireDiffFailure(ctx); reason != "" {
 		return out, reason, stop
 	}
-	if g.runBaseTree != "" && !g.cfg.SkipVerifyBaseline && g.verifyBaselineMeasured {
+	if g.runBaseTree != "" && !g.d.vs.SkipVerifyBaseline && g.verifyBaselineMeasured {
 		gctx, cancel := gateContext(ctx, gateDiffTimeout)
-		curTree, err := vcs.WriteTree(gctx, g.cfg.Root)
+		curTree, err := vcs.WriteTree(gctx, g.d.root)
 		cancel()
 		if err == nil && curTree == g.runBaseTree {
 			if !g.verifyBaselineRed {
-				g.cfg.Obs.Note("verify: no file changes this run — nothing to verify (baseline was green)")
+				g.d.rt.Obs.Note("verify: no file changes this run — nothing to verify (baseline was green)")
 				return "", "", false
 			}
-			reason := fmt.Sprintf("verification command %q did not pass:\n%s", g.cfg.VerifyCmd, g.verifyBaselineOut)
+			reason := fmt.Sprintf("verification command %q did not pass:\n%s", g.d.vs.Cmd, g.verifyBaselineOut)
 			return g.verifyCompletionFailure(reason, g.verifyBaselineOut)
 		}
 	}
 	preVerifyTree := g.verificationTree(ctx)
-	reason, verifyOut := verifyTermination(ctx, g.cfg, lastRunFailed, g.runTimeout)
-	if reason == "" && g.cfg.VerifyCmd != "" {
+	reason, verifyOut := verifyTermination(ctx, g.d.vs, g.d.rt, g.d.ev, lastRunFailed)
+	if reason == "" && g.d.vs.Cmd != "" {
 		g.captureClosingVerification(verifyOut, preVerifyTree)
 	}
 	return g.verifyCompletionFailure(reason, verifyOut)
@@ -511,13 +527,13 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 	if reason == "" {
 		return "", "", false
 	}
-	if g.cfg.AutoVerifySoft {
+	if g.d.vs.AutoVerifySoft {
 		g.autoVerifyFeedback++
 		if g.autoVerifyFeedback > autoVerifyMaxFeedback || isInfraFault(verifyOut) {
 			if sig := infraFaultSignature(verifyOut); sig != "" {
 				g.verifyInfraSignature = sig
 			}
-			g.cfg.Obs.Note(fmt.Sprintf("auto-derived verify `%s` did not pass — accepted anyway; supply -verify-cmd to make this authoritative", g.cfg.VerifyCmd))
+			g.d.rt.Obs.Note(fmt.Sprintf("auto-derived verify `%s` did not pass — accepted anyway; supply -verify-cmd to make this authoritative", g.d.vs.Cmd))
 			return "", "", false
 		}
 	}
@@ -527,7 +543,7 @@ func (g *gates) verifyCompletionFailure(reason, verifyOut string) (outcome Outco
 	// nothing is known to be broken is wrong. (Under a SOFT auto-derived gate,
 	// timeouts instead consume the feedback budget above — a merely-slow suite
 	// must not flip the finish green on the first attempt.)
-	if !g.cfg.AutoVerifySoft && isRunTimeout(verifyOut) {
+	if !g.d.vs.AutoVerifySoft && isRunTimeout(verifyOut) {
 		return Unverified, reason, true
 	}
 	if sig := infraFaultSignature(verifyOut); sig != "" {
@@ -601,7 +617,7 @@ func appendReason(existing, extra string) string {
 // command being armed).
 func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResult {
 	if check := g.scopeCheck(ctx); check.reason != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + check.reason)
+		g.d.rt.Obs.Note("upgrade blocked — " + check.reason)
 		if check.unverifiable {
 			res.Reason = appendReason(res.Reason, "upgrade refused — "+check.reason)
 			return res
@@ -615,11 +631,11 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 		res.Reason = reason
 		return res
 	}
-	if g.cfg.VerifyCmd == "" {
+	if g.d.vs.Cmd == "" {
 		return res
 	}
 	if check := g.fenceCheck(ctx); check.reason != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + check.reason)
+		g.d.rt.Obs.Note("upgrade blocked — " + check.reason)
 		res.Reason = appendReason(res.Reason, "upgrade refused — "+check.reason)
 		return res
 	}
@@ -629,16 +645,16 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	var preVerifyTree string
 	if g.runBaseTree != "" {
 		gctx, gcancel := gateContext(ctx, gateDiffTimeout)
-		preVerifyTree, _ = vcs.WriteTree(gctx, g.cfg.Root)
+		preVerifyTree, _ = vcs.WriteTree(gctx, g.d.root)
 		gcancel()
 	}
 	if g.runBaseTree != "" && preVerifyTree == g.runBaseTree {
-		res.Reason = fmt.Sprintf("verify passed but the run changed nothing — refusing upgrade (baseline was already green): %q passed", g.cfg.VerifyCmd)
+		res.Reason = fmt.Sprintf("verify passed but the run changed nothing — refusing upgrade (baseline was already green): %q passed", g.d.vs.Cmd)
 		return res
 	}
-	out, skipped, err := verifyRun(ctx, g.cfg, g.runTimeout)
+	out, skipped, err := verifyRun(ctx, g.d.vs, g.d.rt, g.d.ev)
 	if !skipped {
-		notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
+		notifyVerify(g.d.rt.Obs, g.d.vs.Cmd, err == nil && !isRunFailure(out))
 	}
 	if skipped || err != nil {
 		return res
@@ -646,9 +662,9 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	if isRunFailure(out) {
 		if sig := infraFaultSignature(out); sig != "" {
 			g.verifyInfraSignature = sig
-			out, skipped, err = verifyRun(ctx, g.cfg, g.runTimeout)
+			out, skipped, err = verifyRun(ctx, g.d.vs, g.d.rt, g.d.ev)
 			if !skipped {
-				notifyVerify(g.cfg.Obs, g.cfg.VerifyCmd, err == nil && !isRunFailure(out))
+				notifyVerify(g.d.rt.Obs, g.d.vs.Cmd, err == nil && !isRunFailure(out))
 			}
 			if skipped || err != nil {
 				res.Reason = fmt.Sprintf("%s; verification inconclusive due to environment fault (%s)", res.Reason, sig)
@@ -672,7 +688,7 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	}
 	g.captureClosingVerification(out, preVerifyTree)
 	if fb, detail := g.reproFinish(ctx); fb != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + detail)
+		g.d.rt.Obs.Note("upgrade blocked — " + detail)
 		res.Outcome = Unverified
 		res.Reason = detail
 		g.reviewUnverified(ctx)
@@ -681,15 +697,15 @@ func (g *gates) upgradeIfVerified(ctx context.Context, res *RunResult) *RunResul
 	// Execution is green; the review gate has the final word on the upgrade.
 	// canContinue=false — the loop is over, so blockers can't be repaired.
 	if _, blockReason := g.reviewFinish(ctx, false); blockReason != "" {
-		g.cfg.Obs.Note("upgrade blocked — " + blockReason)
+		g.d.rt.Obs.Note("upgrade blocked — " + blockReason)
 		return res
 	}
 	originalOutcome := res.Outcome
-	res.Reason = fmt.Sprintf("completed despite %s — %q passed", originalOutcome, g.cfg.VerifyCmd)
+	res.Reason = fmt.Sprintf("completed despite %s — %q passed", originalOutcome, g.d.vs.Cmd)
 	res.RescuedFrom = originalOutcome
 	res.Outcome = Answered
 	if res.Answer == "" {
-		res.Answer = fmt.Sprintf("task verified complete (%q passed)", g.cfg.VerifyCmd)
+		res.Answer = fmt.Sprintf("task verified complete (%q passed)", g.d.vs.Cmd)
 	}
 	return res
 }
@@ -710,7 +726,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		return "", ""
 	}
 	if rv.skip != "" {
-		if effectiveReviewRequired(g.cfg) {
+		if effectiveReviewRequired(g.d) {
 			return "", fmt.Sprintf("review required but review was skipped: %s", rv.skip)
 		}
 		return "", ""
@@ -733,32 +749,32 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		g.failOpen(classifyReviewErr(gctx, err), "review error (gate fails open): "+err.Error())
 		return "", g.reviewRequiredBlockReason()
 	}
-	if g.cfg.evidence != nil {
-		g.cfg.evidence.reviewedGen = g.cfg.evidence.mutGen
-		g.cfg.evidence.reviewReached = true
+	if g.d.ev != nil {
+		g.d.ev.reviewedGen = g.d.ev.mutGen
+		g.d.ev.reviewReached = true
 	}
 	if strings.TrimSpace(diff) == "" {
 		g.setReviewSemanticStatus(ReviewClean)
-		g.cfg.Obs.Note("review: no changes to review — skipping")
+		g.d.rt.Obs.Note("review: no changes to review — skipping")
 		return "", ""
 	}
 
 	rv.resolvePending(FateRepaired) // last round's fed-back blockers were re-reviewed by reaching here.
 	rv.rounds++
-	if ro := reviewObserver(g.cfg.Obs); ro != nil {
+	if ro := reviewObserver(g.d.rt.Obs); ro != nil {
 		ro.ReviewStart(rv.rounds)
 	}
-	verdict, err := g.cfg.Reviewer.Review(gctx, ReviewInput{
-		Task:       g.cfg.Task,
+	verdict, err := g.d.rt.Reviewer.Review(gctx, ReviewInput{
+		Task:       g.d.task,
 		Diff:       diff,
-		Root:       g.cfg.Root,
+		Root:       g.d.root,
 		Signals:    substanceSignals(diff),
 		SessionKey: rv.sessionKey,
 		Round:      rv.rounds,
 	})
 	if verdict != nil {
 		rv.usage = addUsage(rv.usage, verdict.Usage)
-		g.cfg.Spend.Add(verdict.Model, verdict.Usage) // charge each reviewer round's dollars
+		g.d.rt.Spend.Add(verdict.Model, verdict.Usage) // charge each reviewer round's dollars
 		if rv.model == "" {
 			rv.model = verdict.Model
 		}
@@ -782,7 +798,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	// high-confidence blockers expired unverified because the reviewer never
 	// provided a command — the measured run had 4/4 conf-8-9 blockers
 	// arrive without repro_cmd, so zero were confirmed.
-	if solicitor, ok := g.cfg.Reviewer.(ReproSolicitor); ok {
+	if solicitor, ok := g.d.rt.Reviewer.(ReproSolicitor); ok {
 		var eligible []ReviewFinding
 		for _, f := range verdict.Findings {
 			if strings.ToLower(strings.TrimSpace(f.Severity)) == "blocker" &&
@@ -793,13 +809,13 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		}
 		if len(eligible) > 0 {
 			merged, solicitUsage, serr := solicitor.SolicitRepro(gctx, ReviewInput{
-				Task:       g.cfg.Task,
-				Root:       g.cfg.Root,
+				Task:       g.d.task,
+				Root:       g.d.root,
 				SessionKey: rv.sessionKey,
 				Round:      rv.rounds,
 			}, eligible)
 			rv.usage = addUsage(rv.usage, solicitUsage)
-			g.cfg.Spend.Add(verdict.Model, solicitUsage) // charge reviewer follow-up dollars
+			g.d.rt.Spend.Add(verdict.Model, solicitUsage) // charge reviewer follow-up dollars
 			if serr != nil {
 				// Fail-open: solicitation errors leave findings as-is, but record
 				// infrastructure honesty because required review depends on this
@@ -808,7 +824,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 				if status != ReviewCanceled {
 					rv.status = status
 				}
-				g.cfg.Obs.Note("review: repro solicitation failed (findings stay unconfirmed): " + serr.Error())
+				g.d.rt.Obs.Note("review: repro solicitation failed (findings stay unconfirmed): " + serr.Error())
 			} else {
 				// Merge returned repro_cmds/no_repro_reasons back into
 				// the verdict findings in place (match by file+quote).
@@ -834,7 +850,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	var blockers, advisories []ReviewedFinding
 	reproBudget := reviewReproCap
 	for _, f := range verdict.Findings {
-		if ro := reviewObserver(g.cfg.Obs); ro != nil {
+		if ro := reviewObserver(g.d.rt.Obs); ro != nil {
 			ro.ReviewFinding(f)
 		}
 		rf := g.classify(gctx, f, &reproBudget)
@@ -852,7 +868,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 			advisories = append(advisories, rf)
 		}
 	}
-	if ro := reviewObserver(g.cfg.Obs); ro != nil {
+	if ro := reviewObserver(g.d.rt.Obs); ro != nil {
 		ro.ReviewVerdict(blocking, rv.rounds, verdict.Summary)
 	}
 	// Early-stop: a CONFIRMED blocker whose File+Quote recurred unchanged
@@ -864,11 +880,11 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 		rv.blocked = true
 		rv.resolvePending(FateExpired)
 		cur := rv.findings[curIdx]
-		g.cfg.Obs.Note(fmt.Sprintf("review: confirmed blocker recurred unresolved after a repair round — stopping early: %s: %s",
+		g.d.rt.Obs.Note(fmt.Sprintf("review: confirmed blocker recurred unresolved after a repair round — stopping early: %s: %s",
 			cur.File, oneLine(cur.Quote)))
 		return "", fmt.Sprintf("confirmed review blocker recurred unresolved after repair round %d", rv.rounds)
 	}
-	g.cfg.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
+	g.d.rt.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 
 	if blocking == 0 && len(advisories) == 0 {
 		g.setReviewSemanticStatus(ReviewClean)
@@ -897,7 +913,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 // exit. It records reviewer signal only; callers keep their existing Outcome,
 // Reason, and exit-code class regardless of the verdict.
 func (g *gates) reviewUnverified(ctx context.Context) {
-	if !g.cfg.ReviewUnverified {
+	if !g.d.pol.ReviewUnverified {
 		return
 	}
 	rv := g.review
@@ -910,9 +926,9 @@ func (g *gates) reviewUnverified(ctx context.Context) {
 	gctx, gcancel := gateContext(ctx, gateDiffTimeout)
 	diff, err := rv.captureDiff(gctx)
 	gcancel()
-	if g.cfg.evidence != nil {
-		g.cfg.evidence.reviewedGen = g.cfg.evidence.mutGen
-		g.cfg.evidence.reviewReached = true
+	if g.d.ev != nil {
+		g.d.ev.reviewedGen = g.d.ev.mutGen
+		g.d.ev.reviewReached = true
 	}
 	if err != nil {
 		if rv.skip == "" && rv.status == "" {
@@ -935,7 +951,7 @@ func (g *gates) reviewUnverified(ctx context.Context) {
 // and if the gate has produced no findings yet, persist the reason as the
 // report's skip field so the telemetry says WHY it contributed nothing.
 func (g *gates) failOpen(status ReviewStatus, msg string) {
-	g.cfg.Obs.Note(msg)
+	g.d.rt.Obs.Note(msg)
 	g.review.status = status
 	if len(g.review.findings) == 0 && g.review.skip == "" {
 		g.review.skip = msg
@@ -972,7 +988,7 @@ func isReviewInfrastructureStatus(status ReviewStatus) bool {
 }
 
 func (g *gates) reviewRequiredBlockReason() string {
-	if g.review == nil || !effectiveReviewRequired(g.cfg) || !isReviewInfrastructureStatus(g.review.status) {
+	if g.review == nil || !effectiveReviewRequired(g.d) || !isReviewInfrastructureStatus(g.review.status) {
 		return ""
 	}
 	return fmt.Sprintf("review required but review status is %s", g.review.status)
@@ -984,14 +1000,14 @@ func (g *gates) reviewRequiredBlockReason() string {
 func (rv *reviewState) captureDiff(ctx context.Context) (string, error) {
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
 	defer cancel()
-	cur, err := vcs.WriteTree(gctx, rv.cfg.Root)
+	cur, err := vcs.WriteTree(gctx, rv.root)
 	if err != nil {
 		return "", err
 	}
 	if cur == rv.baseTree {
 		return "", nil
 	}
-	return vcs.DiffTrees(gctx, rv.cfg.Root, rv.baseTree, cur)
+	return vcs.DiffTrees(gctx, rv.root, rv.baseTree, cur)
 }
 
 // classify runs the deterministic validation ladder on one finding (1c + slice
@@ -1023,7 +1039,7 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 	}
 	file := strings.TrimSpace(f.File)
 	if file != "" && !strings.EqualFold(file, "n/a") {
-		data, _, err := readBounded(ctx, g.cfg.Sandbox, fenceRelPath(g.review.alias, f.File))
+		data, _, err := readBounded(ctx, g.d.rt.Sandbox, fenceRelPath(g.review.alias, f.File))
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			rf.Fate, rf.DropWhy = FateDropped, fmt.Sprintf("quoted file unreadable: %v", err)
 			return rf
@@ -1066,14 +1082,14 @@ func (g *gates) classify(ctx context.Context, f ReviewFinding, reproBudget *int)
 // signal (the command couldn't start) and the prose ladder continues.
 func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) bool {
 	snapCtx, cancel := gateContext(ctx, gateDiffTimeout)
-	preTree, err := vcs.WriteTree(snapCtx, g.cfg.Root)
+	preTree, err := vcs.WriteTree(snapCtx, g.d.root)
 	cancel()
 	if err != nil {
-		g.cfg.Obs.Note("review: repro skipped because the workspace could not be snapshotted (" + err.Error() + ") — falling back to the confidence gate")
+		g.d.rt.Obs.Note("review: repro skipped because the workspace could not be snapshotted (" + err.Error() + ") — falling back to the confidence gate")
 		return false
 	}
 
-	out, err := runOp(ctx, g.cfg.verifySandbox(), cmd, g.runTimeout)
+	out, err := runOp(ctx, g.d.rt.verifySandbox(), cmd, g.runTimeout)
 	// A repro must never mutate the workspace (the reviewer's brief says new
 	// files go under /tmp). Bracket it with temp-index git trees so unfenced
 	// tracked/untracked changes are caught without touching the user's real
@@ -1081,33 +1097,33 @@ func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) b
 	// WriteTree intentionally excludes.
 	var fencedChanged []string
 	if g.fence != nil {
-		fencedChanged = g.fence.drift(ctx, g.cfg.Sandbox)
+		fencedChanged = g.fence.drift(ctx, g.d.rt.Sandbox)
 	}
 	snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
-	postTree, snapErr := vcs.WriteTree(snapCtx, g.cfg.Root)
+	postTree, snapErr := vcs.WriteTree(snapCtx, g.d.root)
 	cancel()
 	if snapErr != nil || postTree != preTree || len(fencedChanged) > 0 {
 		var changed []string
 		if snapErr == nil && postTree != preTree {
 			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
-			changed, _ = vcs.DiffTreeNames(snapCtx, g.cfg.Root, preTree, postTree)
+			changed, _ = vcs.DiffTreeNames(snapCtx, g.d.root, preTree, postTree)
 			cancel()
 		}
 		if len(fencedChanged) > 0 {
-			if rerr := g.fence.restore(ctx, g.cfg.Sandbox, fencedChanged); rerr != nil {
-				g.cfg.Obs.Note("review: repro mutated fenced paths and fence restore failed: " + rerr.Error())
+			if rerr := g.fence.restore(ctx, g.d.rt.Sandbox, fencedChanged); rerr != nil {
+				g.d.rt.Obs.Note("review: repro mutated fenced paths and fence restore failed: " + rerr.Error())
 			}
 		}
 		if snapErr == nil && postTree != preTree {
 			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
-			if rerr := vcs.RestoreTree(snapCtx, g.cfg.Root, preTree); rerr != nil {
-				g.cfg.Obs.Note("review: repro modified the workspace and restore failed: " + rerr.Error())
+			if rerr := vcs.RestoreTree(snapCtx, g.d.root, preTree); rerr != nil {
+				g.d.rt.Obs.Note("review: repro modified the workspace and restore failed: " + rerr.Error())
 			}
 			cancel()
 		} else if snapErr != nil {
 			snapCtx, cancel = gateContext(ctx, gateDiffTimeout)
-			if rerr := vcs.RestoreTree(snapCtx, g.cfg.Root, preTree); rerr != nil {
-				g.cfg.Obs.Note("review: repro left the workspace unsnapshottable and restore failed: " + rerr.Error())
+			if rerr := vcs.RestoreTree(snapCtx, g.d.root, preTree); rerr != nil {
+				g.d.rt.Obs.Note("review: repro left the workspace unsnapshottable and restore failed: " + rerr.Error())
 			}
 			cancel()
 		}
@@ -1118,11 +1134,11 @@ func (g *gates) escalate(ctx context.Context, cmd string, rf *ReviewedFinding) b
 		} else {
 			rf.Fate, rf.DropWhy = FateDropped, "repro command modified the workspace: "+pathSummary(changed)
 		}
-		g.cfg.Obs.Note("review: " + rf.DropWhy)
+		g.d.rt.Obs.Note("review: " + rf.DropWhy)
 		return true
 	}
 	if err != nil {
-		g.cfg.Obs.Note("review: repro could not run (" + err.Error() + ") — falling back to the confidence gate")
+		g.d.rt.Obs.Note("review: repro could not run (" + err.Error() + ") — falling back to the confidence gate")
 		return false
 	}
 	rf.ReproOut = clip(out, runStreamCap)
@@ -1188,23 +1204,25 @@ type GateReport struct {
 	Review         *ReviewReport `json:"review,omitempty"`
 }
 
-// NewGate snapshots the workspace's gate baseline. Config needs Sandbox, Root,
-// Task, and whichever gate knobs apply (TestFence, VerifyCmd, Reviewer,
-// RunTimeout); Model is not used — there is no solver. A setup failure (e.g.
-// reviewer armed on a tree the review gate cannot baseline) is returned,
-// never swallowed: a silently review-less verdict is exactly the fail-open
-// the 2026-07-07 fail-closed change exists to prevent.
-func NewGate(ctx context.Context, cfg Config) (*Gate, error) {
-	if cfg.Obs == nil {
-		cfg.Obs = nopObserver{}
+// NewGate snapshots the workspace's gate baseline. Runtime needs Sandbox (and
+// a Reviewer when the review stage should run); the spec carries whichever
+// gate knobs apply (TestFence, VerifyCmd, RunTimeout); Model is not used —
+// there is no solver. A setup failure (e.g. reviewer armed on a tree the
+// review gate cannot baseline) is returned, never swallowed: a silently
+// review-less verdict is exactly the fail-open the 2026-07-07 fail-closed
+// change exists to prevent.
+func NewGate(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content) (*Gate, error) {
+	if err := spec.Complete(); err != nil {
+		return nil, setupErr("invalid_config", err.Error())
 	}
+	if rt.Obs == nil {
+		rt.Obs = nopObserver{}
+	}
+	pol := spec.Policy()
+	vs := newVerifyState(pol)
 	// The standalone gate judges a FINISHED tree — there is no "before any changes" to baseline.
-	cfg.SkipVerifyBaseline = true
-	rt := cfg.RunTimeout
-	if rt <= 0 {
-		rt = defaultRunTimeout
-	}
-	g, err := newGates(ctx, cfg, rt)
+	vs.SkipVerifyBaseline = true
+	g, err := newGates(ctx, gateDeps{pol: pol, rt: rt, vs: vs, task: content.Task, root: content.Root}, pol.RunTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -1219,7 +1237,7 @@ func (t *Gate) Check(ctx context.Context) GateReport {
 	if check := t.g.fenceCheck(ctx); check.reason != "" {
 		rep.FenceViolation = check.reason
 		rep.Blocked = true
-	} else if rep.VerifyReason, _ = verifyTermination(ctx, t.g.cfg, false, t.g.runTimeout); rep.VerifyReason != "" {
+	} else if rep.VerifyReason, _ = verifyTermination(ctx, t.g.d.vs, t.g.d.rt, t.g.d.ev, false); rep.VerifyReason != "" {
 		rep.Blocked = true
 	} else if _, blockReason := t.g.reviewFinish(ctx, false); blockReason != "" {
 		rep.Blocked = true

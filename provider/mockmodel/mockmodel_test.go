@@ -98,7 +98,7 @@ func TestRunNativeExecutesScriptedToolCall(t *testing.T) {
 	}
 	defer sb.Close()
 	var command string
-	res, err := agent.RunNative(context.Background(), agent.Config{
+	cfg := agent.Config{
 		Model: p, Sandbox: sb, Task: "test", Stream: true,
 		Tools: map[string]agent.Tool{
 			"bash": {Name: "bash", RunJSON: func(_ context.Context, args json.RawMessage) (string, error) {
@@ -112,7 +112,12 @@ func TestRunNativeExecutesScriptedToolCall(t *testing.T) {
 				return "hi", nil
 			}},
 		},
-	})
+	}
+	spec, rt, content, err := cfg.Split()
+	if err != nil {
+		t.Fatalf("resolve run spec: %v", err)
+	}
+	res, err := agent.RunNative(context.Background(), spec, rt, content)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}

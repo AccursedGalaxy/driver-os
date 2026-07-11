@@ -171,7 +171,7 @@ func TestGateContextReviewerFailOpenIntegration(t *testing.T) {
 	// errReviewer returns an error on every Review call.
 	errReviewer := &fakeReviewer{err: errors.New("review infrastructure fault")}
 
-	g, err := NewGate(context.Background(), Config{
+	g, err := newGateOld(context.Background(), Config{
 		Obs:          nopObserver{},
 		Task:         "fix it",
 		Root:         root,

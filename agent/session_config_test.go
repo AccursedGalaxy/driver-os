@@ -37,7 +37,7 @@ func TestSessionSetModelSwapsProviderKeepsConversation(t *testing.T) {
 		return &RunResult{Outcome: Answered, Answer: "ok", Messages: msgs}, nil
 	}
 
-	s := NewSession(Config{Model: swapProvider{id: "cheap/one"}}, loop)
+	s := newSessionT2(Config{Model: swapProvider{id: "cheap/one"}}, loop)
 	if _, err := s.Send(context.Background(), "first"); err != nil {
 		t.Fatalf("Send 1: %v", err)
 	}
@@ -81,7 +81,7 @@ func readTurns(n int) [][]llm.ContentPart {
 // the TUI stands on after a hit_cap turn.
 func TestSessionSetMaxIterations(t *testing.T) {
 	ns := &nativeScript{turns: readTurns(12)}
-	s := NewSession(Config{
+	s := newSessionT2(Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		MaxIterations: 2,
@@ -125,7 +125,7 @@ func TestSessionSetToolsSwapsToolset(t *testing.T) {
 		return Tool{Name: "echo", Run: func(context.Context, string) (string, error) { return "", nil }}
 	}
 
-	s := NewSession(Config{
+	s := newSessionT2(Config{
 		Model: swapProvider{id: "m"},
 		Tools: map[string]Tool{"echo": echo("echo")},
 	}, loop)
@@ -153,7 +153,7 @@ func TestSessionSetToolsSwapsToolset(t *testing.T) {
 // every subsequent turn with "required review policy needs a Reviewer".
 func TestSessionReviewOffDowngradesRequiredPolicy(t *testing.T) {
 	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("answer")}}}
-	s := NewSession(Config{
+	s := newSessionT2(Config{
 		Model:        ns,
 		Sandbox:      sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Reviewer:     &errReviewer{},
@@ -177,7 +177,7 @@ func TestSessionSetMaxTokens(t *testing.T) {
 		{llm.Text("answer one")},
 		{llm.Text("answer two")},
 	}}
-	s := NewSession(Config{
+	s := newSessionT2(Config{
 		Model:     ns,
 		Sandbox:   sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		MaxTokens: 128,

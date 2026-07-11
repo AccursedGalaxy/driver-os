@@ -55,7 +55,7 @@ func TestAllowUnpricedSpendRecordsDegradation(t *testing.T) {
 	log := &evidenceLog{costConfigured: true}
 	cfg := Config{MaxTotalCostUSD: 1, AllowUnpricedSpend: true, Obs: nopObserver{}, evidence: log}
 	noted := false
-	if stop, reason := dollarBudgetStop(cfg, fakeReportedUsage(), 1, &noted); stop {
+	if stop, reason := dollarBudgetStopT(cfg, fakeReportedUsage(), 1, &noted); stop {
 		t.Fatalf("AllowUnpricedSpend stopped: %s", reason)
 	}
 	got := finalizeGuarantees(log, HitCap, nil)

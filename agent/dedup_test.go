@@ -34,7 +34,7 @@ func TestReadOnlyDedup(t *testing.T) {
 			"answer done",
 		}
 		sp := &scripted{replies: replies}
-		_, err := Run(context.Background(), Config{
+		_, err := runT(context.Background(), Config{
 			Model:   sp,
 			Tools:   tools,
 			Sandbox: sbWith(t, nil),
@@ -83,7 +83,7 @@ func TestReadOnlyDedup(t *testing.T) {
 			"answer done",
 		}
 		sp := &scripted{replies: replies}
-		Run(context.Background(), Config{
+		runT(context.Background(), Config{
 			Model:   sp,
 			Tools:   toolsWithRun,
 			Sandbox: sbWith(t, nil),
@@ -102,7 +102,7 @@ func TestReadOnlyDedup(t *testing.T) {
 			"answer done",
 		}
 		sp := &scripted{replies: replies}
-		_, err := Run(context.Background(), Config{
+		_, err := runT(context.Background(), Config{
 			Model:   sp,
 			Tools:   tools,
 			Sandbox: sbWith(t, nil),
@@ -134,7 +134,7 @@ func runNativeWithTools(t *testing.T, files map[string]string, turns [][]llm.Con
 	t.Helper()
 	sp := &nativeScript{turns: turns}
 	sb := sbWith(t, files)
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sb,
 		Tools:   tools,

@@ -24,8 +24,8 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	}
 	ss := newStandingState()
 	defer ss.cleanup()
-	tr := newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
-	cur, err := ss.currentTree(ctx, cfg)
+	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	cur, err := ss.currentTree(ctx, cfg.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestStandingBlockGoldenAndStaleness(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("newer\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := ss.block(ctx, cfg, gs, tr, 1)
+	got := ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, tr, 1)
 	want := "=== STANDING CONTEXT (auto-refreshed each turn — do NOT run `git diff` or re-read\n    files just to reconstruct this summary; read files when you need details not\n    shown here) ===\n\n# Your changes so far (vs session start)\n a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\ndiff --git a/a.txt b/a.txt\nindex 3367afd..d58ed19 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+newer\n\n# Last verification\nbaseline at session start: GREEN\ngate: `go test ./...` → PASS  [STALE: files changed since this ran — re-run to confirm]\nexit 0 (1ms)\nstdout:\nok\n=== END STANDING CONTEXT ==="
 	if got != want {
 		t.Fatalf("standing block mismatch:\n got:\n%s\nwant:\n%s", got, want)
@@ -54,29 +54,29 @@ func TestStandingDiffRenderSpy(t *testing.T) {
 		calls++
 		return vcs.DiffTrees(ctx, dir, base, cur)
 	}
-	tr := newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ss.block(ctx, cfg, gs, tr, 1)
+	ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, tr, 1)
 	if calls != 1 {
 		t.Fatalf("first block diff renders = %d, want 1", calls)
 	}
-	ss.block(ctx, cfg, gs, tr, 2)
+	ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, tr, 2)
 	if calls != 1 {
 		t.Fatalf("unchanged block diff renders = %d, want 1", calls)
 	}
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("newer\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ss.block(ctx, cfg, gs, tr, 3)
+	ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, tr, 3)
 	if calls != 2 {
 		t.Fatalf("changed block diff renders = %d, want 2", calls)
 	}
 }
 
 func TestStandingVerificationSkipsRunNudgeWhenUnchanged(t *testing.T) {
-	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8, DefaultTerminationPolicy(), nil), "go test ./...", "tree1", false, true)
+	got := renderVerification(newTurnTrackerT(Config{VerifyCmd: "go test ./..."}, 8, DefaultTerminationPolicy(), nil), "go test ./...", "tree1", false, true)
 	want := "gate: `go test ./...` — no file changes yet this session; nothing to verify (the harness runs it authoritatively at finish)"
 	if got != want {
 		t.Fatalf("unchanged verification = %q, want %q", got, want)
@@ -84,7 +84,7 @@ func TestStandingVerificationSkipsRunNudgeWhenUnchanged(t *testing.T) {
 }
 
 func TestStandingVerificationStillNudgesWhenChanged(t *testing.T) {
-	got := renderVerification(newTurnTracker(Config{VerifyCmd: "go test ./..."}, 8, DefaultTerminationPolicy(), nil), "go test ./...", "tree2", false, false)
+	got := renderVerification(newTurnTrackerT(Config{VerifyCmd: "go test ./..."}, 8, DefaultTerminationPolicy(), nil), "go test ./...", "tree2", false, false)
 	want := "gate: `go test ./...` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed."
 	if got != want {
 		t.Fatalf("changed verification = %q, want %q", got, want)
@@ -96,7 +96,7 @@ func TestStandingVerificationStillNudgesWhenChanged(t *testing.T) {
 
 func TestStandingVerificationWithSkipCarriesFilter(t *testing.T) {
 	const verifyCmd = "go test ./agent/ -skip 'TestA|TestB'"
-	got := renderVerification(newTurnTracker(Config{VerifyCmd: verifyCmd}, 8, DefaultTerminationPolicy(), nil), verifyCmd, "tree2", false, false)
+	got := renderVerification(newTurnTrackerT(Config{VerifyCmd: verifyCmd}, 8, DefaultTerminationPolicy(), nil), verifyCmd, "tree2", false, false)
 	want := "gate: `go test ./agent/ -skip 'TestA|TestB'` — NOT run yet this session; the closing gate runs authoritatively at finish. For mid-run confidence, run only tests scoped to the package(s) you changed. The gate deliberately skips these — carry the filter or you will see unrelated red tests."
 	if got != want {
 		t.Fatalf("changed verification = %q, want %q", got, want)
@@ -128,7 +128,7 @@ func TestStandingDirtyBaselineScopesToModelChanges(t *testing.T) {
 	}
 	ss := newStandingState()
 	defer ss.cleanup()
-	got := ss.block(ctx, cfg, gs, newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil), 1)
+	got := ss.block(ctx, cfg.Root, cfg.VerifyCmd, gs, newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil), 1)
 	if strings.Contains(got, "a.txt") || !strings.Contains(got, "b.txt") {
 		t.Fatalf("diff should show only model-edited b.txt, not pre-existing a.txt:\n%s", got)
 	}
@@ -136,7 +136,7 @@ func TestStandingDirtyBaselineScopesToModelChanges(t *testing.T) {
 
 func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
 	tr.observeRun("exit 0 (1ms)\nstdout:\ngreen")
 	tr.recordRun("go test ./...", "exit 0 (1ms)\nstdout:\ngreen", "tree1")
 	tr.observeRun("exit 0 (1ms)\nstdout:\nlisting")
@@ -152,7 +152,7 @@ func TestStandingGatePersistenceNonGateDoesNotClobber(t *testing.T) {
 
 func TestStandingTypedVerificationStatusesAndFreshReplacement(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
 
 	tr.recordRun(cfg.VerifyCmd, "exit 1 (2ms) [timed out — narrow the command's work or raise its own limits]", "old")
 	if got := renderVerification(tr, cfg.VerifyCmd, "current", false, false); !strings.Contains(got, "→ TIMEOUT  [STALE:") {
@@ -169,7 +169,7 @@ func TestStandingTypedVerificationStatusesAndFreshReplacement(t *testing.T) {
 
 func TestStandingFreshnessUnknown(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	tr := newTurnTracker(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
+	tr := newTurnTrackerT(cfg, 8, resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow), nil)
 	tr.observeRun("exit 0 (1ms)")
 	tr.recordRun("go test ./...", "exit 0 (1ms)", "tree1")
 	got := renderVerification(tr, cfg.VerifyCmd, "", true, false)

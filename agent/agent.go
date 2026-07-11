@@ -967,36 +967,36 @@ func (c Config) Validate() error {
 // floor is a refusal, not a panic. The caller must return this result AS-IS and
 // must NOT route it through upgradeIfVerified — a refused run must never execute
 // VerifyCmd on the unsafe sandbox.
-func checkSandboxFloor(cfg Config) *RunResult {
+func checkSandboxFloor(pol runspec.PolicyValue, rt Runtime, content Content, ev *evidenceLog) *RunResult {
 	var caps sandbox.Capabilities
-	haveCaps := cfg.Sandbox != nil
+	haveCaps := rt.Sandbox != nil
 	if haveCaps {
-		caps = cfg.Sandbox.Capabilities()
-		if cfg.evidence != nil {
-			cfg.evidence.observedIsolation = caps.Isolation.String()
+		caps = rt.Sandbox.Capabilities()
+		if ev != nil {
+			ev.observedIsolation = caps.Isolation.String()
 			observedNetwork := caps.Network
-			cfg.evidence.observedNetwork = &observedNetwork
+			ev.observedNetwork = &observedNetwork
 		}
 	}
-	if cfg.MinIsolation > sandbox.IsolationNone {
+	if pol.MinIsolation > sandbox.IsolationNone {
 		have := sandbox.IsolationNone
 		if haveCaps {
 			have = caps.Isolation
 		}
-		if have < cfg.MinIsolation {
+		if have < pol.MinIsolation {
 			return &RunResult{
-				Task:    cfg.Task,
-				Root:    cfg.Root,
+				Task:    content.Task,
+				Root:    content.Root,
 				Outcome: RefusedUnsafe,
 				Reason: fmt.Sprintf("refused: task requires isolation >= %s but the sandbox provides %s — "+
-					"run with a stronger backend (e.g. -sandbox=docker -runtime=runsc)", cfg.MinIsolation, have),
+					"run with a stronger backend (e.g. -sandbox=docker -runtime=runsc)", pol.MinIsolation, have),
 			}
 		}
 	}
-	if cfg.RequireNetworkOff && (!haveCaps || caps.Network) {
+	if pol.RequireNetworkOff && (!haveCaps || caps.Network) {
 		return &RunResult{
-			Task:    cfg.Task,
-			Root:    cfg.Root,
+			Task:    content.Task,
+			Root:    content.Root,
 			Outcome: RefusedUnsafe,
 			Reason:  "refused: task requires network off but the sandbox network floor was violated",
 		}
@@ -1013,19 +1013,19 @@ func checkSandboxFloor(cfg Config) *RunResult {
 // user message (no "TASK:" reframing and NO env preamble, since the model
 // already has the context). Both loops call this so the continuation seam
 // behaves identically across them.
-func seedMessages(cfg Config, env string) []llm.Message {
-	if len(cfg.History) == 0 {
-		if len(cfg.TaskImages) > 0 {
-			return []llm.Message{llm.UserParts(append([]llm.ContentPart{llm.Text("TASK: " + cfg.Task + env)}, imagesAsParts(cfg.TaskImages)...)...)}
+func seedMessages(task string, content Content, env string) []llm.Message {
+	if len(content.History) == 0 {
+		if len(content.TaskImages) > 0 {
+			return []llm.Message{llm.UserParts(append([]llm.ContentPart{llm.Text("TASK: " + task + env)}, imagesAsParts(content.TaskImages)...)...)}
 		}
-		return []llm.Message{llm.User("TASK: " + cfg.Task + env)}
+		return []llm.Message{llm.User("TASK: " + task + env)}
 	}
-	msgs := make([]llm.Message, 0, len(cfg.History)+1)
-	msgs = append(msgs, cfg.History...)
-	if len(cfg.TaskImages) > 0 {
-		return append(msgs, llm.UserParts(append([]llm.ContentPart{llm.Text(cfg.Task)}, imagesAsParts(cfg.TaskImages)...)...))
+	msgs := make([]llm.Message, 0, len(content.History)+1)
+	msgs = append(msgs, content.History...)
+	if len(content.TaskImages) > 0 {
+		return append(msgs, llm.UserParts(append([]llm.ContentPart{llm.Text(task)}, imagesAsParts(content.TaskImages)...)...))
 	}
-	return append(msgs, llm.User(cfg.Task))
+	return append(msgs, llm.User(task))
 }
 
 func imagesAsParts(images []llm.ImagePart) []llm.ContentPart {

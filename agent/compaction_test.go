@@ -159,7 +159,7 @@ func TestRunEvictsAndRetriesOnOverflow(t *testing.T) {
 		windowMsgs: 4,
 		replies:    []string{"list_dir .", "list_dir .", "answer done"},
 	}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   m,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "test task",
@@ -223,7 +223,7 @@ func TestGenerateWithEvictionCapsRetries(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		msgs = append(msgs, llm.Assistant("a"), llm.User("o"))
 	}
-	_, _, err := generateWithEviction(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{Messages: msgs})
+	_, _, err := generateWithEvictionT(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{Messages: msgs})
 	if !errors.Is(err, llm.ErrContextLength) {
 		t.Fatalf("err = %v, want ErrContextLength for the caller to degrade on", err)
 	}
@@ -239,7 +239,7 @@ func TestRunDegradesWhenUncompactable(t *testing.T) {
 		windowMsgs: -1, // len(req.Messages) > -1 is always true -> every call overflows.
 		replies:    []string{"list_dir ."},
 	}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   m,
 		Sandbox: sbWith(t, nil),
 		Task:    "test task",

@@ -30,7 +30,7 @@ func TestDockerNetworkFloorAdmission(t *testing.T) {
 	if sb.Capabilities().Network {
 		t.Fatal("docker Options{} must advertise network off")
 	}
-	res, err := Run(context.Background(), Config{Model: &scripted{replies: []string{"answer done"}}, Sandbox: sb, Task: "x", RequireNetworkOff: true})
+	res, err := runT(context.Background(), Config{Model: &scripted{replies: []string{"answer done"}}, Sandbox: sb, Task: "x", RequireNetworkOff: true})
 	if err != nil {
 		t.Fatal(err)
 	}

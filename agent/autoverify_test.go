@@ -82,7 +82,7 @@ func TestResolveAutoVerifyPrecedenceAndIsolation(t *testing.T) {
 			cfg := tc.cfg
 			cfg.Sandbox = autoExecSandbox{Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}
 			cfg.Obs = nopObserver{}
-			resolveAutoVerify(context.Background(), &cfg)
+			resolveAutoVerifyOld(context.Background(), &cfg)
 			if cfg.VerifyCmd != tc.want {
 				t.Fatalf("VerifyCmd = %q, want %q", cfg.VerifyCmd, tc.want)
 			}
@@ -113,18 +113,18 @@ func TestVerifySkipFilter(t *testing.T) {
 
 func TestVerifyGatePreamble(t *testing.T) {
 	cfg := Config{VerifyCmd: "go test ./..."}
-	got := verifyGatePreamble(cfg)
+	got := verifyGatePreambleT(cfg)
 	want := "\n\nVERIFY GATE: `go test ./...`. The harness runs this authoritatively when you finish. If you want mid-run signal, run ONLY tests scoped to the package(s) you changed (for example, `go test ./pkg/you/changed/`). NEVER run the full suite or the full verify command yourself."
 	if got != want {
 		t.Fatalf("preamble = %q, want %q", got, want)
 	}
 	cfg.VerifyCmd = "go test ./agent/ -skip 'TestA|TestB'"
-	if got := verifyGatePreamble(cfg); !strings.Contains(got, "`go test ./pkg/you/changed/ -skip 'TestA|TestB'`") || !strings.Contains(got, "The gate deliberately skips these — carry the filter") {
+	if got := verifyGatePreambleT(cfg); !strings.Contains(got, "`go test ./pkg/you/changed/ -skip 'TestA|TestB'`") || !strings.Contains(got, "The gate deliberately skips these — carry the filter") {
 		t.Fatalf("preamble missing skip guidance: %q", got)
 	}
 	cfg.VerifyCmd = "go test ./..."
 	cfg.autoVerifyProvenance = "go.mod"
-	if got := verifyGatePreamble(cfg); !strings.Contains(got, "auto-derived from go.mod") {
+	if got := verifyGatePreambleT(cfg); !strings.Contains(got, "auto-derived from go.mod") {
 		t.Fatalf("preamble missing provenance: %q", got)
 	}
 }
@@ -153,7 +153,7 @@ func TestResolveAutoVerifyDisarmsRedAndTimeoutBaseline(t *testing.T) {
 					return tc.res
 				},
 			}}
-			resolveAutoVerify(context.Background(), &cfg)
+			resolveAutoVerifyOld(context.Background(), &cfg)
 			if cfg.VerifyCmd != "" || cfg.AutoVerifySoft {
 				t.Fatalf("auto verify carried after bad baseline: VerifyCmd=%q soft=%v", cfg.VerifyCmd, cfg.AutoVerifySoft)
 			}
@@ -202,7 +202,7 @@ func TestExplicitVerifyStillUnverified(t *testing.T) {
 
 func TestVerifyGatePreambleSeededInFirstMessage(t *testing.T) {
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",

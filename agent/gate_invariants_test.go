@@ -142,7 +142,7 @@ func TestGateInvariants_SafetyOnEveryFinishPath(t *testing.T) {
 					structuredCall("c1", "run", map[string]any{"command": "printf changed > x_test.go"}),
 					finishCall("f1", map[string]any{"message": "done"}),
 				}}}
-				res, err := RunNative(context.Background(), cfg)
+				res, err := runNativeT(context.Background(), cfg)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -194,7 +194,7 @@ func TestGateInvariants_SafetyOnEveryFinishPath(t *testing.T) {
 					structuredCall("c1", "run", map[string]any{"command": "printf bad > outside.txt"}),
 					finishCall("f1", map[string]any{"message": "done"}),
 				}}}
-				res, err := RunNative(context.Background(), cfg)
+				res, err := runNativeT(context.Background(), cfg)
 				if err != nil {
 					t.Fatal(err)
 				}

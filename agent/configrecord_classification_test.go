@@ -28,8 +28,8 @@ func TestConfigFieldClassificationOracleRejectsUnclassifiedField(t *testing.T) {
 }
 
 func TestConfigRecordRuntimeIdentitiesAffectConfigHash(t *testing.T) {
-	base := newConfigRecord(Config{}, "system", nil)
-	withModelInfo := newConfigRecord(Config{ModelInfo: llm.ModelInfo{ContextWindow: 42}}, "system", nil)
+	base := newConfigRecordT(Config{}, "system", nil)
+	withModelInfo := newConfigRecordT(Config{ModelInfo: llm.ModelInfo{ContextWindow: 42}}, "system", nil)
 	if base.ConfigSHA256 == withModelInfo.ConfigSHA256 {
 		t.Fatal("behavior-affecting ModelInfo must change ConfigSHA256")
 	}

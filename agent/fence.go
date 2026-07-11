@@ -92,14 +92,14 @@ type fenceState struct {
 
 // newFenceState snapshots every fenced file through the sandbox. nil when the
 // fence is off (empty globs) — the caller treats nil as "no fence anywhere".
-func newFenceState(ctx context.Context, cfg Config) *fenceState {
-	if len(cfg.TestFence) == 0 {
+func newFenceState(ctx context.Context, globs []string, sb sandbox.Sandbox, obs Observer) *fenceState {
+	if len(globs) == 0 {
 		return nil
 	}
-	f := &fenceState{globs: cfg.TestFence, alias: sandboxAlias(cfg.Sandbox)}
-	f.base, f.snapErr = walkFenced(ctx, cfg.Sandbox, cfg.TestFence)
-	if f.snapErr != nil && cfg.Obs != nil {
-		cfg.Obs.Note("test fence: snapshot failed (" + f.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
+	f := &fenceState{globs: globs, alias: sandboxAlias(sb)}
+	f.base, f.snapErr = walkFenced(ctx, sb, globs)
+	if f.snapErr != nil && obs != nil {
+		obs.Note("test fence: snapshot failed (" + f.snapErr.Error() + ") — closing gates will fail closed if the run tries to finish; tool-layer refusal still active")
 	}
 	return f
 }
@@ -357,24 +357,20 @@ func fenceRefusal(p string, globs []string) error {
 // never mutated) and is a no-op for an empty fence, keeping the fence-off
 // behavior byte-identical. Only the two known mutation tools are wrapped —
 // `run`-mediated writes are the closing re-hash's job.
-func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox, cfgs ...Config) map[string]Tool {
+func applyTestFence(tools map[string]Tool, globs []string, sb sandbox.Sandbox, reproFirst bool, root string) map[string]Tool {
 	if len(globs) == 0 || tools == nil {
 		return tools
 	}
 	alias := sandboxAlias(sb)
-	var cfg Config
-	if len(cfgs) > 0 {
-		cfg = cfgs[0]
-	}
 	allowReproNew := func(p string) bool {
-		if !cfg.ReproFirst || cfg.Root == "" {
+		if !reproFirst || root == "" {
 			return false
 		}
 		rel := cleanRel(fenceRelPath(alias, p))
 		if rel == "" || strings.HasPrefix(rel, "../") {
 			return false
 		}
-		_, err := os.Stat(filepath.Join(cfg.Root, filepath.FromSlash(rel)))
+		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
 		return os.IsNotExist(err)
 	}
 	out := make(map[string]Tool, len(tools))

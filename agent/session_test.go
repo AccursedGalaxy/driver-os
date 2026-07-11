@@ -44,7 +44,7 @@ func TestSessionCarriesHistoryTextLoop(t *testing.T) {
 	// provider is shared across Sends, so its reply index continues: call0/1 serve
 	// turn 1, call2 serves turn 2.
 	sp := &scripted{replies: []string{"list_dir .", "answer first reply", "answer second reply"}}
-	s := NewSession(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
+	s := newSessionT2(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
 
 	res1, err := s.Send(context.Background(), "what is the module")
 	if err != nil {
@@ -82,7 +82,7 @@ func TestSessionCarriesHistoryNativeLoop(t *testing.T) {
 		{llm.Text("answer alpha")}, // turn 1: no tool call => answers
 		{llm.Text("answer beta")},  // turn 2
 	}}
-	s := NewSession(Config{Model: ns, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, RunNative)
+	s := newSessionT2(Config{Model: ns, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, RunNative)
 
 	if _, err := s.Send(context.Background(), "first question"); err != nil {
 		t.Fatalf("Send 1: %v", err)
@@ -108,7 +108,7 @@ func TestSessionCarriesHistoryNativeLoop(t *testing.T) {
 // turns) while the Session — and its warm sandbox/memory — keeps running.
 func TestSessionReset(t *testing.T) {
 	sp := &scripted{replies: []string{"answer one", "answer two"}}
-	s := NewSession(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
+	s := newSessionT2(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
 
 	if _, err := s.Send(context.Background(), "first"); err != nil {
 		t.Fatalf("Send 1: %v", err)
@@ -142,7 +142,7 @@ func TestSessionReset(t *testing.T) {
 func TestSeedMessagesDoesNotMutateHistory(t *testing.T) {
 	hist := []llm.Message{llm.User("TASK: original"), llm.Assistant("ok")}
 	cfg := Config{History: hist, Task: "next"}
-	got := seedMessages(cfg, "")
+	got := seedMessagesT(cfg, "")
 
 	if len(got) != 3 {
 		t.Fatalf("seeded %d messages, want 3 (2 history + 1 input)", len(got))
@@ -161,7 +161,7 @@ func TestSeedMessagesDoesNotMutateHistory(t *testing.T) {
 // Send continues from it.
 func TestSessionCancelledTurnDoesNotAdvanceHistory(t *testing.T) {
 	sp := &scripted{replies: []string{"answer committed"}}
-	s := NewSession(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
+	s := newSessionT2(Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"})}, Run)
 
 	// First turn completes normally and establishes history.
 	if _, err := s.Send(context.Background(), "first"); err != nil {
@@ -188,7 +188,7 @@ func TestSessionCancelledTurnDoesNotAdvanceHistory(t *testing.T) {
 // after the text part.
 func TestSessionSendPartsFlowsImagesToFirstUserMessage(t *testing.T) {
 	sp := &scripted{replies: []string{"answer saw it"}}
-	s := NewSession(Config{Model: sp, Sandbox: sbWith(t, nil)}, Run)
+	s := newSessionT2(Config{Model: sp, Sandbox: sbWith(t, nil)}, Run)
 	img := llm.ImagePart{MIME: "image/png", Data: []byte{0x89, 'P', 'N', 'G'}}
 
 	res, err := s.SendParts(context.Background(), "describe this image", []llm.ImagePart{img})
@@ -224,7 +224,7 @@ func TestSessionSendPartsFlowsImagesToFirstUserMessage(t *testing.T) {
 
 // With no History, seedMessages reproduces the historical single-shot framing.
 func TestSeedMessagesSingleShot(t *testing.T) {
-	got := seedMessages(Config{Task: "do a thing"}, "")
+	got := seedMessagesT(Config{Task: "do a thing"}, "")
 	if len(got) != 1 || got[0].Text() != "TASK: do a thing" {
 		t.Fatalf("single-shot seed = %v, want one %q message", got, "TASK: do a thing")
 	}
@@ -237,7 +237,7 @@ func TestNewSessionWithSeedsNextSendHistory(t *testing.T) {
 		got = cfg
 		return &RunResult{Messages: append(append([]llm.Message(nil), cfg.History...), llm.User(cfg.Task), llm.Assistant("next answer"))}, nil
 	}
-	s := NewSessionWith(Config{}, loop, seed)
+	s := newSessionWithT(Config{}, loop, seed)
 	if _, err := s.SendParts(context.Background(), "next", nil); err != nil {
 		t.Fatalf("SendParts: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestSessionPersistsAutoVerifyResolutionAcrossTurns(t *testing.T) {
 	}}
 	spy := &noteSpy{}
 	sp := &scripted{replies: []string{"answer one", "answer two", "answer three"}}
-	s := NewSession(Config{Model: sp, Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, Run)
+	s := newSessionT2(Config{Model: sp, Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, Run)
 
 	for i, input := range []string{"first", "second", "third"} {
 		res, err := s.Send(context.Background(), input)
@@ -300,8 +300,8 @@ func TestSessionPersistsAutoVerifyResolutionAcrossTurns(t *testing.T) {
 	if got := s.VerifyCmd(); got != wantCmd {
 		t.Fatalf("session VerifyCmd = %q, want persisted %q", got, wantCmd)
 	}
-	if !s.cfg.AutoVerifySoft || !s.cfg.VerifyContinue || s.cfg.autoVerifyProvenance != "go.mod" || !s.cfg.SkipVerifyBaseline {
-		t.Fatalf("auto verify metadata did not persist: soft=%v continue=%v prov=%q skipBaseline=%v", s.cfg.AutoVerifySoft, s.cfg.VerifyContinue, s.cfg.autoVerifyProvenance, s.cfg.SkipVerifyBaseline)
+	if !s.vs.AutoVerifySoft || !s.vs.VerifyContinue || s.vs.provenance != "go.mod" || !s.vs.SkipVerifyBaseline {
+		t.Fatalf("auto verify metadata did not persist: soft=%v continue=%v prov=%q skipBaseline=%v", s.vs.AutoVerifySoft, s.vs.VerifyContinue, s.vs.provenance, s.vs.SkipVerifyBaseline)
 	}
 	var armNotes int
 	for _, n := range spy.notes {
@@ -327,7 +327,7 @@ func TestSingleShotRunWithoutAutoVerifyDoesNotTouchAutoPath(t *testing.T) {
 		return &sandbox.Result{ExitCode: 0}
 	}}
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{Model: sp, Sandbox: sb, Root: ".", Task: "single"})
+	res, err := runT(context.Background(), Config{Model: sp, Sandbox: sb, Root: ".", Task: "single"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

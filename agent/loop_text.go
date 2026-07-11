@@ -7,19 +7,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
 // interesting work is the context policy and the termination conditions. It
-// prints nothing: events go to cfg.Obs, the terminal state to the returned
+// prints nothing: events go to rt.Obs, the terminal state to the returned
 // RunResult. err is non-nil ONLY for a genuine infrastructure failure (the model
 // call itself failed); a no-progress kill or a hit cap is a normal Outcome, not
 // a Go error.
-func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
+//
+// The spec is COMPLETE by construction (runspec.Resolve) — the loop asserts
+// that at entry and never repairs a field (PROFILES.md §7.5 S6a).
+func Run(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content) (out *RunResult, err error) {
+	if err := spec.Complete(); err != nil {
+		return nil, setupErr("invalid_config", err.Error())
+	}
+	pol := spec.Policy()
+	vs := runVerifyState(pol, rt)
 
-	ev := &evidenceLog{root: cfg.Root, verifyConfigured: strings.TrimSpace(cfg.VerifyCmd) != "", reviewConfigured: cfg.Reviewer != nil, costConfigured: cfg.MaxTotalCostUSD > 0}
-	cfg.evidence = ev
+	ev := &evidenceLog{root: content.Root, verifyConfigured: strings.TrimSpace(vs.Cmd) != "", reviewConfigured: rt.Reviewer != nil, costConfigured: pol.MaxTotalCostUSD > 0}
 	defer func() {
 		if out != nil {
 			out.Guarantees = finalizeGuarantees(ev, out.Outcome, out.Review)
@@ -30,47 +38,45 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// addressable by ID). Registered BEFORE the isolation refusal so even a refused
 	// run gets an ID — otherwise the default CLI transcript write fails on an empty ID.
 	runID, startedAt := newRunID(), time.Now()
-	if err := cfg.Validate(); err != nil {
+	if err := validateRun(pol, rt); err != nil {
 		return nil, err
 	}
-	if cfg.ReproFirst {
+	if pol.ReproFirst {
 		return nil, setupErr("repro_first", "repro-first requires the native tool protocol")
 	}
 	defer func() { stampRun(out, runID, startedAt) }()
-	if refusal := checkSandboxFloor(cfg); refusal != nil {
+	if refusal := checkSandboxFloor(pol, rt, content, ev); refusal != nil {
 		ev.isolation = EvidenceFailed
 		// No protocol prompt or tool grammar has been built before this safety
 		// refusal; record that absence as hashes of empty representations.
-		refusal.TerminationPolicy = resolveTerminationPolicy(cfg.TerminationPolicy, cfg.NavSpiralWindow)
-		refusal.ConfigRecord = newConfigRecord(cfg, "", nil, "text")
+		refusal.TerminationPolicy = pol.TerminationPolicy
+		refusal.ConfigRecord = newConfigRecord(pol, rt, vs, "", nil, "text")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
-	if cfg.Obs == nil {
-		cfg.Obs = nopObserver{}
-	}
+	rt.Obs = rt.obs()
 
-	resolveAutoVerify(ctx, &cfg)
-	ev.verifyConfigured = strings.TrimSpace(cfg.VerifyCmd) != ""
-	ev.verifyCommand = cfg.VerifyCmd
+	resolveAutoVerify(ctx, vs, pol, rt, content.Root)
+	ev.verifyConfigured = strings.TrimSpace(vs.Cmd) != ""
+	ev.verifyCommand = vs.Cmd
 
-	// Resolve the OUR-side knobs from cfg-or-default (P5/P7). Done once, up front,
-	// so the loop body reads from locals and the defaults live in exactly one place.
-	knobs := resolveKnobs(cfg)
-	maxIter, maxTok, runTimeout := knobs.maxIter, knobs.maxTok, knobs.runTimeout
-	policy := knobs.terminationPolicy
-	cfg.Tools = wrapTools(cfg, runTimeout)
-	gs, err := newGates(ctx, cfg, runTimeout)
+	// The knobs are read straight off the complete spec (P5/P7): resolution
+	// happened exactly once, in runspec.Resolve — never here.
+	maxIter, maxTok, runTimeout := pol.MaxIterations, pol.MaxTokens, pol.RunTimeout
+	policy := pol.TerminationPolicy
+	tools := wrapTools(pol, rt, content.Root, runTimeout)
+	rt.Tools = tools
+	gs, err := newGates(ctx, gateDeps{pol: pol, rt: rt, vs: vs, ev: ev, task: content.Task, root: content.Root, baselineCache: rt.verifyBaselineCache}, runTimeout)
 	if err != nil {
 		return nil, err
 	}
 	ev.baseTree = gs.runBaseTree
 	ev.closingReady = true
 
-	res := &RunResult{Task: cfg.Task, Root: cfg.Root, TerminationPolicy: policy}
-	recordAutoVerifyResolution(res, cfg)
+	res := &RunResult{Task: content.Task, Root: content.Root, TerminationPolicy: policy}
+	recordAutoVerifyResolution(res, vs)
 	gs.applyBaseline(res)
-	if refusal := redBaselineRefusal(cfg, gs); refusal != nil {
+	if refusal := redBaselineRefusal(vs, gs); refusal != nil {
 		res.Outcome, res.Reason, res.Iterations = refusal.Outcome, refusal.Reason, refusal.Iterations
 		return res, nil
 	}
@@ -88,15 +94,13 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// read-only and its plan rides into the seeded task. Runs AFTER newGates on
 	// purpose — the reviewer judges the ORIGINAL task, not the plan-augmented
 	// one; recall (below) and RunResult.Task also keep the original. Fails open.
-	planTask, planRep := runPlanStage(ctx, cfg)
+	planTask, planRep := runPlanStage(ctx, rt, content)
 	res.Plan = planRep
-	seedCfg := cfg
-	seedCfg.Task = planTask
 
 	// ---- Principle 1: STATE LIVES HERE, in our slice. The model holds nothing. ----
 	// We rebuild and re-send this whole conversation on every single call. A
-	// continuing chat seeds it with the prior turns (Config.History); see Session.
-	messages := seedMessages(seedCfg, observeEnvironment(ctx, cfg.Sandbox, cfg.BootContext)+verifyGatePreamble(cfg)+gs.baselinePreamble())
+	// continuing chat seeds it with the prior turns (Content.History); see Session.
+	messages := seedMessages(planTask, content, observeEnvironment(ctx, rt.Sandbox, pol.BootContext)+verifyGatePreamble(vs)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Registered after `messages` exists so the closure reads
 	// its final value; the closure captures the variable, which the loop reassigns.
@@ -109,10 +113,10 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// ---- Principle 3: context IS the state. Long-term memory from PAST runs
 	// (mneme) is surfaced into the system prompt before we think. The model gets
 	// what it learned before, but labelled as possibly-stale so it still verifies. ----
-	scope := scopeOrDefault(cfg.MemoryScope)
-	systemPrompt := withPersona(cfg.Persona, buildSystemPrompt(cfg.Tools))
-	system := systemPrompt + recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
-	res.ConfigRecord = newConfigRecord(cfg, systemPrompt, textToolGrammar(cfg.Tools), "text")
+	scope := scopeOrDefault(pol.MemoryScope)
+	systemPrompt := withPersona(pol.Persona, buildSystemPrompt(tools))
+	system := systemPrompt + recall(ctx, rt.Obs, rt.Memory, scope, content.Task)
+	res.ConfigRecord = newConfigRecord(pol, rt, vs, systemPrompt, textToolGrammar(tools), "text")
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string
@@ -133,7 +137,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// (review #9) The stagnant/churn/diagnostics/finisher state shared with
 	// RunNative lives in ONE tracker; the loop-local vars above stay local
 	// because they are wire-format-specific (per-call here, per-turn there).
-	tr := newTurnTracker(cfg, maxIter, policy, &res.DetectorCounters)
+	tr := newTurnTracker(newTrackerDeps(pol, vs, rt), maxIter, policy, &res.DetectorCounters)
 
 	// grounded becomes true once a tool returns a real (non-error) observation
 	// this run. It gates what we persist: we only remember answers that were
@@ -150,9 +154,9 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	// Deadline-bound context so a slow in-flight call is cancelled AT the budget,
 	// not merely noticed at the next between-turn check.
 	loopCtx := ctx
-	if cfg.MaxWallClock > 0 {
+	if pol.MaxWallClock > 0 {
 		var cancel context.CancelFunc
-		loopCtx, cancel = context.WithTimeout(ctx, cfg.MaxWallClock)
+		loopCtx, cancel = context.WithTimeout(ctx, pol.MaxWallClock)
 		defer cancel()
 	}
 
@@ -166,25 +170,25 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Iterations = i - 1
 			return res, nil
 		}
-		if cfg.MaxWallClock > 0 && time.Since(start) > cfg.MaxWallClock {
+		if pol.MaxWallClock > 0 && time.Since(start) > pol.MaxWallClock {
 			res.Outcome = HitDeadline
-			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", cfg.MaxWallClock, i-1)
+			res.Reason = fmt.Sprintf("hit wall-clock budget (%s) after %d turn(s)", pol.MaxWallClock, i-1)
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
 		// (P5/HP-8) Token budget, checked at the turn boundary like the wall-clock:
 		// the turn that crossed the cap was still processed (it may have answered);
 		// the NEXT one is not paid for. See Config.MaxTotalTokens.
-		if cfg.MaxTotalTokens > 0 && res.Usage.TotalTokens >= cfg.MaxTotalTokens {
+		if pol.MaxTotalTokens > 0 && res.Usage.TotalTokens >= pol.MaxTotalTokens {
 			res.Outcome = HitBudget
-			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, cfg.MaxTotalTokens, i-1)
+			res.Reason = fmt.Sprintf("hit token budget (%d total tokens >= cap %d) after %d turn(s)", res.Usage.TotalTokens, pol.MaxTotalTokens, i-1)
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
-		if stop, reason := dollarBudgetStop(cfg, res.Usage, i-1, &costBudgetMissingNoted); stop {
+		if stop, reason := dollarBudgetStop(pol.MaxTotalCostUSD, pol.AllowUnpricedSpend, rt, ev, res.Usage, i-1, &costBudgetMissingNoted); stop {
 			res.Outcome = HitBudget
 			res.Reason = reason
 			return gs.upgradeIfVerified(ctx, res), nil
 		}
-		cfg.Obs.Iteration(i, maxIter)
+		rt.Obs.Iteration(i, maxIter)
 
 		// THINK: send the FULL context (P1) and get back text. Pure function.
 		// generateWithEviction adds HP-1's reactive fallback: on a window overflow
@@ -198,13 +202,13 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			Messages:        messages,
 			Temperature:     &temp,
 			MaxTokens:       maxTok, // (P7) our cap, resolved from Config. Too low silently clips a long answer/edit.
-			ReasoningEffort: cfg.ReasoningEffort,
+			ReasoningEffort: pol.ReasoningEffort,
 		}
-		noteContextEstimate(cfg, req, &contextEstimateNoted)
-		resp, messages, err = generateWithEviction(loopCtx, cfg, req)
+		noteContextEstimate(rt, req, &contextEstimateNoted)
+		resp, messages, err = generateWithEviction(loopCtx, rt, pol.Stream, req)
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
-			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, cfg, err); ok {
+			if outcome, reason, returnErr, ok := classifyGenerateErr(ctx, loopCtx, pol.MaxWallClock, err); ok {
 				res.Outcome, res.Reason, res.Err = outcome, reason, returnErr
 				if returnErr != nil {
 					return res, returnErr
@@ -216,13 +220,13 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			}
 		}
 		reply := strings.TrimSpace(resp.Text())
-		cfg.Obs.Model(reply)
+		rt.Obs.Model(reply)
 		res.Iterations = i
 		res.Usage = addUsage(res.Usage, resp.Usage)
-		cfg.Spend.Add(cfg.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
-		noteUsage(cfg.Obs, i, res.Usage, cfg.MaxTotalTokens)
+		rt.Spend.Add(pol.SolverModel, resp.Usage) // nil-safe; per-turn solver dollars
+		noteUsage(rt.Obs, i, res.Usage, pol.MaxTotalTokens)
 		ctxTok := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
-		notifyUsage(cfg.Obs, res.Usage, ctxTok)
+		notifyUsage(rt.Obs, res.Usage, ctxTok)
 
 		// The model's turn becomes part of the state we carry forward (P1).
 		messages = append(messages, llm.Assistant(reply))
@@ -240,7 +244,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		lastReasoning = reasoning
 
 		// The harness DISPOSES: we parse the proposed action ourselves (P2, P7).
-		verb, arg := parseAction(reply, cfg.Tools)
+		verb, arg := parseAction(reply, tools)
 		step := Step{Iter: i, Reply: reply, Verb: verb, Arg: arg, Usage: resp.Usage, ModelMs: modelMs, ReasoningAdvanced: reasoningAdvanced, FinishReason: resp.FinishReason}
 
 		// ---- Principle 5: a done-signal the model can emit. ----
@@ -341,7 +345,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if readOnly && sig == lastReadSig && sig == lastExecutedSig && !reasoningAdvanced {
 			observation = "(skipped: identical to your previous read; result unchanged) " + lastReadObs
 		} else {
-			observation = dispatch(loopCtx, cfg.Tools, verb, arg)
+			observation = dispatch(loopCtx, tools, verb, arg)
 			lastExecutedSig = sig
 			if readOnly && !strings.HasPrefix(observation, "ERROR:") {
 				lastReadSig = sig
@@ -374,7 +378,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 				res.Reason = fmt.Sprintf("no progress: the same command failure recurred %d times despite changing actions — the approach is stuck; change strategy or rewrite the file", count)
 				step.Observation = observation // the kill returns before the shared record point below.
 				res.Steps = append(res.Steps, step)
-				cfg.Obs.Observation(observation)
+				rt.Obs.Observation(observation)
 				return gs.upgradeIfVerified(ctx, res), nil
 			}
 		}
@@ -413,7 +417,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		if tr.finishNudge(i) {
 			res.DetectorCounters.FinishNudge++
 			observation += finishNudgeText
-			cfg.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
+			rt.Obs.Note("near cap with a green build and stable files — nudging to finish (HP-4)")
 		}
 
 		// Observation-repeat hard stop: if the SAME tool call keeps producing the
@@ -429,7 +433,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			res.Reason = fmt.Sprintf("no progress: repeated %q %d times", verb+" "+arg, count)
 			step.Observation = observation
 			res.Steps = append(res.Steps, step)
-			cfg.Obs.Observation(observation)
+			rt.Obs.Observation(observation)
 			return gs.upgradeIfVerified(ctx, res), nil
 		} else {
 			repeatNudge = escalatingRepeatNudge(count)
@@ -453,7 +457,7 @@ func Run(ctx context.Context, cfg Config) (out *RunResult, err error) {
 
 		// OBSERVE: the result — including any error — is appended as the next thing
 		// the model sees (P2, P4). It is REAL external state, our anchor.
-		cfg.Obs.Observation(observation)
+		rt.Obs.Observation(observation)
 		messages = append(messages, llm.User("OBSERVATION:\n"+observation))
 		if repeatNudge != "" {
 			messages = append(messages, llm.User(repeatNudge))

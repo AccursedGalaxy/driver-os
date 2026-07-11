@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 )
 
 // ReviewPassOptions configures a closing review gate run over an existing
@@ -27,19 +29,22 @@ type ReviewPassOptions struct {
 // gates/reviewState types, so callers that did not start a normal agent loop can
 // still reuse reviewer classification, repro execution, fates, usage reporting,
 // and fail-open behavior.
-func ReviewExistingWorkspace(ctx context.Context, cfg Config, runTimeout time.Duration, opts ReviewPassOptions) (feedback string, blockReason string, report *ReviewReport) {
-	return reviewExistingWorkspacePass(ctx, cfg, runTimeout, opts, true)
+func ReviewExistingWorkspace(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content, runTimeout time.Duration, opts ReviewPassOptions) (feedback string, blockReason string, report *ReviewReport) {
+	return reviewExistingWorkspacePass(ctx, spec, rt, content, runTimeout, opts, true)
 }
 
-func reviewExistingWorkspacePass(ctx context.Context, cfg Config, runTimeout time.Duration, opts ReviewPassOptions, canContinue bool) (feedback string, blockReason string, report *ReviewReport) {
-	if cfg.Obs == nil {
-		cfg.Obs = nopObserver{}
+func reviewExistingWorkspacePass(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content, runTimeout time.Duration, opts ReviewPassOptions, canContinue bool) (feedback string, blockReason string, report *ReviewReport) {
+	if err := spec.Complete(); err != nil {
+		return "", err.Error(), nil
 	}
+	rt.Obs = rt.obs()
+	pol := spec.Policy()
+	vs := newVerifyState(pol)
 	// The review gate judges a finished tree — there is no "before any
 	// changes" to baseline, so skip the pre-flight VerifyCmd execution
 	// (same pattern as NewGate).
-	cfg.SkipVerifyBaseline = true
-	gs, err := newGates(ctx, cfg, runTimeout)
+	vs.SkipVerifyBaseline = true
+	gs, err := newGates(ctx, gateDeps{pol: pol, rt: rt, vs: vs, task: content.Task, root: content.Root}, runTimeout)
 	if err != nil {
 		return "", err.Error(), nil
 	}
@@ -66,18 +71,22 @@ func reviewExistingWorkspacePass(ctx context.Context, cfg Config, runTimeout tim
 // disabled so they cannot silently re-baseline the gate to the already-patched
 // workspace. A blocking, unrepaired review marks the chosen result Unverified;
 // callers must not fall back to a lower-ranked candidate.
-func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *RunResult, opts ReviewPassOptions, loop LoopFunc) (*RunResult, error) {
+func ReviewAndRepairExistingWorkspace(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Content, base *RunResult, opts ReviewPassOptions, loop LoopFunc) (*RunResult, error) {
 	var out RunResult
 	if base != nil {
 		out = *base
 	} else {
-		out = RunResult{Task: cfg.Task, Root: cfg.Root, Outcome: Answered}
+		out = RunResult{Task: content.Task, Root: content.Root, Outcome: Answered}
 	}
-	if cfg.Reviewer == nil {
+	if rt.Reviewer == nil {
 		return &out, nil
 	}
+	if err := spec.Complete(); err != nil {
+		return &out, setupErr("invalid_config", err.Error())
+	}
+	pol := spec.Policy()
 
-	maxRounds := cfg.ReviewRounds
+	maxRounds := pol.ReviewRounds
 	if maxRounds <= 0 {
 		maxRounds = DefaultReviewRounds
 	}
@@ -93,7 +102,7 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *Run
 		passOpts := opts
 		passOpts.SessionKey = sessionKey
 		passOpts.RoundOffset = pass - 1
-		feedback, blockReason, report := reviewExistingWorkspacePass(ctx, cfg, cfg.RunTimeout, passOpts, pass < maxRounds)
+		feedback, blockReason, report := reviewExistingWorkspacePass(ctx, spec, rt, content, pol.RunTimeout, passOpts, pass < maxRounds)
 		mergeReviewReports(&combined, report)
 		current.Review = combined
 
@@ -103,7 +112,7 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *Run
 			return current, nil
 		}
 		if feedback == "" {
-			if reason := combinedReviewRequiredBlockReason(cfg, combined); reason != "" {
+			if reason := combinedReviewRequiredBlockReason(pol, rt, combined); reason != "" {
 				current.Outcome = Unverified
 				current.Reason = reason
 			}
@@ -115,10 +124,11 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *Run
 			return current, nil
 		}
 
-		repairCfg := cfg
-		repairCfg.Reviewer = nil
-		repairCfg.Task = fmt.Sprintf("%s\n\nThe selected patch was blocked by the review gate. Address this review feedback, then finish again:\n\n%s", cfg.Task, feedback)
-		res, err := loop(ctx, repairCfg)
+		repairRT := rt
+		repairRT.Reviewer = nil
+		repairContent := content
+		repairContent.Task = fmt.Sprintf("%s\n\nThe selected patch was blocked by the review gate. Address this review feedback, then finish again:\n\n%s", content.Task, feedback)
+		res, err := loop(ctx, spec, repairRT, repairContent)
 		if res == nil {
 			return current, err
 		}
@@ -138,8 +148,8 @@ func ReviewAndRepairExistingWorkspace(ctx context.Context, cfg Config, base *Run
 	return current, nil
 }
 
-func combinedReviewRequiredBlockReason(cfg Config, report *ReviewReport) string {
-	if !effectiveReviewRequired(cfg) || report == nil || !isReviewInfrastructureStatus(report.Status) {
+func combinedReviewRequiredBlockReason(pol runspec.PolicyValue, rt Runtime, report *ReviewReport) string {
+	if !effectiveReviewRequired(gateDeps{pol: pol, rt: rt}) || report == nil || !isReviewInfrastructureStatus(report.Status) {
 		return ""
 	}
 	return fmt.Sprintf("review required but review status is %s", report.Status)

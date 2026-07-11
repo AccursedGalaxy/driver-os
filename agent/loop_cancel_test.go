@@ -19,7 +19,7 @@ func TestRunNativeCancel(t *testing.T) {
 
 	// Case 1: Pre-cancelled context.
 	cancel()
-	res, err := RunNative(ctx, Config{
+	res, err := runNativeT(ctx, Config{
 		Model:   script,
 		Sandbox: sbWith(t, nil),
 		Task:    "test cancel",
@@ -46,7 +46,7 @@ func TestRunTextCancel(t *testing.T) {
 
 	// Case 1: Pre-cancelled context.
 	cancel()
-	res, err := Run(ctx, Config{
+	res, err := runT(ctx, Config{
 		Model:   script,
 		Sandbox: sbWith(t, nil),
 		Task:    "test cancel",
@@ -87,7 +87,7 @@ func TestRunNativeCancelBetweenTurns(t *testing.T) {
 		},
 	}
 
-	res, err := RunNative(ctx, Config{
+	res, err := runNativeT(ctx, Config{
 		Model:   script,
 		Sandbox: sbWith(t, nil),
 		Task:    "test cancel between turns",

@@ -66,7 +66,7 @@ func TestReviewPolicyFromReachableCombinations(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Fatalf("ReviewPolicyFrom(%v,%v,%v) = %v, %v; want %v", tc.required, tc.failOpen, tc.optional, got, err, tc.want)
 		}
-		if required := effectiveReviewRequired(Config{Reviewer: &errReviewer{}, ReviewPolicy: got}); required != tc.gateRequired {
+		if required := effectiveReviewRequiredT(Config{Reviewer: &errReviewer{}, ReviewPolicy: got}); required != tc.gateRequired {
 			t.Errorf("policy %v gate required = %v, want %v", got, required, tc.gateRequired)
 		}
 		if got.optional() != tc.optional {

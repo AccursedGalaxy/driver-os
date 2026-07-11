@@ -3,6 +3,9 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/llm"
 )
 
 // PROMPT-SKILLS slice 3: per-model-family prompt variants (the opencode
@@ -80,14 +83,14 @@ func modelIDOf(p any) string {
 // surface on the observer (the misroute-visibility requirement). Unknown
 // profiles are an ERROR, not a fallback: this knob exists to be A/B'd, and a
 // typo that silently ran the wrong arm would corrupt a paid experiment.
-func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
-	switch cfg.PromptProfile {
+func resolveSystemPrompt(pol runspec.PolicyValue, model llm.Provider) (prompt, note string, err error) {
+	switch pol.PromptProfile {
 	case "", "legacy":
 		prompt, note = nativeSystemPrompt(), ""
 	case "structured":
 		prompt, note = structuredSystemPrompt(), ""
 	case "auto":
-		id := modelIDOf(cfg.Model)
+		id := modelIDOf(model)
 		switch fam := modelFamily(id); fam {
 		case famScope:
 			prompt, note = structuredSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s (structured)", id, fam)
@@ -97,31 +100,31 @@ func resolveSystemPrompt(cfg Config) (prompt, note string, err error) {
 			prompt, note = nativeSystemPrompt(), fmt.Sprintf("prompt profile auto: model %q → family %s — TERSE FALLBACK (add it to promptFamilies if this is wrong)", id, fam)
 		}
 	default:
-		return "", "", fmt.Errorf("unknown PromptProfile %q (valid: \"\", \"legacy\", \"structured\", \"auto\")", cfg.PromptProfile)
+		return "", "", fmt.Errorf("unknown PromptProfile %q (valid: \"\", \"legacy\", \"structured\", \"auto\")", pol.PromptProfile)
 	}
 
-	if cfg.CodeAct {
+	if pol.CodeAct {
 		prompt += codeActAddendum
 		if note != "" {
 			note += "; "
 		}
 		note += "code-as-action mode ON"
 	}
-	if cfg.ReproFirst {
+	if pol.ReproFirst {
 		prompt += reproFirstAddendum
 		if note != "" {
 			note += "; "
 		}
 		note += "repro-first enforcement ON"
 	}
-	if cfg.ReproGate {
+	if pol.ReproGate {
 		prompt += reproGateAddendum
 		if note != "" {
 			note += "; "
 		}
 		note += "repro-first mode ON"
 	}
-	if cfg.BatchReads {
+	if pol.BatchReads {
 		prompt += batchReadsAddendum
 		if note != "" {
 			note += "; "

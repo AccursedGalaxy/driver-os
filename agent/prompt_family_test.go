@@ -59,7 +59,7 @@ func (m *modelStub) Model() string { return m.id }
 func TestResolveSystemPromptAuto(t *testing.T) {
 	resolve := func(id string) (string, string) {
 		t.Helper()
-		p, note, err := resolveSystemPrompt(Config{PromptProfile: "auto", Model: &modelStub{id: id}})
+		p, note, err := resolveSystemPromptT(Config{PromptProfile: "auto", Model: &modelStub{id: id}})
 		if err != nil {
 			t.Fatalf("auto(%q): %v", id, err)
 		}
@@ -94,7 +94,7 @@ func TestResolveSystemPromptAuto(t *testing.T) {
 	}
 
 	// A provider that exposes no Model() routes to the fallback, not a crash.
-	p, note, err := resolveSystemPrompt(Config{PromptProfile: "auto", Model: &nativeScript{}})
+	p, note, err := resolveSystemPromptT(Config{PromptProfile: "auto", Model: &nativeScript{}})
 	if err != nil || p != nativeSystemPrompt() || !strings.Contains(note, "TERSE FALLBACK") {
 		t.Errorf("no-Model() provider: p-legacy=%v note=%q err=%v", p == nativeSystemPrompt(), note, err)
 	}
@@ -111,7 +111,7 @@ func (n *noteRecorder) Note(s string) { n.notes = append(n.notes, s) }
 func TestRunNativeAutoProfileNotesRouting(t *testing.T) {
 	ns := &modelStub{nativeScript: nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}, id: "z-ai/glm-5"}
 	rec := &noteRecorder{}
-	_, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Task: "t", PromptProfile: "auto", Obs: rec})
+	_, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Task: "t", PromptProfile: "auto", Obs: rec})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRunNativeAutoProfileNotesRouting(t *testing.T) {
 // block onto whatever base profile resolved, notes it, and is byte-identical to
 // off when false — arms differ in this flag alone (docs/specs/CODEACT-SCREEN.md).
 func TestResolveSystemPromptCodeAct(t *testing.T) {
-	off, _, err := resolveSystemPrompt(Config{CodeAct: false})
+	off, _, err := resolveSystemPromptT(Config{CodeAct: false})
 	if err != nil {
 		t.Fatalf("codeact off: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestResolveSystemPromptCodeAct(t *testing.T) {
 		t.Errorf("base prompt must NOT contain the addendum when CodeAct is off")
 	}
 
-	on, note, err := resolveSystemPrompt(Config{CodeAct: true})
+	on, note, err := resolveSystemPromptT(Config{CodeAct: true})
 	if err != nil {
 		t.Fatalf("codeact on: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestResolveSystemPromptCodeAct(t *testing.T) {
 	}
 
 	// Composes with a non-default profile and still carries both parts.
-	structured, _, err := resolveSystemPrompt(Config{PromptProfile: "structured", CodeAct: true})
+	structured, _, err := resolveSystemPromptT(Config{PromptProfile: "structured", CodeAct: true})
 	if err != nil {
 		t.Fatalf("structured+codeact: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestResolveSystemPromptCodeAct(t *testing.T) {
 	}
 
 	// The error path (unknown profile) is unaffected by CodeAct.
-	if _, _, err := resolveSystemPrompt(Config{PromptProfile: "bogus", CodeAct: true}); err == nil {
+	if _, _, err := resolveSystemPromptT(Config{PromptProfile: "bogus", CodeAct: true}); err == nil {
 		t.Errorf("unknown profile must still error even with CodeAct on")
 	}
 }
@@ -175,7 +175,7 @@ func TestResolveSystemPromptCodeAct(t *testing.T) {
 // batch-reads block onto whatever base profile resolved, notes it, and is
 // byte-identical to off when false — arms differ in this flag alone.
 func TestResolveSystemPromptBatchReads(t *testing.T) {
-	off, _, err := resolveSystemPrompt(Config{BatchReads: false})
+	off, _, err := resolveSystemPromptT(Config{BatchReads: false})
 	if err != nil {
 		t.Fatalf("batch-reads off: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestResolveSystemPromptBatchReads(t *testing.T) {
 		t.Errorf("base prompt must NOT contain the addendum when BatchReads is off")
 	}
 
-	on, note, err := resolveSystemPrompt(Config{BatchReads: true})
+	on, note, err := resolveSystemPromptT(Config{BatchReads: true})
 	if err != nil {
 		t.Fatalf("batch-reads on: %v", err)
 	}
@@ -195,13 +195,13 @@ func TestResolveSystemPromptBatchReads(t *testing.T) {
 	}
 
 	// Composes with other profiles.
-	structured, _, _ := resolveSystemPrompt(Config{PromptProfile: "structured", BatchReads: true})
+	structured, _, _ := resolveSystemPromptT(Config{PromptProfile: "structured", BatchReads: true})
 	if !strings.Contains(structured, "Working rules:") || !strings.Contains(structured, "BATCH INDEPENDENT READS") {
 		t.Errorf("batch-reads should compose with structured profile")
 	}
 
 	// Unknown profile still errors.
-	_, _, err = resolveSystemPrompt(Config{PromptProfile: "invalid", BatchReads: true})
+	_, _, err = resolveSystemPromptT(Config{PromptProfile: "invalid", BatchReads: true})
 	if err == nil {
 		t.Errorf("unknown profile should still error with BatchReads on")
 	}

@@ -33,7 +33,7 @@ func TestRunNativeDeepOrientationNotKilledBeforeFirstRead(t *testing.T) {
 		{llm.Text("found it")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestRunDeepOrientationNotKilledBeforeFirstRead(t *testing.T) {
 		"search alpha", "search beta", "search gamma", "search delta",
 		"read_file a/b/c/f.txt", "answer found it",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"a/b/c/f.txt": "x\n"}),
 		Task: "t", MaxIterations: 20,
 	})
@@ -76,7 +76,7 @@ func TestRunNativeRepeatedFrontierDiesAtWindow(t *testing.T) {
 		{structuredCall("6", "list_dir", map[string]any{"path": "b"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRunNativeEquivalentPathSpellingsAreOneTarget(t *testing.T) {
 		{structuredCall("6", "list_dir", map[string]any{"path": "./b/"})}, // revisits b
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestRunEquivalentPathSpellingsAreOneTarget(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"list_dir a", "list_dir b", "list_dir ./a", "list_dir b/", "list_dir a/.", "list_dir ./b/",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}),
 		Task: "t", MaxIterations: 20,
 	})
@@ -142,7 +142,7 @@ func TestRunAlternatingCycleDies(t *testing.T) {
 		"list_dir x", "search y",
 		"list_dir x", "search y",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"x/f": "1"}),
 		Task: "t", MaxIterations: 20,
 	})
@@ -173,7 +173,7 @@ func TestRunNativeFirstReadResetsDiscoveryState(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRunNativeSpiralKillRecordsObservation(t *testing.T) {
 		{structuredCall("6", "list_dir", map[string]any{"path": "b"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestRunSpiralKillRecordsObservation(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"list_dir a", "list_dir b", "list_dir a", "list_dir b", "list_dir a", "list_dir b",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}),
 		Task: "t", MaxIterations: 20,
 	})

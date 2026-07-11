@@ -24,7 +24,7 @@ func (s *Server) Serve() {}
 			ReadWindow:  20,
 			ReadOutline: true,
 		}
-		tools := wrapTools(cfg, 30*time.Second)
+		tools := wrapToolsT(cfg, 30*time.Second)
 		read, ok := tools["read_file"]
 		if !ok {
 			t.Fatal("read_file tool not found")
@@ -72,7 +72,7 @@ func (s *Server) Serve() {}
 		cfg := Config{
 			Sandbox: sbWith(t, files),
 		}
-		tools := wrapTools(cfg, 30*time.Second)
+		tools := wrapToolsT(cfg, 30*time.Second)
 		read := tools["read_file"]
 
 		obs, err := read.Run(context.Background(), "main.go")

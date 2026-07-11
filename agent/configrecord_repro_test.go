@@ -38,7 +38,7 @@ func TestRunNativeStampsConfigRecord(t *testing.T) {
 }
 
 func TestRunStampsTextConfigRecord(t *testing.T) {
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:             &scripted{replies: []string{"answer done"}},
 		Sandbox:           sbWith(t, nil),
 		RequestedProtocol: "text",
@@ -63,28 +63,28 @@ func TestRunStampsTextConfigRecord(t *testing.T) {
 // change moves PromptSHA256 and only PromptSHA256.
 func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 	cfg := Config{Task: "t", VerifyCmd: "true", MaxIterations: 3}
-	a := newConfigRecord(cfg, "system prompt", nil)
-	b := newConfigRecord(cfg, "system prompt", nil)
+	a := newConfigRecordT(cfg, "system prompt", nil)
+	b := newConfigRecordT(cfg, "system prompt", nil)
 	if a.ConfigSHA256 != b.ConfigSHA256 || a.PromptSHA256 != b.PromptSHA256 || a.ToolSchemaSHA256 != b.ToolSchemaSHA256 {
 		t.Fatalf("identical inputs must hash identically:\n%+v\n%+v", a, b)
 	}
 	cfg2 := cfg
 	cfg2.VerifyCmd = "go test ./..."
-	c := newConfigRecord(cfg2, "system prompt", nil)
+	c := newConfigRecordT(cfg2, "system prompt", nil)
 	if c.ConfigSHA256 == a.ConfigSHA256 {
 		t.Fatal("changing a policy field (VerifyCmd) must change ConfigSHA256")
 	}
 	if c.PromptSHA256 != a.PromptSHA256 {
 		t.Fatal("a config-only change must not move PromptSHA256")
 	}
-	d := newConfigRecord(cfg, "different system prompt", nil)
+	d := newConfigRecordT(cfg, "different system prompt", nil)
 	if d.PromptSHA256 == a.PromptSHA256 {
 		t.Fatal("changing the system prompt must change PromptSHA256")
 	}
 	if d.ConfigSHA256 != a.ConfigSHA256 {
 		t.Fatal("a prompt-only change must not move ConfigSHA256")
 	}
-	e := newConfigRecord(cfg, "system prompt", []llm.Tool{{Name: "read_file"}})
+	e := newConfigRecordT(cfg, "system prompt", []llm.Tool{{Name: "read_file"}})
 	if e.ToolSchemaSHA256 == a.ToolSchemaSHA256 {
 		t.Fatal("changing the tool schemas must change ToolSchemaSHA256")
 	}
@@ -94,12 +94,12 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 // alongside, rather than within, the effective-config hash.
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
-	run := newConfigRecord(cfg, "system prompt", nil)
+	run := newConfigRecordT(cfg, "system prompt", nil)
 	if run.SchemaVersion != 8 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
 		t.Fatalf("v8 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
-	compat := newConfigRecord(cfg, "system prompt", nil)
+	compat := newConfigRecordT(cfg, "system prompt", nil)
 	if run.ConfigSHA256 != compat.ConfigSHA256 {
 		t.Fatalf("invocation surface must not affect ConfigSHA256: run=%s agent=%s", run.ConfigSHA256, compat.ConfigSHA256)
 	}
@@ -110,16 +110,16 @@ func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 
 func TestConfigRecordProtocolHashing(t *testing.T) {
 	cfg := Config{Task: "t", RequestedProtocol: "tools"}
-	fallback := newConfigRecord(cfg, "text prompt", textToolGrammar(nil), "text")
+	fallback := newConfigRecordT(cfg, "text prompt", textToolGrammar(nil), "text")
 	cfg.ProtocolFallbackReason = "provider lacks tool capability"
-	explicit := newConfigRecord(cfg, "text prompt", textToolGrammar(nil), "text")
+	explicit := newConfigRecordT(cfg, "text prompt", textToolGrammar(nil), "text")
 	if fallback.ConfigSHA256 != explicit.ConfigSHA256 {
 		t.Fatalf("same effective text protocol must hash alike: fallback=%s explicit=%s", fallback.ConfigSHA256, explicit.ConfigSHA256)
 	}
 	if explicit.ProtocolFallbackReason == "" || explicit.RequestedProtocol != "tools" {
 		t.Fatalf("fallback provenance not recorded: %+v", explicit)
 	}
-	native := newConfigRecord(cfg, "native prompt", nil, "tools")
+	native := newConfigRecordT(cfg, "native prompt", nil, "tools")
 	if native.ConfigSHA256 == explicit.ConfigSHA256 {
 		t.Fatal("different effective protocols must change ConfigSHA256")
 	}
@@ -176,8 +176,8 @@ func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
 
 func TestConfigRecordV8ResolutionProvenance(t *testing.T) {
 	cfg := Config{RequiredTrust: "reviewed-local", Canonical: true, FieldProvenance: map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli"}}
-	a := newConfigRecord(cfg, "system", nil)
-	b := newConfigRecord(cfg, "system", nil)
+	a := newConfigRecordT(cfg, "system", nil)
+	b := newConfigRecordT(cfg, "system", nil)
 	if a.SchemaVersion != 8 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
 		t.Fatalf("v8 resolution fields = %+v", a)
 	}
@@ -213,7 +213,7 @@ func TestConfigRecordV8ResolutionProvenance(t *testing.T) {
 // A caller-supplied source survives derived stamping (verify_timeout is
 // derived unless the CLI set it).
 func TestConfigRecordV7CallerSourceWinsOverDerived(t *testing.T) {
-	rec := newConfigRecord(Config{FieldProvenance: map[string]string{"verify_timeout": "cli"}}, "system", nil)
+	rec := newConfigRecordT(Config{FieldProvenance: map[string]string{"verify_timeout": "cli"}}, "system", nil)
 	if rec.FieldProvenance["verify_timeout"] != "cli" {
 		t.Fatalf("verify_timeout = %q, want cli", rec.FieldProvenance["verify_timeout"])
 	}

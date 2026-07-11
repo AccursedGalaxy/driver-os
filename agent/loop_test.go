@@ -55,7 +55,7 @@ func (s *scripted) Generate(_ context.Context, req llm.Request) (*llm.Response, 
 func runScript(t *testing.T, files map[string]string, replies []string) (*RunResult, *scripted) {
 	t.Helper()
 	sp := &scripted{replies: replies}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, files),
 		Task:    "test task",
@@ -169,7 +169,7 @@ func TestRunReasoningAdvancedUsesLenientThreshold(t *testing.T) {
 	// must let it run to the cap instead. read_file (not list_dir) to keep the spiral
 	// detector out of it.
 	sp := &scriptedRz{replies: []string{"read_file x"}, advancing: true}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 5,
 	})
 	if err != nil {
@@ -196,7 +196,7 @@ func TestRunZeroTokenMovingTraceKeepsLenientThreshold(t *testing.T) {
 	// below the lenient ceiling, so surviving to the cap proves the strict
 	// threshold did not fire.
 	sp := &scriptedRz{replies: []string{"read_file x"}, nonceTrace: true}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 5,
 	})
 	if err != nil {
@@ -215,7 +215,7 @@ func TestRunReasoningFrozenUsesStrictThreshold(t *testing.T) {
 	// detector must fall back to the strict maxRepeats and kill, exactly as it does
 	// for a non-thinking model.
 	sp := &scriptedRz{replies: []string{"read_file x"}, advancing: false}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, nil), Task: "test task", MaxIterations: 8,
 	})
 	if err != nil {
@@ -247,7 +247,7 @@ func TestRunRespectsConfigMaxIterations(t *testing.T) {
 	// no-progress detector fires — OUR configured cap (3), not DefaultMaxIterations,
 	// must be what stops it (P5/P7: the termination knob is the caller's).
 	sp := &scripted{replies: []string{"read_file a", "read_file b", "read_file c", "read_file d", "read_file e"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Task:          "test task",
@@ -284,7 +284,7 @@ func TestRunVerifyCmdFailMarksUnverified(t *testing.T) {
 	// Text-loop counterpart of the native gate: grounded write + an `answer`, but the
 	// caller's verification command fails -> Unverified, not Answered.
 	sp := &scripted{replies: []string{"write_file ok.txt hi", "answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 1",
 	})
 	if err != nil {
@@ -303,7 +303,7 @@ func TestRunStagnantObservationKilled(t *testing.T) {
 	// DIFFERENT actions between (read_file) — exact-repeat never fires, spiral never
 	// fires — is ended by the stagnant-observation detector at the 3rd identical fail.
 	fail := "run echo boom 1>&2; exit 2"
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         &scripted{replies: []string{fail, "read_file a.txt", fail, "read_file b.txt", fail}},
 		Sandbox:       sbWith(t, map[string]string{"a.txt": "x\n", "b.txt": "y\n"}),
 		Task:          "t",
@@ -332,7 +332,7 @@ func TestRunChurnNudgeFiresOnce(t *testing.T) {
 		"answer done",
 	}
 	sp := &scripted{replies: replies}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, files), Task: "t",
 		MaxIterations: 20, ChurnNudgeRuns: 2,
 	})
@@ -374,7 +374,7 @@ func TestRunChurnNudgeFiresOnEdits(t *testing.T) {
 		"answer done",
 	}
 	sp := &scripted{replies: replies}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t",
 		MaxIterations: 20, ChurnNudgeRuns: 3,
 	})
@@ -407,7 +407,7 @@ func TestRunChurnNudgeFiresOnEdits(t *testing.T) {
 func TestRunProviderError(t *testing.T) {
 	boom := errors.New("transport exploded")
 	sp := &scripted{err: boom}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, nil),
 		Task:    "test task",
@@ -534,7 +534,7 @@ func TestRunCanceledMidCall(t *testing.T) {
 	}
 	ch := make(chan runOut, 1)
 	go func() {
-		res, err := Run(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		res, err := runT(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
 		ch <- runOut{res, err}
 	}()
 
@@ -567,7 +567,7 @@ func TestRunCanceledAtAnswerTime(t *testing.T) {
 
 	sp := &scripted{replies: []string{"answer done"}}
 	exec := &countingExecSandbox{}
-	res, err := Run(ctx, Config{
+	res, err := runT(ctx, Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Task:          "test",
@@ -594,7 +594,7 @@ func TestRunNativeCanceledAtAnswerTime(t *testing.T) {
 
 	sp := &scripted{replies: []string{"answer done"}}
 	exec := &countingExecSandbox{}
-	res, err := RunNative(ctx, Config{
+	res, err := runNativeT(ctx, Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Task:          "test",
@@ -622,7 +622,7 @@ func TestRunCanceledWithCustomCause(t *testing.T) {
 	}
 	ch := make(chan runOut, 1)
 	go func() {
-		res, err := Run(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		res, err := runT(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
 		ch <- runOut{res, err}
 	}()
 
@@ -653,7 +653,7 @@ func TestRunNativeCanceledWithCustomCause(t *testing.T) {
 	}
 	ch := make(chan runOut, 1)
 	go func() {
-		res, err := RunNative(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
+		res, err := runNativeT(ctx, Config{Model: bp, Sandbox: sbWith(t, nil), Task: "test"})
 		ch <- runOut{res, err}
 	}()
 
@@ -683,7 +683,7 @@ func TestRunMaxWallClockYieldsHitDeadlineNotCanceled(t *testing.T) {
 	ctx := context.Background() // parent is never canceled
 
 	shortBudget := 50 * time.Millisecond
-	res, err := Run(ctx, Config{
+	res, err := runT(ctx, Config{
 		Model:        bp,
 		Sandbox:      sbWith(t, nil),
 		Task:         "test",
@@ -706,7 +706,7 @@ func TestRunNativeMaxWallClockYieldsHitDeadlineNotCanceled(t *testing.T) {
 	ctx := context.Background()
 
 	shortBudget := 50 * time.Millisecond
-	res, err := RunNative(ctx, Config{
+	res, err := runNativeT(ctx, Config{
 		Model:        bp,
 		Sandbox:      sbWith(t, nil),
 		Task:         "test",

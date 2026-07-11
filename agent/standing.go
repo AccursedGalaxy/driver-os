@@ -38,20 +38,20 @@ func (s *standingState) cleanup() {
 	}
 }
 
-func (s *standingState) currentTree(ctx context.Context, cfg Config) (string, error) {
-	if s == nil || cfg.Root == "" {
+func (s *standingState) currentTree(ctx context.Context, root string) (string, error) {
+	if s == nil || root == "" {
 		return "", fmt.Errorf("no workspace root")
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
 	defer cancel()
-	return vcs.WriteTreeCached(gctx, cfg.Root, s.indexPath)
+	return vcs.WriteTreeCached(gctx, root, s.indexPath)
 }
 
-func (s *standingState) block(ctx context.Context, cfg Config, gs *gates, tr *turnTracker, turn int) string {
-	if s == nil || !cfg.StandingContext {
+func (s *standingState) block(ctx context.Context, root, verifyCmd string, gs *gates, tr *turnTracker, turn int) string {
+	if s == nil {
 		return ""
 	}
-	cur, curErr := s.currentTree(ctx, cfg)
+	cur, curErr := s.currentTree(ctx, root)
 	base := ""
 	baselineMeasured, baselineRed := false, false
 	if gs != nil {
@@ -62,13 +62,13 @@ func (s *standingState) block(ctx context.Context, cfg Config, gs *gates, tr *tu
 	unchanged := curErr == nil && base != "" && cur == base
 	diffSection := "# Your changes so far: unavailable (could not read working tree)"
 	if curErr == nil {
-		s.renderDiff(ctx, cfg, base, cur)
+		s.renderDiff(ctx, root, base, cur)
 		diffSection = s.lastDiff
 	}
-	return renderStandingBlock(diffSection, tr, strings.TrimSpace(cfg.VerifyCmd), cur, curErr != nil, unchanged, baselineMeasured, baselineRed)
+	return renderStandingBlock(diffSection, tr, strings.TrimSpace(verifyCmd), cur, curErr != nil, unchanged, baselineMeasured, baselineRed)
 }
 
-func (s *standingState) renderDiff(ctx context.Context, cfg Config, base, cur string) {
+func (s *standingState) renderDiff(ctx context.Context, root string, base, cur string) {
 	if base == "" {
 		s.lastTree, s.lastDiff = cur, "# Your changes so far: unavailable (no session-start git baseline)"
 		return
@@ -82,14 +82,14 @@ func (s *standingState) renderDiff(ctx context.Context, cfg Config, base, cur st
 		return
 	}
 	gctx, cancel := gateContext(ctx, gateDiffTimeout)
-	stat, statErr := vcs.DiffTreesStat(gctx, cfg.Root, base, cur)
+	stat, statErr := vcs.DiffTreesStat(gctx, root, base, cur)
 	cancel()
 	if statErr != nil {
 		s.lastDiff = "# Your changes so far: unavailable (could not render diff stat: " + statErr.Error() + ")"
 		return
 	}
 	gctx, cancel = gateContext(ctx, gateDiffTimeout)
-	diff, diffErr := standingDiffTrees(gctx, cfg.Root, base, cur)
+	diff, diffErr := standingDiffTrees(gctx, root, base, cur)
 	cancel()
 	if diffErr != nil {
 		s.lastDiff = "# Your changes so far: unavailable (could not render diff: " + diffErr.Error() + ")"

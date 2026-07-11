@@ -21,7 +21,7 @@ func TestNewGateSkipVerifyBaseline(t *testing.T) {
 
 	// 1. Construct NewGate.
 	ctx := context.Background()
-	g, err := NewGate(ctx, cfg)
+	g, err := newGateOld(ctx, cfg)
 	if err != nil {
 		t.Fatalf("NewGate: %v", err)
 	}

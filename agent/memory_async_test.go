@@ -78,7 +78,7 @@ func TestRunGroundedAnswerStoreIsAwaitable(t *testing.T) {
 	// synchronizes with it, after which the store's status note is visible.
 	obs := &recordObserver{}
 	sp := &scripted{replies: []string{"run echo hi", "answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Memory:        fakeMem{},

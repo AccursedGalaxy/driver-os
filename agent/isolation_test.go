@@ -56,8 +56,8 @@ func TestRefusesTooWeakSandbox(t *testing.T) {
 		name string
 		run  func(context.Context, Config) (*RunResult, error)
 	}{
-		{"text", Run},
-		{"native", RunNative},
+		{"text", runT},
+		{"native", runNativeT},
 	} {
 		t.Run(loop.name, func(t *testing.T) {
 			lsb, err := local.New(t.TempDir()) // IsolationNone.
@@ -87,7 +87,7 @@ func TestRefusesTooWeakSandbox(t *testing.T) {
 // TestNilSandboxFailsClosed proves the gate fails CLOSED: a nil Sandbox under a
 // non-zero MinIsolation is a refusal, not a panic on Capabilities().
 func TestNilSandboxFailsClosed(t *testing.T) {
-	_, err := Run(context.Background(), Config{Model: failIfCalled{t}, Task: "x", MinIsolation: sandbox.IsolationKernel})
+	_, err := runT(context.Background(), Config{Model: failIfCalled{t}, Task: "x", MinIsolation: sandbox.IsolationKernel})
 	if err == nil || !strings.Contains(err.Error(), "Sandbox") {
 		t.Fatalf("nil sandbox should be rejected as invalid setup, got %v", err)
 	}
@@ -97,7 +97,7 @@ func TestNilSandboxFailsClosed(t *testing.T) {
 // sandbox meets MinIsolation, the run proceeds to the model as normal.
 func TestAdmitsStrongEnoughSandbox(t *testing.T) {
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:        sp,
 		Sandbox:      fakeIso{iso: sandbox.IsolationKernel},
 		Task:         "x",
@@ -134,7 +134,7 @@ func TestNetworkFloor(t *testing.T) {
 	for _, loop := range []struct {
 		name string
 		run  func(context.Context, Config) (*RunResult, error)
-	}{{"text", Run}, {"native", RunNative}} {
+	}{{"text", runT}, {"native", runNativeT}} {
 		t.Run(loop.name+"/refuses-network", func(t *testing.T) {
 			res, err := loop.run(context.Background(), Config{Model: failIfCalled{t}, Sandbox: fakeIso{network: true}, Task: "x", RequireNetworkOff: true, VerifyCmd: "must-not-run"})
 			if err != nil {
@@ -158,7 +158,7 @@ func TestNetworkFloor(t *testing.T) {
 }
 
 func TestNetworkFloorNilSandboxRefuses(t *testing.T) {
-	res, err := Run(context.Background(), Config{Model: failIfCalled{t}, Task: "x", RequireNetworkOff: true})
+	res, err := runT(context.Background(), Config{Model: failIfCalled{t}, Task: "x", RequireNetworkOff: true})
 	if err != nil {
 		t.Fatal(err)
 	}

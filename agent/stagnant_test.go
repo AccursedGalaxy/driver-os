@@ -30,7 +30,7 @@ func TestRunFingerprintAssertionExemption(t *testing.T) {
 func TestStagnantDetectorAssertionExemption(t *testing.T) {
 	// c. Through the detector: feed turnTracker.observeRun three failing observations
 	// that differ ONLY in the got-value of an assertion line => no kill (returns kill=false each time).
-	tracker := newTurnTracker(Config{}, 0, DefaultTerminationPolicy(), nil)
+	tracker := newTurnTrackerT(Config{}, 0, DefaultTerminationPolicy(), nil)
 	obsA := "exit 1 (10ms)\nwant 42, got 1"
 	obsB := "exit 1 (10ms)\nwant 42, got 2"
 	obsC := "exit 1 (10ms)\nwant 42, got 3"
@@ -46,7 +46,7 @@ func TestStagnantDetectorAssertionExemption(t *testing.T) {
 	}
 
 	// Feed three byte-identical failing observations => the third returns kill=true (unchanged strict behavior).
-	tracker2 := newTurnTracker(Config{}, 0, DefaultTerminationPolicy(), nil)
+	tracker2 := newTurnTrackerT(Config{}, 0, DefaultTerminationPolicy(), nil)
 	obsIdentical := "exit 1 (10ms)\nbody"
 	if kill, _ := tracker2.observeRun(obsIdentical); kill {
 		t.Error("first failure should not kill")

@@ -21,16 +21,16 @@ type conformanceLoop struct {
 
 func conformanceLoops(textReplies []string, nativeTurns [][]llm.ContentPart) []conformanceLoop {
 	return []conformanceLoop{
-		{name: "Run", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
+		{name: "runT", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
 			sp := &scripted{replies: textReplies}
 			cfg.Model = sp
-			res, err := Run(ctx, cfg)
+			res, err := runT(ctx, cfg)
 			return res, sp, err
 		}},
-		{name: "RunNative", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
+		{name: "runNativeT", run: func(ctx context.Context, cfg Config) (*RunResult, any, error) {
 			ns := &nativeScript{turns: nativeTurns}
 			cfg.Model = ns
-			res, err := RunNative(ctx, cfg)
+			res, err := runNativeT(ctx, cfg)
 			return res, ns, err
 		}},
 	}
@@ -390,7 +390,7 @@ func TestConformance_BudgetStops(t *testing.T) {
 		for _, tc := range []struct {
 			name string
 			run  func(context.Context, Config) (*RunResult, error)
-		}{{"Run", Run}, {"RunNative", RunNative}} {
+		}{{"runT", runT}, {"runNativeT", runNativeT}} {
 			t.Run(tc.name, func(t *testing.T) {
 				cfg := conformanceBaseConfig(t)
 				cfg.Model = &blockProvider{}
@@ -430,7 +430,7 @@ func TestConformance_CallerCancel(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		run  func(context.Context, Config) (*RunResult, error)
-	}{{"Run", Run}, {"RunNative", RunNative}} {
+	}{{"runT", runT}, {"runNativeT", runNativeT}} {
 		t.Run(tc.name, func(t *testing.T) {
 			bp := &blockProvider{blocked: make(chan struct{})}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -468,7 +468,7 @@ func TestConformance_NativeFinishToolAnswered(t *testing.T) {
 	cfg.Tools = finishTools(t)
 	cfg.FinishTool = "say"
 	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestConformance_EmptyFinishToolUnverified(t *testing.T) {
 	cfg.Tools = finishTools(t)
 	cfg.FinishTool = "say"
 	cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{})}}}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestConformance_TrustedFinishBypassesCompletionOnly(t *testing.T) {
 		cfg.FinishToolTrustsCaller = true
 		cfg.VerifyCmd = "false"
 		cfg.Model = &nativeScript{turns: [][]llm.ContentPart{{finishCall("f1", map[string]any{"message": "done"})}}}
-		res, err := RunNative(context.Background(), cfg)
+		res, err := runNativeT(context.Background(), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -523,7 +523,7 @@ func TestConformance_TrustedFinishBypassesCompletionOnly(t *testing.T) {
 		cfg.FinishTool = "say"
 		cfg.FinishToolTrustsCaller = true
 		cfg.Model = &cancelAfterGenerate{cancel: cancel, parts: []llm.ContentPart{finishCall("f1", map[string]any{"message": "done"})}}
-		res, err := RunNative(ctx, cfg)
+		res, err := runNativeT(ctx, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -550,7 +550,7 @@ func TestConformance_TrustedFinishBypassesCompletionOnly(t *testing.T) {
 			structuredCall("c1", "run", map[string]any{"command": "printf changed > x_test.go"}),
 			finishCall("f1", map[string]any{"message": "done"}),
 		}}}
-		res, err := RunNative(context.Background(), cfg)
+		res, err := runNativeT(context.Background(), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -588,8 +588,8 @@ func TestConformance_PrecedenceCancelBeatsVerifyAtAnswer(t *testing.T) {
 		text  string
 		run   func(context.Context, Config) (*RunResult, error)
 	}{
-		{name: "Run", text: "answer done", run: Run},
-		{name: "RunNative", parts: []llm.ContentPart{llm.Text("done")}, run: RunNative},
+		{name: "runT", text: "answer done", run: runT},
+		{name: "runNativeT", parts: []llm.ContentPart{llm.Text("done")}, run: runNativeT},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -725,13 +725,13 @@ func TestConformance_KilledRepeatIgnoresReasoningWhenObservationStagnates(t *tes
 		name string
 		run  func(context.Context, Config) (*RunResult, error)
 	}{
-		{name: "Run", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
+		{name: "runT", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
 			cfg.Model = textModel
-			return Run(ctx, cfg)
+			return runT(ctx, cfg)
 		}},
-		{name: "RunNative", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
+		{name: "runNativeT", run: func(ctx context.Context, cfg Config) (*RunResult, error) {
 			cfg.Model = &nativeScript{turns: nativeTurns}
-			return RunNative(ctx, cfg)
+			return runNativeT(ctx, cfg)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -818,7 +818,7 @@ func TestConformance_CallerCancelWithCause(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		run  func(context.Context, Config) (*RunResult, error)
-	}{{"Run", Run}, {"RunNative", RunNative}} {
+	}{{"runT", runT}, {"runNativeT", runNativeT}} {
 		t.Run(tc.name, func(t *testing.T) {
 			bp := &blockProvider{blocked: make(chan struct{})}
 			ctx, cancel := context.WithCancelCause(context.Background())

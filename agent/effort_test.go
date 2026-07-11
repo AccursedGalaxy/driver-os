@@ -31,7 +31,7 @@ func (r *effortRecorder) Generate(_ context.Context, req llm.Request) (*llm.Resp
 
 func TestReasoningEffortRidesEveryModelCall(t *testing.T) {
 	rec := &effortRecorder{}
-	if _, err := RunNative(context.Background(), Config{
+	if _, err := runNativeT(context.Background(), Config{
 		Model:           rec,
 		Sandbox:         sbWith(t, nil),
 		Task:            "say done",
@@ -51,7 +51,7 @@ func TestReasoningEffortRidesEveryModelCall(t *testing.T) {
 
 func TestReasoningEffortDefaultsUnset(t *testing.T) {
 	rec := &effortRecorder{}
-	if _, err := RunNative(context.Background(), Config{
+	if _, err := runNativeT(context.Background(), Config{
 		Model:   rec,
 		Sandbox: sbWith(t, nil),
 		Task:    "say done",

@@ -137,7 +137,7 @@ func TestDiffScopeViolationViaRun(t *testing.T) {
 		{structuredCall("c1", "run", map[string]any{"command": "echo sabotage >> outside.txt"})},
 		{llm.Text("done")},
 	}}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:     ns,
 		Sandbox:   sb,
 		Root:      root,
@@ -189,7 +189,7 @@ func TestDiffScopeInScopeOnlyAnswered(t *testing.T) {
 		{structuredCall("c1", "write_file", map[string]any{"path": "inside/x.go", "content": "package inside // updated\n"})},
 		{llm.Text("updated in-scope file")},
 	}}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:     ns,
 		Sandbox:   sb,
 		Root:      root,
@@ -211,7 +211,7 @@ func TestDiffScopeFenceWins(t *testing.T) {
 	sb := sbWith(t, map[string]string{"inside/x_test.go": "package inside // test\n"})
 	// Apply diff-scope first (inside/**), then test-fence (*_test.go).
 	tools := applyDiffScope(DefaultTools(sb, defaultRunTimeout), []string{"inside/**"}, sb)
-	tools = applyTestFence(tools, []string{"*_test.go"}, sb)
+	tools = applyTestFence(tools, []string{"*_test.go"}, sb, false, "")
 
 	// x_test.go is inside the diff scope BUT fenced — the fence refusal should fire.
 	_, err := tools["write_file"].RunJSON(context.Background(), []byte(`{"path":"inside/x_test.go","content":"sabotaged"}`))
@@ -258,7 +258,7 @@ func TestDiffScopeNonGitWorkspace(t *testing.T) {
 		Obs:       rec,
 	}
 
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestDiffScopeViolationWithoutVerifyCmd(t *testing.T) {
 		{structuredCall("c1", "run", map[string]any{"command": "echo sabotage >> outside.txt"})},
 		{structuredCall("c2", "run", map[string]any{"command": "echo filler"})},
 	}}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sb,
 		Root:          root,

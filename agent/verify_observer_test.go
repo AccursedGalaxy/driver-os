@@ -43,7 +43,7 @@ func TestVerifyObserverSeesFinishGateResult(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &verifySpy{}
-			res, err := RunNative(context.Background(), Config{
+			res, err := runNativeT(context.Background(), Config{
 				Model:     &nativeScript{turns: [][]llm.ContentPart{{llm.Text("all done")}}},
 				Sandbox:   sbWith(t, map[string]string{"go.mod": "module x\n"}),
 				Task:      "test task",
@@ -99,7 +99,7 @@ func TestVerifyObserverSilentOnUserCancel(t *testing.T) {
 	cfg := Config{Sandbox: sbWith(t, nil), VerifyCmd: "true", Obs: spy}
 	gs := mustNewGates(t, context.Background(), cfg, defaultRunTimeout)
 	gs.upgradeIfVerified(ctx, &RunResult{Outcome: HitCap})
-	verifyTermination(ctx, cfg, false, time.Second)
+	verifyTerminationT(ctx, cfg, false, time.Second)
 	if len(spy.oks) != 0 {
 		t.Fatalf("observer saw %v on user cancel; a skipped check must emit nothing", spy.oks)
 	}
@@ -113,7 +113,7 @@ func TestSessionSetVerifyCmd(t *testing.T) {
 		saw = append(saw, cfg.VerifyCmd)
 		return &RunResult{Outcome: Answered, Answer: "ok"}, nil
 	}
-	s := NewSession(Config{Model: swapProvider{id: "m"}}, loop)
+	s := newSessionT2(Config{Model: swapProvider{id: "m"}}, loop)
 	if _, err := s.Send(context.Background(), "first"); err != nil {
 		t.Fatalf("Send 1: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestSessionSetReviewer(t *testing.T) {
 		saw = append(saw, cfg.Reviewer)
 		return &RunResult{Outcome: Answered, Answer: "ok"}, nil
 	}
-	s := NewSession(Config{Model: swapProvider{id: "m"}}, loop)
+	s := newSessionT2(Config{Model: swapProvider{id: "m"}}, loop)
 	if _, err := s.Send(context.Background(), "first"); err != nil {
 		t.Fatalf("Send 1: %v", err)
 	}

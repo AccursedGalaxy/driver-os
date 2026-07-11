@@ -39,7 +39,7 @@ func TestSpiralKillRecordsDetectorCounters(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"list_dir a", "list_dir b", "list_dir a", "list_dir b", "list_dir a", "list_dir b",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model: sp, Sandbox: sbWith(t, map[string]string{"a/x": "1", "b/x": "1"}),
 		Task: "t", MaxIterations: 20,
 	})

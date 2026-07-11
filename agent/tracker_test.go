@@ -8,7 +8,7 @@ import (
 // ---- Green-repeat nudge state machine ----
 
 func TestGreenRepeatNudgeFiresAtThreeIdenticalGreens(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 
 	// Three identical passing runs with no mutations in between.
 	green := "exit 0 (5ms)\nstdout:\nok"
@@ -28,7 +28,7 @@ func TestGreenRepeatNudgeFiresAtThreeIdenticalGreens(t *testing.T) {
 }
 
 func TestGreenRepeatNudgeDoesNotFireAtTwo(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	green := "exit 0 (5ms)\nstdout:\nok"
 	tr.observeRun(green)
 	tr.observeRun(green)
@@ -41,7 +41,7 @@ func TestGreenRepeatNudgeDoesNotFireAtTwo(t *testing.T) {
 }
 
 func TestGreenRepeatNudgeResetsOnMutation(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	green := "exit 0 (5ms)\nstdout:\nok"
 
 	// Two greens, then a mutating action, then a third green.
@@ -58,7 +58,7 @@ func TestGreenRepeatNudgeResetsOnMutation(t *testing.T) {
 }
 
 func TestGreenRepeatNudgeResetsOnFailingRun(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	green := "exit 0 (5ms)\nstdout:\nok"
 	fail := "exit 1 (5ms)\nstderr:\nboom"
 
@@ -75,7 +75,7 @@ func TestGreenRepeatNudgeResetsOnFailingRun(t *testing.T) {
 }
 
 func TestGreenRepeatNudgeDoesNotAccumulateOnDifferentGreen(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 
 	// Different fingerprints for different green commands — distinct non-numeric
 	// body text so runFingerprint produces different results.
@@ -98,7 +98,7 @@ func TestGreenRepeatNudgeDoesNotAccumulateOnDifferentGreen(t *testing.T) {
 }
 
 func TestGreenRepeatNudgeFiresAtMostOnce(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	green := "exit 0 (5ms)\nstdout:\nok"
 
 	for i := 0; i < 5; i++ {
@@ -120,7 +120,7 @@ func TestGreenRepeatNudgeFiresAtMostOnce(t *testing.T) {
 }
 
 func TestGreenRepeatNudgedFlagPreventsRefire(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 
 	// Manually set state to simulate prior fire.
 	tr.greenRepeat = 3
@@ -134,7 +134,7 @@ func TestGreenRepeatNudgedFlagPreventsRefire(t *testing.T) {
 func TestGreenRepeatNudgeDoesNotInterfereWithStagnant(t *testing.T) {
 	// The green-repeat counter and the stagnant (failing-run) counter are
 	// independent: a green run resets stagnant, a failing run resets green-repeat.
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	fail := "exit 1 (5ms)\nstderr:\nboom"
 	green := "exit 0 (5ms)\nstdout:\nok"
 
@@ -191,7 +191,7 @@ func TestEscalatingRepeatNudgeText(t *testing.T) {
 }
 
 func TestToolObservationRepeatCountIgnoresDecoratingNudges(t *testing.T) {
-	tr := newTurnTracker(Config{}, 20, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 20, DefaultTerminationPolicy(), nil)
 	raw := "run {\"command\":\"go test ./...\"}\nOBSERVATION:\nexit 0 (1ms)\nstdout:\nok"
 	decorated := raw + churnNudge + greenRepeatNudgeText + escalatingRepeatNudge(3)
 	for want := 1; want <= 3; want++ {

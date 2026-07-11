@@ -36,8 +36,8 @@ func usageReported(u llm.Usage) bool {
 // noteContextEstimate emits a once-per-run warning when the byte-based prompt
 // estimate approaches a known model window. It is telemetry only: the request
 // is neither blocked nor changed, and reactive eviction remains authoritative.
-func noteContextEstimate(cfg Config, req llm.Request, noted *bool) {
-	if *noted || cfg.ModelInfo.ContextWindow <= 0 {
+func noteContextEstimate(rt Runtime, req llm.Request, noted *bool) {
+	if *noted || rt.ModelInfo.ContextWindow <= 0 {
 		return
 	}
 	bytes := len(req.System)
@@ -58,18 +58,18 @@ func noteContextEstimate(cfg Config, req llm.Request, noted *bool) {
 		}
 	}
 	estimate := (bytes + 2) / 3
-	window := cfg.ModelInfo.ContextWindow
+	window := rt.ModelInfo.ContextWindow
 	if estimate*100 >= window*80 {
-		cfg.Obs.Note(fmt.Sprintf("context estimate ~%d tokens >= 80%% of model window %d (byte-based estimate)", estimate, window))
+		rt.Obs.Note(fmt.Sprintf("context estimate ~%d tokens >= 80%% of model window %d (byte-based estimate)", estimate, window))
 		*noted = true
 	}
 }
 
-// dollarBudgetStop checks Config.MaxTotalCostUSD at the same turn boundary as
-// MaxTotalTokens. It prices cumulative usage, so a crossing turn is already in
-// res.Usage and is not discarded; callers pass turns=i-1 from the loop header.
-func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (bool, string) {
-	if cfg.MaxTotalCostUSD <= 0 {
+// dollarBudgetStop checks the spec's MaxTotalCostUSD at the same turn boundary
+// as MaxTotalTokens. It prices cumulative usage, so a crossing turn is already
+// in res.Usage and is not discarded; callers pass turns=i-1 from the loop header.
+func dollarBudgetStop(maxTotalCostUSD float64, allowUnpriced bool, rt Runtime, ev *evidenceLog, u llm.Usage, turns int, missingNoted *bool) (bool, string) {
+	if maxTotalCostUSD <= 0 {
 		return false, ""
 	}
 
@@ -78,47 +78,47 @@ func dollarBudgetStop(cfg Config, u llm.Usage, turns int, missingNoted *bool) (b
 		ok         bool
 		missingMsg string
 	)
-	if cfg.Spend != nil {
-		cost, ok = cfg.Spend.Floor()
-		if !ok && !cfg.Spend.reported() {
+	if rt.Spend != nil {
+		cost, ok = rt.Spend.Floor()
+		if !ok && !rt.Spend.reported() {
 			return false, ""
 		}
-		if ok && cost >= cfg.MaxTotalCostUSD {
-			return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, cfg.MaxTotalCostUSD, turns)
+		if ok && cost >= maxTotalCostUSD {
+			return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, maxTotalCostUSD, turns)
 		}
-		_, complete := cfg.Spend.USD()
+		_, complete := rt.Spend.USD()
 		if !complete {
 			ok = false
-			missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
+			missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", maxTotalCostUSD)
 		}
 	} else {
 		if !usageReported(u) {
 			return false, ""
 		}
-		if cfg.CostFn == nil {
-			missingMsg = fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
+		if rt.CostFn == nil {
+			missingMsg = fmt.Sprintf("dollar budget %.6f configured but no CostFn is available; continuing without dollar enforcement", maxTotalCostUSD)
 		} else {
-			cost, ok = cfg.CostFn(u)
+			cost, ok = rt.CostFn(u)
 			if !ok {
-				missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", cfg.MaxTotalCostUSD)
+				missingMsg = fmt.Sprintf("dollar budget %.6f configured but cost could not be priced; continuing without dollar enforcement", maxTotalCostUSD)
 			}
 		}
 	}
 	if !ok {
-		if !cfg.AllowUnpricedSpend {
-			return true, fmt.Sprintf("dollar budget $%.6f configured but spend is unpriceable; failing closed — set AllowUnpricedSpend to continue unpriced", cfg.MaxTotalCostUSD)
+		if !allowUnpriced {
+			return true, fmt.Sprintf("dollar budget $%.6f configured but spend is unpriceable; failing closed — set AllowUnpricedSpend to continue unpriced", maxTotalCostUSD)
 		}
 		if !*missingNoted {
-			cfg.Obs.Note(missingMsg)
+			rt.Obs.Note(missingMsg)
 			*missingNoted = true
 		}
-		if cfg.evidence != nil {
-			cfg.evidence.unpriced = true
+		if ev != nil {
+			ev.unpriced = true
 		}
 		return false, ""
 	}
-	if cost >= cfg.MaxTotalCostUSD {
-		return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, cfg.MaxTotalCostUSD, turns)
+	if cost >= maxTotalCostUSD {
+		return true, fmt.Sprintf("hit dollar budget ($%.6f spent >= cap $%.6f) after %d turn(s)", cost, maxTotalCostUSD, turns)
 	}
 	return false, ""
 }
@@ -153,14 +153,14 @@ func truncate(s string) string { return clip(s, observationCap) }
 // can't be compacted any further — or is still overflowing after
 // evictionMaxRetries paid attempts — is returned AS llm.ErrContextLength so the
 // caller degrades to HitContextLimit instead of mislabelling it a transport fault.
-func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, []llm.Message, error) {
+func generateWithEviction(ctx context.Context, rt Runtime, stream bool, req llm.Request) (*llm.Response, []llm.Message, error) {
 	droppedEncryptedReasoning := false
 	for attempt := 0; ; attempt++ {
-		resp, err := generateWithRetry(ctx, cfg, req)
+		resp, err := generateWithRetry(ctx, rt, stream, req)
 		if llm.IsEncryptedReplayRejection(err) && !droppedEncryptedReasoning {
 			scrubbed, dropped := dropReplayReasoning(req.Messages)
 			if dropped > 0 {
-				cfg.Obs.Note(fmt.Sprintf("encrypted reasoning replay rejected — dropped %d encrypted reasoning item(s) and retrying", dropped))
+				rt.Obs.Note(fmt.Sprintf("encrypted reasoning replay rejected — dropped %d encrypted reasoning item(s) and retrying", dropped))
 				req.Messages = scrubbed
 				droppedEncryptedReasoning = true
 				continue
@@ -176,7 +176,7 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 		if evicted == 0 {
 			return nil, req.Messages, err // can't compact further — let the caller degrade.
 		}
-		cfg.Obs.Note(fmt.Sprintf("context overflow — evicted %d oldest turn(s) (%d→%d msgs), retry %d/%d (HP-1 reactive fallback)",
+		rt.Obs.Note(fmt.Sprintf("context overflow — evicted %d oldest turn(s) (%d→%d msgs), retry %d/%d (HP-1 reactive fallback)",
 			evicted, len(req.Messages), len(shrunk), attempt+1, evictionMaxRetries))
 		req.Messages = shrunk
 	}
@@ -273,15 +273,15 @@ var retryBackoffBase = 2 * time.Second
 // with the error so the loops' answer salvage keeps what the model already
 // said. Non-retryable errors (canceled, auth, context length — the eviction
 // wrapper's case) pass through untouched on the first attempt.
-func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
+func generateWithRetry(ctx context.Context, rt Runtime, stream bool, req llm.Request) (*llm.Response, error) {
 	for attempt := 0; ; attempt++ {
-		resp, err := generateOnce(ctx, cfg, req)
+		resp, err := generateOnce(ctx, rt, stream, req)
 		var perr *llm.ProviderError
 		if err == nil || llm.IsEncryptedReplayRejection(err) || !errors.As(err, &perr) || !perr.Retryable || attempt >= transientMaxRetries {
 			return resp, err
 		}
 		delay := retryBackoffBase << attempt
-		cfg.Obs.Note(fmt.Sprintf("transient provider error — retry %d/%d in %s: %v",
+		rt.Obs.Note(fmt.Sprintf("transient provider error — retry %d/%d in %s: %v",
 			attempt+1, transientMaxRetries, delay, err))
 		select {
 		case <-ctx.Done(): // interrupted mid-backoff: surface the provider error, not a sleep artifact.
@@ -304,11 +304,11 @@ func generateWithRetry(ctx context.Context, cfg Config, req llm.Request) (*llm.R
 // full fidelity — anthropic's API REJECTS a replayed tool-using turn missing
 // its signed thinking blocks, and openaicompat reassembles the streamed
 // `reasoning_details` fragments (Gemini's encrypted signature) the same way.
-func generateOnce(ctx context.Context, cfg Config, req llm.Request) (*llm.Response, error) {
-	if cfg.Stream && cfg.Model.Capabilities().Streaming {
-		return collectStream(cfg.Model.Stream(ctx, req), deltaSink(cfg.Obs))
+func generateOnce(ctx context.Context, rt Runtime, stream bool, req llm.Request) (*llm.Response, error) {
+	if stream && rt.Model.Capabilities().Streaming {
+		return collectStream(rt.Model.Stream(ctx, req), deltaSink(rt.Obs))
 	}
-	return cfg.Model.Generate(ctx, req)
+	return rt.Model.Generate(ctx, req)
 }
 
 // collectStream drains a chunk stream into a Response, invoking onDelta (if

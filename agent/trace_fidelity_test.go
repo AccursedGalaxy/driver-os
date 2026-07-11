@@ -15,7 +15,7 @@ func TestRunStepRecordsAugmentedObservation(t *testing.T) {
 	// transcript diverge from the conversation, and eval/dogfood replays debug
 	// against text the model never saw.
 	sp := &scripted{replies: []string{"run exit 1", "answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:          sp,
 		Sandbox:        sbWith(t, nil),
 		Task:           "t",
@@ -51,7 +51,7 @@ func TestRunNativeToolTurnRecordsReply(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, nil),
 		Task:          "t",

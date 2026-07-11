@@ -65,8 +65,8 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return stopWith(Canceled, "run canceled by the caller (interrupt)", "")
 	}
-	if reason != "" && g.cfg.VerifyContinue && in.canContinue && !noContinue {
-		g.cfg.Obs.Note("finish rejected (not verified) — continuing")
+	if reason != "" && g.d.vs.VerifyContinue && in.canContinue && !noContinue {
+		g.d.rt.Obs.Note("finish rejected (not verified) — continuing")
 		return continueWith("OBSERVATION:\nNot finished — " + in.verifyContinuePhrase + ", but the task is not verified:\n" + reason + "\nKeep working: fix the code and re-run until it passes.")
 	}
 	if reason != "" {
@@ -75,7 +75,7 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 			prefix = "answer not verified"
 		}
 		g.reviewUnverified(ctx)
-		g.cfg.Obs.Note(prefix + " — " + reason)
+		g.d.rt.Obs.Note(prefix + " — " + reason)
 		return stopWith(outcome, reason, in.answer)
 	}
 	if fb, detail := g.reproFinish(ctx); fb != "" {
@@ -83,42 +83,42 @@ func (g *gates) finish(ctx context.Context, in finishInput) finishDecision {
 		// a red gate: feed it back whenever the loop can continue, even
 		// without -verify-continue — otherwise the first answer attempt dies
 		// before the model gets the nudge. repro_red mirrors verify-red.
-		if in.canContinue && (detail == "repro_missing" || g.cfg.VerifyContinue) {
-			g.cfg.Obs.Note("finish rejected (repro-first) — continuing")
+		if in.canContinue && (detail == "repro_missing" || g.d.vs.VerifyContinue) {
+			g.d.rt.Obs.Note("finish rejected (repro-first) — continuing")
 			return continueWith("OBSERVATION:\nNot finished — " + fb + "\nKeep working: satisfy the repro-first gate before answering.")
 		}
 		g.reviewUnverified(ctx)
-		g.cfg.Obs.Note("answer not verified — " + detail)
+		g.d.rt.Obs.Note("answer not verified — " + detail)
 		return stopWith(Unverified, detail, in.answer)
 	}
 	if strings.TrimSpace(in.answer) == "" {
 		g.reviewUnverified(ctx)
-		g.cfg.Obs.Note("empty final answer — recording as unverified, not a clean pass")
+		g.d.rt.Obs.Note("empty final answer — recording as unverified, not a clean pass")
 		return stopWith(Unverified, "empty final answer — the model stopped without producing an answer", in.answer)
 	}
 	if !in.trusted {
 		if fb, blockReason := g.reviewFinish(ctx, in.canContinue); fb != "" {
-			g.cfg.Obs.Note("finish rejected (review blockers) — continuing")
+			g.d.rt.Obs.Note("finish rejected (review blockers) — continuing")
 			return continueWith("OBSERVATION:\n" + fb)
 		} else if blockReason != "" {
 			prefix := in.reviewBlockedPrefix
 			if prefix == "" {
 				prefix = "answer blocked by review"
 			}
-			g.cfg.Obs.Note(prefix + " — " + blockReason)
+			g.d.rt.Obs.Note(prefix + " — " + blockReason)
 			return stopWith(Unverified, blockReason, in.answer)
 		}
 	}
-	g.cfg.Obs.Done(in.answer)
+	g.d.rt.Obs.Done(in.answer)
 	if in.grounded {
-		if g.cfg.DisableMemoryStore && g.cfg.Memory != nil {
-			g.cfg.Obs.Note("memory: store disabled for this run")
+		if g.d.pol.DisableMemoryStore && g.d.rt.Memory != nil {
+			g.d.rt.Obs.Note("memory: store disabled for this run")
 			return answeredWith(in.answer, nil)
 		}
-		return answeredWith(in.answer, rememberAsync(ctx, g.cfg.Obs, g.cfg.Memory, in.memoryScope, g.cfg.Task, in.answer))
+		return answeredWith(in.answer, rememberAsync(ctx, g.d.rt.Obs, g.d.rt.Memory, in.memoryScope, g.d.task, in.answer))
 	}
-	if g.cfg.Memory != nil {
-		g.cfg.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
+	if g.d.rt.Memory != nil {
+		g.d.rt.Obs.Note("memory: answer not tool-verified this run — not stored (avoids amplifying guessed/recalled facts)")
 	}
 	return answeredWith(in.answer, nil)
 }

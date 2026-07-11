@@ -34,7 +34,7 @@ func TestInfraFaultSignature(t *testing.T) {
 
 func TestVerifyTerminationInfraFaultIsInconclusive(t *testing.T) {
 	cfg := Config{Sandbox: sbWith(t, nil), VerifyCmd: "sh -c 'echo disk quota exceeded; exit 1'"}
-	reason, out := verifyTermination(context.Background(), cfg, false, time.Second)
+	reason, out := verifyTerminationT(context.Background(), cfg, false, time.Second)
 	if !strings.Contains(reason, "INCONCLUSIVE") || !strings.Contains(reason, "environment fault") {
 		t.Fatalf("reason = %q, want inconclusive environment fault", reason)
 	}
@@ -43,14 +43,14 @@ func TestVerifyTerminationInfraFaultIsInconclusive(t *testing.T) {
 	}
 
 	cfg.VerifyCmd = "sh -c 'echo FAIL; exit 1'"
-	reason, _ = verifyTermination(context.Background(), cfg, false, time.Second)
+	reason, _ = verifyTerminationT(context.Background(), cfg, false, time.Second)
 	if !strings.Contains(reason, "did not pass") {
 		t.Fatalf("reason = %q, want normal red", reason)
 	}
 }
 
 func TestStagnationIgnoresInfraFault(t *testing.T) {
-	tr := newTurnTracker(Config{}, 8, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 8, DefaultTerminationPolicy(), nil)
 	// Real observation format: isRunFailure keys on the "exit N " prefix.
 	obs := "exit 1 (5ms)\nstdout:\ndisk quota exceeded"
 	for i := 0; i < maxStagnant+1; i++ {
@@ -64,7 +64,7 @@ func TestStagnationIgnoresInfraFault(t *testing.T) {
 // An infra blip between identical real failures must not launder the
 // stagnation streak back to zero — it is no-signal, not progress.
 func TestStagnationSurvivesInfraBlip(t *testing.T) {
-	tr := newTurnTracker(Config{}, 8, DefaultTerminationPolicy(), nil)
+	tr := newTurnTrackerT(Config{}, 8, DefaultTerminationPolicy(), nil)
 	fail := "exit 1 (5ms)\nstdout:\n--- FAIL: TestX\nFAIL"
 	tr.observeRun(fail)
 	if _, count := tr.observeRun(fail); count != 2 {

@@ -21,7 +21,7 @@ func TestSessionPrewarmAutoVerifyDoesNotBlockAndAppliesOnce(t *testing.T) {
 	}}
 	spy := &noteSpy{}
 	var got []Config
-	s := NewSession(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, func(_ context.Context, cfg Config) (*RunResult, error) {
+	s := newSessionT2(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, func(_ context.Context, cfg Config) (*RunResult, error) {
 		got = append(got, cfg)
 		return &RunResult{}, nil
 	})
@@ -72,7 +72,7 @@ func TestSessionPrewarmAutoVerifyAppliesRedBaseline(t *testing.T) {
 	}}
 	spy := &noteSpy{}
 	var got Config
-	s := NewSession(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, func(_ context.Context, cfg Config) (*RunResult, error) {
+	s := newSessionT2(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: spy}, func(_ context.Context, cfg Config) (*RunResult, error) {
 		got = cfg
 		return &RunResult{}, nil
 	})
@@ -102,8 +102,8 @@ func TestSessionWithoutPrewarmResolvesSynchronously(t *testing.T) {
 		return &sandbox.Result{ExitCode: 0}
 	}}
 	var got Config
-	s := NewSession(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: &noteSpy{}}, func(ctx context.Context, cfg Config) (*RunResult, error) {
-		resolveAutoVerify(ctx, &cfg) // the loop's synchronous path, reached because no prewarm marked it resolved
+	s := newSessionT2(Config{Sandbox: sb, Root: ".", AutoVerify: true, Obs: &noteSpy{}}, func(ctx context.Context, cfg Config) (*RunResult, error) {
+		resolveAutoVerifyOld(ctx, &cfg) // the loop's synchronous path, reached because no prewarm marked it resolved
 		got = cfg
 		return &RunResult{}, nil
 	})

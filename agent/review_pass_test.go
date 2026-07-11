@@ -82,7 +82,7 @@ func TestReviewAndRepairParseErrorReviewRequiredYieldsUnverified(t *testing.T) {
 
 	rv := &errReviewer{parseErr: true}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
-	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+	res, err := reviewAndRepairOld(context.Background(), Config{
 		Task:         "fix calc",
 		Root:         root,
 		Sandbox:      sb,
@@ -118,7 +118,7 @@ func TestReviewAndRepairParseErrorDefaultRequiredYieldsUnverified(t *testing.T) 
 
 	rv := &errReviewer{parseErr: true}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
-	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+	res, err := reviewAndRepairOld(context.Background(), Config{
 		Task:         "fix calc",
 		Root:         root,
 		Sandbox:      sb,
@@ -163,7 +163,7 @@ func TestReviewAndRepairParseErrorFailOpenStaysAnswered(t *testing.T) {
 
 	rv := &errReviewer{parseErr: true}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
-	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+	res, err := reviewAndRepairOld(context.Background(), Config{
 		Task:         "fix calc",
 		Root:         root,
 		Sandbox:      sb,
@@ -225,7 +225,7 @@ func TestReviewAndRepairReReviewsFullFinalDiffAndMergesReports(t *testing.T) {
 	}}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done", Usage: llm.Usage{PromptTokens: 100, TotalTokens: 100}}
 	var repairReviewerNil bool
-	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+	res, err := reviewAndRepairOld(context.Background(), Config{
 		Task:         "fix calc",
 		Root:         root,
 		Sandbox:      sb,
@@ -300,7 +300,7 @@ func TestReviewAndRepairSurvivingBlockersAfterAllRoundsUnverified(t *testing.T) 
 		{Findings: []ReviewFinding{blockerFinding}, Usage: llm.Usage{TotalTokens: 11}, Model: "fake-reviewer"},
 	}}
 	base := &RunResult{Task: "fix calc", Root: root, Outcome: Answered, Answer: "done"}
-	res, err := ReviewAndRepairExistingWorkspace(context.Background(), Config{
+	res, err := reviewAndRepairOld(context.Background(), Config{
 		Task:         "fix calc",
 		Root:         root,
 		Sandbox:      sb,

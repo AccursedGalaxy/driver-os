@@ -33,7 +33,7 @@ func TestPlanStageSeedsTaskAndReport(t *testing.T) {
 		RunID: "plan-run-1",
 	}}
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "test task",
@@ -72,7 +72,7 @@ func TestPlanStageFailsOpen(t *testing.T) {
 		err: errors.New("planner exploded"),
 	}
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "test task",
@@ -100,7 +100,7 @@ func TestPlanStageFailsOpen(t *testing.T) {
 func TestPlanStageEmptyPlanSkips(t *testing.T) {
 	stub := &plannerStub{res: &PlanResult{Plan: "  \n ", Model: "m"}}
 	sp := &scripted{replies: []string{"answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "test task",
@@ -132,7 +132,7 @@ func TestPlanStageOffIsInert(t *testing.T) {
 func TestPlanStageContinuingFlag(t *testing.T) {
 	stub := &plannerStub{res: &PlanResult{Plan: "p", Model: "m"}}
 	sp := &scripted{replies: []string{"answer done"}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "follow-up",
@@ -160,7 +160,7 @@ func TestSessionSetPlanner(t *testing.T) {
 		saw = append(saw, cfg.Planner)
 		return &RunResult{Outcome: Answered}, nil
 	}
-	s := NewSession(Config{}, loop)
+	s := newSessionT2(Config{}, loop)
 	if _, err := s.Send(context.Background(), "one"); err != nil {
 		t.Fatal(err)
 	}

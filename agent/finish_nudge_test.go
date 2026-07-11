@@ -41,7 +41,7 @@ func TestRunFinishNudgeFiresNearCapWhenSettled(t *testing.T) {
 		"run echo hi", // green run -> lastRunPassed
 		"read_file a", "read_file b", "read_file c", "read_file d",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:             sp,
 		Sandbox:           sbWith(t, map[string]string{"a": "1\n", "b": "2\n", "c": "3\n", "d": "4\n"}),
 		Task:              "t",
@@ -62,7 +62,7 @@ func TestRunFinishNudgeOffByDefault(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"run echo hi", "read_file a", "read_file b", "read_file c", "read_file d",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, map[string]string{"a": "1\n", "b": "2\n", "c": "3\n", "d": "4\n"}),
 		Task:          "t",
@@ -83,7 +83,7 @@ func TestRunFinishNudgeStaysOutWhenRunRed(t *testing.T) {
 		"run exit 1", // red run -> lastRunPassed stays false
 		"read_file a", "read_file b", "read_file c", "read_file d",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:             sp,
 		Sandbox:           sbWith(t, map[string]string{"a": "1\n", "b": "2\n", "c": "3\n", "d": "4\n"}),
 		Task:              "t",
@@ -106,7 +106,7 @@ func TestRunFinishNudgeStaysOutWhileFilesChurn(t *testing.T) {
 		"run echo hi", // green run
 		"write_file f.txt x", "write_file g.txt y", "write_file h.txt z", "write_file i.txt w",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:             sp,
 		Sandbox:           sbWith(t, nil),
 		Task:              "t",
@@ -132,7 +132,7 @@ func TestRunNativeFinishNudgeFiresNearCapWhenSettled(t *testing.T) {
 		{structuredCall("c5", "read_file", map[string]any{"path": "d"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:             ns,
 		Sandbox:           sbWith(t, map[string]string{"a": "1\n", "b": "2\n", "c": "3\n", "d": "4\n"}),
 		Task:              "t",
@@ -165,7 +165,7 @@ func TestRunGreenRepeatNudgeFiresAfterThreeIdenticalGreens(t *testing.T) {
 		green, // green 3 -> nudge fires here
 		"answer done",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n", "b": "y\n"}),
 		Task:          "t",
@@ -191,7 +191,7 @@ func TestRunGreenRepeatNudgeStaysOutOnDifferentGreens(t *testing.T) {
 		"run echo there", // different command -> fp resets to 1, not 2
 		"answer done",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n"}),
 		Task:          "t",
@@ -217,7 +217,7 @@ func TestRunGreenRepeatNudgeStaysOutWithFileMutation(t *testing.T) {
 		green,
 		"answer done",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Task:          "t",
@@ -248,7 +248,7 @@ func TestRunGreenRepeatNudgeStaysOutOnFailingRun(t *testing.T) {
 		green, // counter=2 — not enough
 		"answer done",
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n", "b": "y\n", "c": "z\n", "d": "w\n"}),
 		Task:          "t",
@@ -275,7 +275,7 @@ func TestRunNativeGreenRepeatNudgeFiresAfterThreeIdenticalGreens(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n", "b": "y\n"}),
 		Task:          "t",
@@ -323,7 +323,7 @@ func TestRunNativeGreenRepeatNudgeStaysOutOnDifferentGreens(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n"}),
 		Task:          "t",
@@ -351,7 +351,7 @@ func TestRunNativeGreenRepeatNudgeStaysOutWithFileMutation(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, map[string]string{"a": "x\n", "b": "y\n"}),
 		Task:          "t",
@@ -383,7 +383,7 @@ func TestRunNativeGreenRepeatNudgeStaysOutOnFailingRun(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:         ns,
 		Sandbox:       sbWith(t, map[string]string{"a": "x", "b": "y", "c": "z", "d": "w"}),
 		Task:          "t",

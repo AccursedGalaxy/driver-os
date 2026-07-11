@@ -88,7 +88,7 @@ func TestVerifyBaseline(t *testing.T) {
 				Obs:                spy,
 			}
 			// Use RunNative for simplicity in testing
-			res, err := RunNative(context.Background(), cfg)
+			res, err := runNativeT(context.Background(), cfg)
 			if err != nil {
 				t.Fatalf("RunNative: %v", err)
 			}
@@ -168,7 +168,7 @@ func TestAbortOnRedBaselineNative(t *testing.T) {
 		VerifyCmd:          "false",
 		AbortOnRedBaseline: true,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestAbortOnRedBaselineText(t *testing.T) {
 		VerifyCmd:          "false",
 		AbortOnRedBaseline: true,
 	}
-	res, err := Run(context.Background(), cfg)
+	res, err := runT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestBaselineWarningInSeedMessage(t *testing.T) {
 		Task:      "fix the build",
 		VerifyCmd: "false",
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestVerifyContinueBaselineIdenticalFingerprint(t *testing.T) {
 		VerifyContinue: true,
 		MaxIterations:  10,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestVerifyContinueBaselineDifferentFingerprint(t *testing.T) {
 		VerifyContinue: true,
 		MaxIterations:  10,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestVerifyContinueBaselineRescuePreserved(t *testing.T) {
 		VerifyContinue: true,
 		MaxIterations:  10,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestVerifyTimeoutAtFinish(t *testing.T) {
 		VerifyContinue: true,
 		MaxIterations:  10,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestBaselineTimeoutIsNotRed(t *testing.T) {
 		VerifyCmd:          "go test ./...",
 		AbortOnRedBaseline: true,
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}

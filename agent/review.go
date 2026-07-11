@@ -211,7 +211,7 @@ type ReviewObserver interface {
 // reviewState is the run-scoped review gate: the git base tree captured at run
 // start, the round budget, and the accumulated findings+fates.
 type reviewState struct {
-	cfg        Config
+	root       string
 	maxRounds  int
 	alias      string // model-visible root prefix, for quote-validation path normalization.
 	baseTree   string
@@ -246,23 +246,23 @@ func setupErr(kind, msg string) error { return &SetupError{Kind: kind, Msg: msg}
 // touched, and a dirty tree is fine (the diff is vs the recorded start state,
 // not vs HEAD). A non-git workspace records a skip reason only when review is
 // optional; otherwise an armed-but-inoperable gate is a setup error.
-func newReviewState(ctx context.Context, cfg Config) (*reviewState, error) {
-	if cfg.Reviewer == nil {
+func newReviewState(ctx context.Context, d gateDeps) (*reviewState, error) {
+	if d.rt.Reviewer == nil {
 		return nil, nil
 	}
 	// sessionKey is a fresh nonce per run (not the run ID — the state exists
 	// before the result is stamped); its only contract is same-run stability.
-	rv := &reviewState{cfg: cfg, maxRounds: cfg.ReviewRounds, alias: sandboxAlias(cfg.Sandbox), sessionKey: newRunID()}
+	rv := &reviewState{root: d.root, maxRounds: d.pol.ReviewRounds, alias: sandboxAlias(d.rt.Sandbox), sessionKey: newRunID()}
 	if rv.maxRounds <= 0 {
 		rv.maxRounds = DefaultReviewRounds
 	}
 	switch {
-	case cfg.Root == "":
+	case d.root == "":
 		rv.skip = "review skipped: no workspace root configured"
-	case !vcs.IsRepo(ctx, cfg.Root):
+	case !vcs.IsRepo(ctx, d.root):
 		rv.skip = "review skipped: not a git workspace"
 	default:
-		tree, err := vcs.WriteTree(ctx, cfg.Root)
+		tree, err := vcs.WriteTree(ctx, d.root)
 		if err != nil {
 			rv.skip = "review skipped: could not capture the base tree: " + err.Error()
 		} else {
@@ -270,12 +270,12 @@ func newReviewState(ctx context.Context, cfg Config) (*reviewState, error) {
 		}
 	}
 	if rv.skip != "" {
-		if !cfg.ReviewPolicy.optional() {
+		if !ReviewPolicy(d.pol.ReviewPolicy).optional() {
 			return nil, setupErr("review_unavailable", rv.skip+" (review gate was armed; pass -review-optional to skip and continue)")
 		}
 		rv.status = ReviewUnavailable
-		if cfg.Obs != nil {
-			cfg.Obs.Note(rv.skip)
+		if d.rt.Obs != nil {
+			d.rt.Obs.Note(rv.skip)
 		}
 	}
 	return rv, nil

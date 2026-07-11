@@ -126,7 +126,7 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 
 	// 2. Normal single-model path: protocol/capability mismatch must not
 	//    materialise the fixture (the original HP-11 guard).
-	var run func(context.Context, agent.Config) (*agent.RunResult, error)
+	var run agent.LoopFunc
 	var customRun func(context.Context, agent.Config, string) (*agent.RunResult, *TrialLadder, error)
 
 	if m.Run != nil {
@@ -270,7 +270,14 @@ func RunTrial(ctx context.Context, c Case, m Model, index int) Trial {
 	if customRun != nil {
 		res, ladder, runErr = customRun(ctx, cfg, c.Name)
 	} else {
-		res, runErr = run(ctx, cfg)
+		// The Case's Config is a requested-side template (PROFILES.md §7.5):
+		// the one canonical split resolves it and hands the loop the spec.
+		spec, rt, content, serr := cfg.Split()
+		if serr != nil {
+			tr.Err = "resolve run spec: " + serr.Error()
+			return tr
+		}
+		res, runErr = run(ctx, spec, rt, content)
 	}
 
 	if res != nil {

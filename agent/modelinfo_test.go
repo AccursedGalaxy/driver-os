@@ -11,7 +11,7 @@ import (
 func TestContextEstimateNoteOnce(t *testing.T) {
 	obs := &recordObserver{}
 	model := &scripted{replies: []string{"list_dir .", "answer done"}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:         model,
 		Sandbox:       sbWith(t, nil),
 		Task:          strings.Repeat("x", 300),
@@ -36,7 +36,7 @@ func TestContextEstimateNoteOnce(t *testing.T) {
 func TestUnknownModelInfoEmitsNoContextEstimate(t *testing.T) {
 	obs := &recordObserver{}
 	model := &scripted{replies: []string{"answer done"}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model: model, Sandbox: sbWith(t, nil), Task: strings.Repeat("x", 300), Obs: obs,
 	})
 	if err != nil {

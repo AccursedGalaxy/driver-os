@@ -49,7 +49,7 @@ func reproRepo(t *testing.T, fence ...string) (string, *gates) {
 	if len(fence) > 0 {
 		globs = fence
 	}
-	g, err := newGates(context.Background(), Config{Sandbox: sb, VerifySandbox: sb, Root: root, ReproFirst: true, TestFence: globs, SkipVerifyBaseline: true}, time.Second)
+	g, err := newGatesOld(context.Background(), Config{Sandbox: sb, VerifySandbox: sb, Root: root, ReproFirst: true, TestFence: globs, SkipVerifyBaseline: true}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDeclareReproAcceptsLocksAndRestores(t *testing.T) {
 	if g.repro == nil || g.repro.report.Path != "calc_test.go" {
 		t.Fatalf("repro not recorded: %#v", g.repro)
 	}
-	tools := g.addReproTools(wrapTools(g.cfg, time.Second))
+	tools := g.addReproTools(wrapToolsRepro(g, time.Second))
 	if _, err := tools["edit_file"].RunJSON(context.Background(), []byte(`{"path":"calc_test.go","old":"bad","new":"worse"}`)); err == nil || !strings.Contains(err.Error(), "locked") {
 		t.Fatalf("locked edit got %v", err)
 	}
@@ -108,7 +108,7 @@ func TestDeclareReproAcceptsLocksAndRestores(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "calc_test.go"), []byte(body+"// drift\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if d := g.fence.drift(context.Background(), g.cfg.Sandbox); len(d) == 0 {
+	if d := g.fence.drift(context.Background(), g.d.rt.Sandbox); len(d) == 0 {
 		t.Fatalf("want fence drift")
 	}
 }
@@ -171,7 +171,7 @@ func TestDeclareReproFenceGlobMismatchNoSpuriousDrift(t *testing.T) {
 		if _, ok := g.fence.base["calc_test.go"]; ok {
 			t.Fatalf("non-glob-matching repro path injected into fence snapshot")
 		}
-		if d := g.fence.drift(context.Background(), g.cfg.Sandbox); len(d) != 0 {
+		if d := g.fence.drift(context.Background(), g.d.rt.Sandbox); len(d) != 0 {
 			t.Fatalf("spurious fence drift: %v", d)
 		}
 	}
@@ -181,7 +181,7 @@ func TestDeclareReproFenceGlobMismatchNoSpuriousDrift(t *testing.T) {
 // it is a protocol nudge, not a red gate. Out of budget it stops Unverified.
 func TestFinishReproMissingContinuesWithoutVerifyContinue(t *testing.T) {
 	_, g := reproRepo(t)
-	if g.cfg.VerifyContinue {
+	if g.d.vs.VerifyContinue {
 		t.Fatal("fixture unexpectedly sets VerifyContinue")
 	}
 	d := g.finish(context.Background(), finishInput{answer: "done", canContinue: true, trusted: true})

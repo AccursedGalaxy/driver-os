@@ -17,6 +17,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // VerificationCause refines EvidenceStatus without creating a second status
@@ -74,8 +77,21 @@ func newVerificationRecord(cmd, obs, tree string) VerificationRecord {
 	}
 }
 
+// trackerDeps is the tracker's by-value slice of the resolved policy plus the
+// two runtime handles its detectors need (PROFILES.md §7.1: components receive
+// small per-domain projections, not the whole spec).
+type trackerDeps struct {
+	verifyCmd          string // the ARMED gate command (post auto-verify derivation) — recordRun keys the authoritative gate record on it.
+	churnNudgeRuns     int
+	diagnoseCmd        string
+	diagnoseAfterEdits int
+	finishNudgeWindow  int
+	verifySB           sandbox.Sandbox
+	obs                Observer
+}
+
 type turnTracker struct {
-	cfg      Config
+	deps     trackerDeps
 	maxIter  int
 	policy   TerminationPolicy
 	counters *DetectorCounters
@@ -125,8 +141,23 @@ type turnTracker struct {
 	greenNudged bool
 }
 
-func newTurnTracker(cfg Config, maxIter int, policy TerminationPolicy, counters *DetectorCounters) *turnTracker {
-	return &turnTracker{cfg: cfg, maxIter: maxIter, policy: policy, counters: counters}
+func newTurnTracker(deps trackerDeps, maxIter int, policy TerminationPolicy, counters *DetectorCounters) *turnTracker {
+	return &turnTracker{deps: deps, maxIter: maxIter, policy: policy, counters: counters}
+}
+
+// newTrackerDeps snapshots the tracker's policy slice. Called AFTER auto-verify
+// resolution so vs.Cmd is the armed gate command, exactly like the old
+// post-resolveAutoVerify Config copy.
+func newTrackerDeps(pol runspec.PolicyValue, vs *verifyState, rt Runtime) trackerDeps {
+	return trackerDeps{
+		verifyCmd:          vs.Cmd,
+		churnNudgeRuns:     pol.ChurnNudgeRuns,
+		diagnoseCmd:        pol.DiagnoseCmd,
+		diagnoseAfterEdits: pol.DiagnoseAfterEdits,
+		finishNudgeWindow:  pol.FinishNudgeWindow,
+		verifySB:           rt.verifySandbox(),
+		obs:                rt.Obs,
+	}
 }
 
 // observeRun ingests one `run` observation. A `run` that keeps FAILING with the
@@ -182,7 +213,7 @@ func (t *turnTracker) observeRun(obs string) (kill bool, count int) {
 func (t *turnTracker) recordRun(cmd, obs, tree string) {
 	record := newVerificationRecord(cmd, obs, tree)
 	t.lastRun = record
-	verify := strings.TrimSpace(t.cfg.VerifyCmd)
+	verify := strings.TrimSpace(t.deps.verifyCmd)
 	if verify != "" && record.Command == verify {
 		record.Attempts = t.lastVerify.Attempts + 1
 		t.lastVerify = record
@@ -231,10 +262,10 @@ func (t *turnTracker) observeAction(i int, verb string) (mutated bool) {
 // barely runs the tests so a run-only trigger never fires) — crossed the
 // threshold. The caller appends churnNudge to whatever the model reads next.
 func (t *turnTracker) churnNudge() bool {
-	if t.nudged || t.cfg.ChurnNudgeRuns <= 0 {
+	if t.nudged || t.deps.churnNudgeRuns <= 0 {
 		return false
 	}
-	if t.failRuns >= t.cfg.ChurnNudgeRuns || t.edits >= t.cfg.ChurnNudgeRuns {
+	if t.failRuns >= t.deps.churnNudgeRuns || t.edits >= t.deps.churnNudgeRuns {
 		t.nudged = true
 		return true
 	}
@@ -249,15 +280,15 @@ func (t *turnTracker) churnNudge() bool {
 // decides the wire format (appended to the observation vs a standalone user
 // message).
 func (t *turnTracker) diagnostics(ctx context.Context, runTimeout time.Duration) string {
-	if t.cfg.DiagnoseCmd == "" || t.cfg.DiagnoseAfterEdits <= 0 || t.editsSinceGreen < t.cfg.DiagnoseAfterEdits {
+	if t.deps.diagnoseCmd == "" || t.deps.diagnoseAfterEdits <= 0 || t.editsSinceGreen < t.deps.diagnoseAfterEdits {
 		return ""
 	}
-	switch report, state := diagnoseSource(ctx, t.cfg, runTimeout); state {
+	switch report, state := diagnoseSource(ctx, t.deps.diagnoseCmd, t.deps.verifySB, runTimeout); state {
 	case diagClean:
 		t.editsSinceGreen = 0
 	case diagDirty:
-		t.cfg.Obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
-		return diagnosticsMessage(t.cfg.DiagnoseCmd, report)
+		t.deps.obs.Note("stuck with a broken build — surfacing diagnostics (code-intel slice 1)")
+		return diagnosticsMessage(t.deps.diagnoseCmd, report)
 	}
 	return ""
 }
@@ -269,7 +300,7 @@ func (t *turnTracker) diagnostics(ctx context.Context, runTimeout time.Duration)
 // The i < maxIter guard guarantees at least one more turn to act on it (a hint
 // on the very last turn would be wasted). See Config.FinishNudgeWindow.
 func (t *turnTracker) finishNudge(i int) bool {
-	w := t.cfg.FinishNudgeWindow
+	w := t.deps.finishNudgeWindow
 	if t.finishNudged || w <= 0 || i >= t.maxIter {
 		return false
 	}

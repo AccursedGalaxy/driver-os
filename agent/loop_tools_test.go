@@ -100,7 +100,7 @@ func runNative(t *testing.T, files map[string]string, turns [][]llm.ContentPart)
 	t.Helper()
 	ns := &nativeScript{turns: turns}
 	sb := sbWith(t, files)
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "test task"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "test task"})
 	if err != nil {
 		t.Fatalf("RunNative error: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestRunNativeFinishToolNearCapNudgesSay(t *testing.T) {
 		{structuredCall("c3", "read_file", map[string]any{"path": "c.txt"})},
 		{structuredCall("c4", "say", map[string]any{"message": "done — wrapping up"})},
 	}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", MaxIterations: 4})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", MaxIterations: 4})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestRunNativeFinishToolTerminatesAsAnswered(t *testing.T) {
 	ns := &nativeScript{turns: [][]llm.ContentPart{
 		{structuredCall("c1", "say", map[string]any{"message": "hey partner, built the thing"})},
 	}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestRunNativeFinishToolRunsSideEffectsFirst(t *testing.T) {
 		structuredCall("c1", "write_file", map[string]any{"path": "out.txt", "content": "data"}),
 		structuredCall("c2", "say", map[string]any{"message": "dropped out.txt"}),
 	}}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestRunNativeSalvagesProseOnHitCap(t *testing.T) {
 		{llm.Text("still wiring it up, one sec"), structuredCall("c3", "read_file", map[string]any{"path": "c.txt"})},
 	}}
 	sb := sbWith(t, map[string]string{"a.txt": "1\n", "b.txt": "2\n", "c.txt": "3\n"})
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", MaxIterations: 3})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", MaxIterations: 3})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestRunNativeEmptySilentFinishNudgedToFinishTool(t *testing.T) {
 		{llm.Text("")}, // empty silent finish — should be rejected
 		{structuredCall("c1", "say", map[string]any{"message": "ok here's my actual message"})},
 	}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestRunNativeReasoningOnlyEmptyTurnNotNudgedToFinish(t *testing.T) {
 		{llm.ReasoningPart{Raw: json.RawMessage(`"planning my next move"`)}}, // think-only — must NOT be nudged
 		{structuredCall("c1", "say", map[string]any{"message": "done thinking, here it is"})},
 	}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestRunNativeRespectsMaxIterations(t *testing.T) {
 		{structuredCall("c", "read_file", map[string]any{"path": "c"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 2})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +657,7 @@ func TestRunNativeBridgeFallbackForRunOnlyTool(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Tools: tools, Task: "t"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, nil), Tools: tools, Task: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +710,7 @@ func TestRunNativeListDirSpiralAcrossTurns(t *testing.T) {
 		{structuredCall("6", "list_dir", map[string]any{"path": "b"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +736,7 @@ func TestRunNativeNavSpiralWindowRelaxes(t *testing.T) {
 		{llm.Text("[]")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10, NavSpiralWindow: 8})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10, NavSpiralWindow: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestRunNativeAnswerNudgeForcesAnswer(t *testing.T) {
 	delete(ro, "write_file")
 	delete(ro, "edit_file")
 	ns := &nativeScript{turns: mkTurns()}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Tools: ro, Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Tools: ro, Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +792,7 @@ func TestRunNativeAnswerNudgeForcesAnswer(t *testing.T) {
 	// O2 safety gate: a FULL toolset (has run/write/edit) with no verify gate must NOT
 	// fire the nudge — else a coding caller's premature "done" would be accepted unchecked.
 	ns2 := &nativeScript{turns: mkTurns()}
-	_, err = RunNative(context.Background(), Config{Model: ns2, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
+	_, err = runNativeT(context.Background(), Config{Model: ns2, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 8, AnswerNudgeWindow: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +817,7 @@ func TestRunNativeMixedTurnResetsSpiral(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +843,7 @@ func TestRunNativeSearchSpiralAcrossTurns(t *testing.T) {
 		{structuredCall("6", "search", map[string]any{"pattern": "beta"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -868,7 +868,7 @@ func TestRunNativeMixedDiscoverySpiral(t *testing.T) {
 		{structuredCall("6", "search", map[string]any{"pattern": "alpha"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +893,7 @@ func TestRunNativeSearchThenReadResetsSpiral(t *testing.T) {
 		{llm.Text("found what I needed")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +917,7 @@ func TestRunNativeVerifyCmdFailMarksUnverified(t *testing.T) {
 		{llm.Text("done — all tests pass")}, // the false claim.
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 1",
 	})
 	if err != nil {
@@ -941,7 +941,7 @@ func TestRunNativeVerifyCmdPassStaysAnswered(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyCmd: "exit 0",
 	})
 	if err != nil {
@@ -968,7 +968,7 @@ func TestRunNativeVerifyLastRunFallback(t *testing.T) {
 		{false, Answered},
 	} {
 		ns := &nativeScript{turns: turns}
-		res, err := RunNative(context.Background(), Config{
+		res, err := runNativeT(context.Background(), Config{
 			Model: ns, Sandbox: sbWith(t, nil), Task: "t", VerifyLastRun: tc.flag,
 		})
 		if err != nil {
@@ -994,7 +994,7 @@ func TestRunNativeVerifyContinueRecoversPrematureFinish(t *testing.T) {
 	ns := &nativeScript{turns: turns}
 	box := sbWith(t, nil)
 	// verify is red until calc.go exists, green after the continued work writes it.
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: box, Task: "t", MaxIterations: 10,
 		VerifyCmd: "test -f calc.go", VerifyContinue: true,
 		SkipVerifyBaseline: true,
@@ -1019,7 +1019,7 @@ func TestRunNativeVerifyContinueStopsAtCap(t *testing.T) {
 	// honest Unverified (never an infinite loop).
 	turns := [][]llm.ContentPart{{llm.Text("done")}} // every turn is a premature finish.
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 4,
 		VerifyCmd: "exit 1", VerifyContinue: true,
 		SkipVerifyBaseline: true,
@@ -1046,7 +1046,7 @@ func TestRunNativeChurnNudgeFiresOnce(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20, ChurnNudgeRuns: 2,
 	})
 	if err != nil {
@@ -1075,7 +1075,7 @@ func TestRunNativeVerifyOnTerminateUpgradesFalseFailure(t *testing.T) {
 		{structuredCall("b", "read_file", map[string]any{"path": "calc.go", "from": 2, "to": 2})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 3,
 		VerifyCmd: "test -f calc.go", // passes once the file exists
 	})
@@ -1100,7 +1100,7 @@ func TestRunNativeChurnNudgeFiresOnEdits(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t",
 		MaxIterations: 20, ChurnNudgeRuns: 3,
 	})
@@ -1124,7 +1124,7 @@ func TestRunNativeWallClockBudget(t *testing.T) {
 	// exit-124 case). A 1ns budget trips on the very first between-turn check.
 	turns := [][]llm.ContentPart{{structuredCall("c", "read_file", map[string]any{"path": "x"})}}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, nil), Task: "t", MaxIterations: 30, MaxWallClock: time.Nanosecond,
 	})
 	if err != nil {
@@ -1150,7 +1150,7 @@ func TestRunNativeStagnantObservationKilled(t *testing.T) {
 		{llm.Text("should never reach here")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20,
 	})
 	if err != nil {
@@ -1175,7 +1175,7 @@ func TestRunNativeStagnantThresholdNotTrippedEarly(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 20,
 	})
 	if err != nil {
@@ -1215,7 +1215,7 @@ func TestRunNativeRepeatDetectorOnStructuredArgs(t *testing.T) {
 	call := structuredCall("c", "read_file", map[string]any{"path": "f.txt"})
 	turns := [][]llm.ContentPart{{call}, {call}, {call}, {call}}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1237,7 +1237,7 @@ func TestRunNativeRepeatDetectorCanonicalizesRotatedStructuredArgs(t *testing.T)
 		{rawToolCall("c6", "read_file", `{"to":2,"path":"f.txt","from":1}`)},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "one\ntwo\n"}), Task: "t", MaxIterations: 6})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "one\ntwo\n"}), Task: "t", MaxIterations: 6})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1264,7 +1264,7 @@ func TestRunNativeReasoningAdvanceEscapesRepeatDetector(t *testing.T) {
 		{llm.Text("the bug is in percent.go")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1281,7 +1281,7 @@ func TestRunNativeFrozenReasoningStillKilled(t *testing.T) {
 	call := structuredCall("c", "read_file", map[string]any{"path": "f.txt"})
 	turns := [][]llm.ContentPart{{frozen, call}, {frozen, call}, {frozen, call}, {frozen, call}}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "x\n"}), Task: "t", MaxIterations: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1329,7 +1329,7 @@ func TestRunNativeRecordsStepTiming(t *testing.T) {
 		{structuredCall("c1", "read_file", map[string]any{"path": "go.mod"})},
 		{llm.Text("done")},
 	}}
-	res, err := RunNative(context.Background(), Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}), Task: "t"})
+	res, err := runNativeT(context.Background(), Config{Model: sp, Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}), Task: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1399,7 +1399,7 @@ func TestRunNativeDiscoveryOrientationBurstWithReasoningSurvives(t *testing.T) {
 		{llm.Text("found it")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 12})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, files), Task: "t", MaxIterations: 12})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1424,7 +1424,7 @@ func TestRunNativeDiscoveryHardWanderingBound(t *testing.T) {
 		})
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 40})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 40})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1452,7 +1452,7 @@ func TestRunNativeZeroTokenMovingTraceKeepsLenientCeiling(t *testing.T) {
 		})
 	}
 	ns := &nativeScript{turns: turns, nonceTrace: true}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 20})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sbWith(t, map[string]string{"a.go": "package a\n"}), Task: "t", MaxIterations: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1565,7 +1565,7 @@ func TestRunNativeFinishToolWellFormedMessages(t *testing.T) {
 		structuredCall("c1", "write_file", map[string]any{"path": "out.txt", "content": "data"}),
 		structuredCall("c2", "say", map[string]any{"message": "done"}),
 	}}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -1591,7 +1591,7 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 	}
 
 	ns, tools, sb := mk()
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", VerifyCmd: "exit 1",
 	})
 	if err != nil {
@@ -1607,7 +1607,7 @@ func TestRunNativeFinishToolVerifiesBeforeAnswered(t *testing.T) {
 	// Trusted completion: a caller that vouches for its finish skips VerifyCmd,
 	// while safety/cancel/empty-answer gates still run elsewhere.
 	ns, tools, sb = mk()
-	res, err = RunNative(context.Background(), Config{
+	res, err = runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: tools, FinishTool: "say", VerifyCmd: "exit 1",
 		FinishToolTrustsCaller: true,
 	})
@@ -1736,7 +1736,7 @@ func TestRunNativeGreenNudgeDoesNotPerturbObservationRepeatCount(t *testing.T) {
 	turns = append(turns, []llm.ContentPart{llm.Text("banked after the nudge")})
 	sb := sbWith(t, nil)
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
 	})
 	if err != nil {
@@ -1765,7 +1765,7 @@ func TestRunNativeChurnNudgeDoesNotPerturbObservationRepeatCount(t *testing.T) {
 		{llm.Text("banked after churn nudge")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sbWith(t, map[string]string{"f.txt": "a\n"}), Task: "t",
 		MaxIterations: 20, ChurnNudgeRuns: 3,
 	})
@@ -1789,7 +1789,7 @@ func TestRunNativeEscalatingRepeatNudgesLetModelBankBeforeKill(t *testing.T) {
 	turns = append(turns, []llm.ContentPart{llm.Text("final: tests are green and the patch is banked")})
 	sb := sbWith(t, nil)
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
 	})
 	if err != nil {
@@ -1809,7 +1809,7 @@ func TestRunNativeEscalatingRepeatNudgesLetModelBankBeforeKill(t *testing.T) {
 func TestRunNativeEscalatingRepeatNudgesIgnoredStillKillAtSix(t *testing.T) {
 	sb := sbWith(t, nil)
 	ns := &nativeScript{turns: repeatedStableRunTurns(6)}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Task: "t", Tools: stableRunTools(sb, "exit 0 (1ms)\nstdout:\nok"), MaxIterations: 10,
 	})
 	if err != nil {

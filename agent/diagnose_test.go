@@ -23,7 +23,7 @@ func TestRunDiagnosticsFiresWhenStuck(t *testing.T) {
 		"write_file b.go y", // edit 2 → editsSinceGreen == threshold → diagnose, surfaced
 		"answer done",       // the request for this turn carries the augmented observation
 	}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",
@@ -45,7 +45,7 @@ func TestRunDiagnosticsOffByDefault(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"write_file a.go x", "write_file b.go y", "write_file c.go z", "answer done",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:         sp,
 		Sandbox:       sbWith(t, nil),
 		Task:          "t",
@@ -67,7 +67,7 @@ func TestRunDiagnosticsStaysOutBelowThreshold(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"write_file a.go x", "write_file b.go y", "answer done",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",
@@ -90,7 +90,7 @@ func TestRunDiagnosticsSilentWhenBuildClean(t *testing.T) {
 	sp := &scripted{replies: []string{
 		"write_file a.go x", "write_file b.go y", "answer done",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",
@@ -115,7 +115,7 @@ func TestRunDiagnosticsResetsOnGreenRun(t *testing.T) {
 		"write_file b.go y", // edits-since-green = 1 (< 2) → no diagnose
 		"answer done",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",
@@ -160,7 +160,7 @@ func TestRunDiagnosticsInfraFaultIsNotGreen(t *testing.T) {
 		"write_file c.go z", // counter 3 → diagnose → exit 1 → surfaced
 		"answer done",
 	}}
-	_, err := Run(context.Background(), Config{
+	_, err := runT(context.Background(), Config{
 		Model:              sp,
 		Sandbox:            sbWith(t, nil),
 		VerifySandbox:      &flakyExecSandbox{Sandbox: sbWith(t, nil)},
@@ -186,7 +186,7 @@ func TestRunNativeDiagnosticsInfraFaultIsNotGreen(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	_, err := RunNative(context.Background(), Config{
+	_, err := runNativeT(context.Background(), Config{
 		Model:              ns,
 		Sandbox:            sbWith(t, nil),
 		VerifySandbox:      &flakyExecSandbox{Sandbox: sbWith(t, nil)},
@@ -212,7 +212,7 @@ func TestRunNativeDiagnosticsFiresWhenStuck(t *testing.T) {
 		{llm.Text("done")},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:              ns,
 		Sandbox:            sbWith(t, nil),
 		Task:               "t",

@@ -30,7 +30,7 @@ type reproState struct {
 }
 
 func (g *gates) addReproTools(tools map[string]Tool) map[string]Tool {
-	if !g.cfg.ReproFirst || tools == nil {
+	if !g.d.pol.ReproFirst || tools == nil {
 		return tools
 	}
 	out := make(map[string]Tool, len(tools)+2)
@@ -60,12 +60,12 @@ func (g *gates) addReproTools(tools map[string]Tool) map[string]Tool {
 }
 
 func (g *gates) lockReproTool(t Tool) Tool {
-	alias := sandboxAlias(g.cfg.Sandbox)
+	alias := sandboxAlias(g.d.rt.Sandbox)
 	reproFenceClosed := func(p string) bool {
-		if g.repro == nil || g.repro.report.Status != "validated" || len(g.cfg.TestFence) == 0 {
+		if g.repro == nil || g.repro.report.Status != "validated" || len(g.d.pol.TestFence) == 0 {
 			return false
 		}
-		return matchesFence(g.cfg.TestFence, fenceRelPath(alias, p))
+		return matchesFence(g.d.pol.TestFence, fenceRelPath(alias, p))
 	}
 	runJSON := t.RunJSON
 	if runJSON != nil {
@@ -78,7 +78,7 @@ func (g *gates) lockReproTool(t Tool) Tool {
 				return "", fmt.Errorf("repro file %q is locked after declare_repro", a.Path)
 			}
 			if reproFenceClosed(a.Path) {
-				return "", fenceRefusal(a.Path, g.cfg.TestFence)
+				return "", fenceRefusal(a.Path, g.d.pol.TestFence)
 			}
 			return runJSON(ctx, raw)
 		}
@@ -92,7 +92,7 @@ func (g *gates) reproLockedPath(p string) bool {
 	}
 	// Strip the sandbox workdir alias like the fence does — models routinely
 	// pass workdir-absolute paths, which must still hit the lock.
-	rel := cleanRel(fenceRelPath(sandboxAlias(g.cfg.Sandbox), p))
+	rel := cleanRel(fenceRelPath(sandboxAlias(g.d.rt.Sandbox), p))
 	return rel == g.repro.report.Path
 }
 
@@ -119,7 +119,7 @@ func (g *gates) declareRepro(ctx context.Context, p, cmd string) (string, error)
 	if g.repro != nil && g.repro.report.Status == "validated" {
 		return "", fmt.Errorf("repro already locked; to replace it, this run does not support re-declaration")
 	}
-	rel, full, err := safeJoin(g.cfg.Root, p)
+	rel, full, err := safeJoin(g.d.root, p)
 	if err != nil {
 		return "", err
 	}
@@ -130,7 +130,7 @@ func (g *gates) declareRepro(ctx context.Context, p, cmd string) (string, error)
 	if g.runBaseTree == "" {
 		return "", fmt.Errorf("repro-first needs a captured git base tree")
 	}
-	cur, err := vcs.WriteTree(ctx, g.cfg.Root)
+	cur, err := vcs.WriteTree(ctx, g.d.root)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +143,7 @@ func (g *gates) declareRepro(ctx context.Context, p, cmd string) (string, error)
 	// round-trip — a mid-run exposure verify/require-diff don't have.
 	restored := false
 	restore := func(tree string) error {
-		err := vcs.RestoreTree(context.WithoutCancel(ctx), g.cfg.Root, tree)
+		err := vcs.RestoreTree(context.WithoutCancel(ctx), g.d.root, tree)
 		if err == nil && tree == cur {
 			restored = true
 		}
@@ -167,7 +167,7 @@ func (g *gates) declareRepro(ctx context.Context, p, cmd string) (string, error)
 	if err := os.WriteFile(full, data, 0644); err != nil {
 		return "", err
 	}
-	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), cmd, verifyTimeout(g.cfg, g.runTimeout))
+	out, err := runOp(context.WithoutCancel(ctx), g.d.rt.verifySandbox(), cmd, g.d.vs.Timeout)
 	if rerr := restore(cur); rerr != nil {
 		return "", fmt.Errorf("could not restore workspace after base run: %w", rerr)
 	}
@@ -194,7 +194,7 @@ func (g *gates) declareRepro(ctx context.Context, p, cmd string) (string, error)
 	// globs: drift() re-walks by glob, so a non-matching entry in base would
 	// read back as "deleted" — a spurious violation. Tampering on non-matching
 	// paths is still caught by reproFinish's own sha256 re-check.
-	if g.fence != nil && matchesFence(g.cfg.TestFence, rel) {
+	if g.fence != nil && matchesFence(g.d.pol.TestFence, rel) {
 		if g.fence.base == nil {
 			g.fence.base = map[string]fencedFile{}
 		}
@@ -235,7 +235,7 @@ func gradeReproRed(out string) string {
 }
 
 func (g *gates) reproFinish(ctx context.Context) (feedback, block string) {
-	if !g.cfg.ReproFirst {
+	if !g.d.pol.ReproFirst {
 		return "", ""
 	}
 	if g.repro == nil {
@@ -244,7 +244,7 @@ func (g *gates) reproFinish(ctx context.Context) (feedback, block string) {
 	if g.repro.report.Status == "skipped" {
 		return "", ""
 	}
-	data, err := os.ReadFile(filepath.Join(g.cfg.Root, filepath.FromSlash(g.repro.report.Path)))
+	data, err := os.ReadFile(filepath.Join(g.d.root, filepath.FromSlash(g.repro.report.Path)))
 	if err != nil {
 		return "declared repro file is missing", "repro_red"
 	}
@@ -252,12 +252,12 @@ func (g *gates) reproFinish(ctx context.Context) (feedback, block string) {
 	if hex.EncodeToString(h[:]) != g.repro.sha256 {
 		return "declared repro file changed after it was locked", "repro_red"
 	}
-	cur, err := vcs.WriteTree(ctx, g.cfg.Root)
+	cur, err := vcs.WriteTree(ctx, g.d.root)
 	if err != nil {
 		return "could not snapshot before repro check", "repro_red"
 	}
-	out, err := runOp(context.WithoutCancel(ctx), g.cfg.verifySandbox(), g.repro.report.Cmd, verifyTimeout(g.cfg, g.runTimeout))
-	_ = vcs.RestoreTree(context.WithoutCancel(ctx), g.cfg.Root, cur)
+	out, err := runOp(context.WithoutCancel(ctx), g.d.rt.verifySandbox(), g.repro.report.Cmd, g.d.vs.Timeout)
+	_ = vcs.RestoreTree(context.WithoutCancel(ctx), g.d.root, cur)
 	if err != nil {
 		return "could not run declared repro", "repro_red"
 	}
@@ -274,7 +274,7 @@ func (g *gates) reproFinish(ctx context.Context) (feedback, block string) {
 }
 
 func (g *gates) reproReport() *ReproReport {
-	if !g.cfg.ReproFirst {
+	if !g.d.pol.ReproFirst {
 		return nil
 	}
 	if g.repro == nil {

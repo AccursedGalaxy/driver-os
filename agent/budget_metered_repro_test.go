@@ -26,7 +26,7 @@ func TestDollarBudgetPartialSpendStillEnforces(t *testing.T) {
 	spend.Add("metered-model", llm.Usage{TotalTokens: 10}) // $0.10: over cap on its own.
 	spend.Add("unknown-model", llm.Usage{TotalTokens: 5})  // unpriceable — must not poison enforcement.
 
-	stop, reason := dollarBudgetStop(cfg, llm.Usage{}, 2, &missing)
+	stop, reason := dollarBudgetStopT(cfg, llm.Usage{}, 2, &missing)
 	if !stop {
 		t.Fatalf("priced partial sum $0.10 >= cap $0.05 did not stop (reason %q) — one unpriceable call disabled the whole budget", reason)
 	}
@@ -50,7 +50,7 @@ func TestDollarBudgetEmptySpendStaysQuiet(t *testing.T) {
 	cfg := Config{MaxTotalCostUSD: 0.05, Spend: spend, Obs: obs}
 	var missing bool
 
-	if stop, _ := dollarBudgetStop(cfg, llm.Usage{}, 1, &missing); stop {
+	if stop, _ := dollarBudgetStopT(cfg, llm.Usage{}, 1, &missing); stop {
 		t.Fatal("empty spend stopped the run")
 	}
 	for _, n := range obs.notes {
@@ -60,7 +60,7 @@ func TestDollarBudgetEmptySpendStaysQuiet(t *testing.T) {
 	}
 
 	spend.Add("metered-model", llm.Usage{TotalTokens: 10}) // $0.10: over cap.
-	if stop, _ := dollarBudgetStop(cfg, llm.Usage{}, 2, &missing); !stop {
+	if stop, _ := dollarBudgetStopT(cfg, llm.Usage{}, 2, &missing); !stop {
 		t.Fatal("priced spend over cap did not stop after the quiet turn-0 check")
 	}
 }

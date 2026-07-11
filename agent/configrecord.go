@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/mneme"
@@ -130,23 +131,27 @@ type EffectiveConfig struct {
 	FinishToolTrustsCaller bool              `json:"finish_tool_trusts_caller"`
 }
 
-// newConfigRecord constructs the single shared reproducibility record path. Callers
-// supply the exact protocol prompt, its stable tool representation, and the loop
-// that actually ran. Text representations are textToolGrammar values; native
-// representations are []llm.Tool API schemas.
-func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
+// newConfigRecord constructs the single shared reproducibility record path
+// from the run's ACTUALLY HELD values: the resolved policy, the runtime
+// bindings, and the run-local verification state (post auto-verify derivation,
+// matching the historical record timing). Callers supply the exact protocol
+// prompt, its stable tool representation, and the loop that actually ran.
+// Text representations are textToolGrammar values; native representations are
+// []llm.Tool API schemas.
+func newConfigRecord(pol runspec.PolicyValue, rt Runtime, vs *verifyState, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
 	effectiveProtocol := "tools" // compatibility default for direct legacy callers.
 	if len(protocols) > 0 {
 		effectiveProtocol = protocols[0]
 	}
-	eff := effectiveConfig(cfg, effectiveProtocol)
-	binaryIdentity := cfg.BinaryIdentity
+	eff := effectiveConfigFromSpec(pol, rt, vs, effectiveProtocol)
+	meta := rt.Record
+	binaryIdentity := meta.BinaryIdentity
 	if binaryIdentity == "" {
-		// Preserve records produced by callers still using the v1-v3 Config field.
-		binaryIdentity = cfg.BinaryLabel
+		// Preserve records produced by callers still using the v1-v3 field.
+		binaryIdentity = meta.BinaryLabel
 	}
-	provenance := make(map[string]string, len(cfg.FieldProvenance)+len(derivedProvenanceKeys))
-	for key, source := range cfg.FieldProvenance {
+	provenance := make(map[string]string, len(meta.FieldProvenance)+len(derivedProvenanceKeys))
+	for key, source := range meta.FieldProvenance {
 		provenance[key] = source
 	}
 	// Runtime-derived EffectiveConfig members are computed downstream of the
@@ -161,27 +166,27 @@ func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, pr
 		SchemaVersion:          configRecordSchemaVersion,
 		Binary:                 binaryIdentity,
 		BinaryIdentity:         binaryIdentity,
-		InvocationSurface:      cfg.InvocationSurface,
-		RequestedProtocol:      cfg.RequestedProtocol,
-		ProtocolFallbackReason: cfg.ProtocolFallbackReason,
+		InvocationSurface:      meta.InvocationSurface,
+		RequestedProtocol:      meta.RequestedProtocol,
+		ProtocolFallbackReason: meta.ProtocolFallbackReason,
 		PromptSHA256:           sha256Hex([]byte(systemPrompt)),
 		ToolSchemaSHA256:       jsonSHA256(toolRepresentation),
 		ConfigSHA256:           jsonSHA256(eff),
 		Effective:              eff,
-		ApprovalPolicyName:     cfg.ApprovalPolicyName,
-		ApprovalPolicyHash:     cfg.ApprovalPolicyHash,
-		ExecProfileHash:        cfg.ExecProfileHash,
-		CLIOverrides:           append([]string(nil), cfg.CLIOverrides...),
-		RequiredTrust:          cfg.RequiredTrust,
-		Canonical:              cfg.Canonical,
+		ApprovalPolicyName:     meta.ApprovalPolicyName,
+		ApprovalPolicyHash:     meta.ApprovalPolicyHash,
+		ExecProfileHash:        meta.ExecProfileHash,
+		CLIOverrides:           append([]string(nil), meta.CLIOverrides...),
+		RequiredTrust:          meta.RequiredTrust,
+		Canonical:              meta.Canonical,
 		FieldProvenance:        provenance,
 	}
-	if cfg.TrustProfile != "" {
-		trustProfile := cfg.TrustProfile
+	if meta.TrustProfile != "" {
+		trustProfile := meta.TrustProfile
 		rec.TrustProfile = &trustProfile
 	}
-	if cfg.ExecProfileName != "" {
-		execProfile := cfg.ExecProfileName
+	if meta.ExecProfileName != "" {
+		execProfile := meta.ExecProfileName
 		rec.ExecProfile = &execProfile
 	}
 	if info, ok := debug.ReadBuildInfo(); ok {
@@ -197,9 +202,52 @@ func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, pr
 	return rec
 }
 
+// effectiveConfigFromSpec is the S6a record projection: the SAME EffectiveConfig
+// shape (schema v8, byte-identical goldens) built from the resolved spec and
+// the held runtime/verify state instead of a lazy re-derivation from Config.
+// The verification fields deliberately read the MUTABLE verifyState — the
+// historical record captured the post-auto-verify values, and S6c will replace
+// this with the canonical policy-value + runtime-resolution serializations.
+func effectiveConfigFromSpec(pol runspec.PolicyValue, rt Runtime, vs *verifyState, effectiveProtocol string) EffectiveConfig {
+	return EffectiveConfig{
+		EffectiveProtocol:  effectiveProtocol,
+		DisableMemoryStore: pol.DisableMemoryStore, Persona: pol.Persona, MemoryScope: pol.MemoryScope,
+		BootContext: pol.BootContext, StandingContext: pol.StandingContext, Stream: pol.Stream, MinIsolation: pol.MinIsolation, RequireNetworkOff: pol.RequireNetworkOff,
+		MaxIterations: pol.MaxIterations, MaxTokens: pol.MaxTokens, RunTimeout: pol.RunTimeout, VerifyTimeout: vs.Timeout,
+		ReasoningEffort: pol.ReasoningEffort, PromptProfile: pol.PromptProfile, CodeAct: pol.CodeAct, ReproFirst: pol.ReproFirst,
+		ReproGate: pol.ReproGate, BatchReads: pol.BatchReads, ReadWindow: pol.ReadWindow, ReadOutline: pol.ReadOutline,
+		MaxWallClock: pol.MaxWallClock, MaxTotalTokens: pol.MaxTotalTokens, MaxTotalCostUSD: pol.MaxTotalCostUSD,
+		AllowUnpricedSpend: pol.AllowUnpricedSpend, SolverModel: pol.SolverModel,
+		ModelConfigured: rt.Model != nil, MemoryConfigured: rt.Memory != nil, VerifySandboxConfigured: rt.VerifySandbox != nil,
+		CostFnConfigured: rt.CostFn != nil, SpendConfigured: rt.Spend != nil, ModelInfo: rt.ModelInfo,
+		ReviewerIdentity: runtimeImplementationIdentity(rt.Reviewer), PlannerIdentity: runtimeImplementationIdentity(rt.Planner),
+		VerifyCmd: vs.Cmd, AutoVerify: vs.AutoVerify,
+		AutoVerifySoft: vs.AutoVerifySoft, SkipVerifyBaseline: vs.SkipVerifyBaseline, AbortOnRedBaseline: vs.AbortOnRedBaseline,
+		VerifyLastRun: vs.VerifyLastRun, ChurnNudgeRuns: pol.ChurnNudgeRuns, VerifyContinue: vs.VerifyContinue,
+		TestFence: pol.TestFence, DiffScope: pol.DiffScope, RequireDiff: pol.RequireDiff, ReviewConfigured: rt.Reviewer != nil,
+		ReviewPolicy: pol.ReviewPolicy, ReviewUnverified: pol.ReviewUnverified, ReviewRounds: pol.ReviewRounds,
+		PlannerConfigured: rt.Planner != nil, FinishNudgeWindow: pol.FinishNudgeWindow, DiagnoseCmd: pol.DiagnoseCmd,
+		DiagnoseAfterEdits: pol.DiagnoseAfterEdits, NavSpiralWindow: pol.TerminationPolicy.NavSpiralWindow, TerminationPolicy: pol.TerminationPolicy, AnswerNudgeWindow: pol.AnswerNudgeWindow,
+		FinishTool: pol.FinishTool, FinishToolConfigured: strings.TrimSpace(pol.FinishTool) != "", FinishToolTrustsCaller: pol.FinishToolTrustsCaller,
+	}
+}
+
+// EffectiveConfigFromSpec is the exported golden-test projection for a spec +
+// runtime pair OUTSIDE a running loop (pre-run verification state, native
+// protocol) — the spec-side twin of the legacy EffectiveConfigOf.
+func EffectiveConfigFromSpec(spec runspec.ResolvedSpec, rt Runtime) EffectiveConfig {
+	pol := spec.Policy()
+	return effectiveConfigFromSpec(pol, rt, newVerifyState(pol), "tools")
+}
+
 // EffectiveConfigOf returns the effective behavior configuration for cfg.
 // It uses the native-tools protocol, the compatibility default for Config values
 // constructed outside a running loop.
+//
+// S6a: this LEGACY projection (and the lazy effectiveConfig re-derivation
+// below) is no longer reachable from any loop or binary — it survives solely
+// as the equivalence anchor pinning effectiveConfigFromSpec byte-identical to
+// the historical lazy path, and is deleted in S6b.
 func EffectiveConfigOf(cfg Config) EffectiveConfig {
 	return effectiveConfig(cfg, "tools")
 }

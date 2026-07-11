@@ -10,7 +10,7 @@ import "testing"
 func TestConfigRecordCarriesTrustIdentity(t *testing.T) {
 	cfg := Config{Task: "t", TrustProfile: "reviewed-local",
 		ApprovalPolicyName: "reviewed-local-readonly-v1", ApprovalPolicyHash: "deadbeef"}
-	rec := newConfigRecord(cfg, "sys", nil)
+	rec := newConfigRecordT(cfg, "sys", nil)
 	if rec.TrustProfile == nil || *rec.TrustProfile != "reviewed-local" {
 		t.Fatalf("TrustProfile must be recorded when Config.TrustProfile is set; got %v", rec.TrustProfile)
 	}
@@ -21,7 +21,7 @@ func TestConfigRecordCarriesTrustIdentity(t *testing.T) {
 	// Identity fields are NOT part of the config hash: the hash names the
 	// behavior-affecting policy projection, and trust identity is recorded
 	// alongside it (same rule as Binary).
-	base := newConfigRecord(Config{Task: "t"}, "sys", nil)
+	base := newConfigRecordT(Config{Task: "t"}, "sys", nil)
 	if base.TrustProfile != nil {
 		t.Fatalf("no trust configured must keep the reserved null: %v", base.TrustProfile)
 	}

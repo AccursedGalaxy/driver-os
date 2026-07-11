@@ -76,7 +76,7 @@ func messageHasStandingBanner(msg llm.Message) bool {
 func TestStandingContextRidesInMessagesAppendOnly(t *testing.T) {
 	sb := sbWith(t, nil)
 	m := &appendOnlyCaptureModel{}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:           m,
 		Sandbox:         sb,
 		Task:            "do it",

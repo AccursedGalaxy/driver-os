@@ -146,7 +146,7 @@ func reviewedRun(t *testing.T, rv Reviewer, cfg Config, turns [][]llm.ContentPar
 	if cfg.Task == "" {
 		cfg.Task = "fix calc"
 	}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestReviewAdvisoryFedBack(t *testing.T) {
 	}
 	ns := &nativeScript{turns: turns}
 	sb, root := gitWorkspace(t, map[string]string{"calc.go": "package calc\n"})
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
 		Reviewer: rv, MaxIterations: 8,
 	})
@@ -359,7 +359,7 @@ func TestReviewRepairLoop(t *testing.T) {
 	ns := &nativeScript{}
 	sb, root := gitWorkspace(t, map[string]string{"calc.go": "package calc\n"})
 	ns.turns = turns
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
 		Reviewer: rv, MaxIterations: 8,
 	})
@@ -449,7 +449,7 @@ func TestReviewSkippedOutsideGit(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo.
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewPolicy: ReviewPolicyFailOpenOptional})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewPolicy: ReviewPolicyFailOpenOptional})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestReviewRequiredSkipNoRootYieldsUnverified(t *testing.T) {
 	sb := sbWith(t, map[string]string{"calc.go": "package calc\n"})
 	rv := &fakeReviewer{}
 	ns := &nativeScript{turns: editThenAnswer()}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: "", Task: "fix calc",
 		Reviewer: rv, ReviewPolicy: ReviewPolicyRequiredOptional,
 	})
@@ -544,7 +544,7 @@ func TestReviewRequiredSkipNonGitYieldsUnverified(t *testing.T) {
 	rv := &fakeReviewer{}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo.
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "fix calc",
 		Reviewer: rv, ReviewPolicy: ReviewPolicyRequiredOptional,
 	})
@@ -572,7 +572,7 @@ func TestReviewSkipRecordsUnavailableStatusFailOpen(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{blocker("calc.go", "package calc")}}}
 	ns := &nativeScript{turns: editThenAnswer()}
 	root := t.TempDir() // NOT a git repo → skip.
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "t",
 		Reviewer: rv, ReviewPolicy: ReviewPolicyFailOpenOptional,
 	})
@@ -609,7 +609,7 @@ func TestReviewErrorTimeoutClassification(t *testing.T) {
 func TestNilReviewerLeavesResultUntouched(t *testing.T) {
 	sb := sbWith(t, map[string]string{"calc.go": "package calc\n"})
 	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t"})
 	if err != nil || res.Outcome != Answered || res.Review != nil {
 		t.Fatalf("res = %+v err=%v, want plain answered with nil Review", res, err)
 	}
@@ -697,7 +697,7 @@ func TestReproConfirmedBlocksAtLowConfidence(t *testing.T) {
 	}
 	ns := &nativeScript{turns: turns}
 	sb, root := gitWorkspace(t, map[string]string{"calc.go": "package calc\n"})
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, MaxIterations: 8})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, MaxIterations: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -789,7 +789,7 @@ func TestReproFenceViolationRejectedAndRestored(t *testing.T) {
 	rv := &fakeReviewer{verdicts: [][]ReviewFinding{{f}}}
 	sb, root := gitWorkspace(t, map[string]string{"calc.go": "package calc\n", "calc_test.go": "package calc // pristine\n"})
 	ns := &nativeScript{turns: editThenAnswer()}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model: ns, Sandbox: sb, Root: root, Task: "t",
 		Reviewer: rv, TestFence: []string{"*_test.go"}, ReviewRounds: 1,
 	})
@@ -823,7 +823,7 @@ func TestReproWorkspaceMutationRejectedAndRestoredWithoutFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	ns := &nativeScript{turns: editThenAnswer()}
-	res, err := RunNative(ctx, Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewRounds: 1})
+	res, err := runNativeT(ctx, Config{Model: ns, Sandbox: sb, Root: root, Task: "t", Reviewer: rv, ReviewRounds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1277,7 +1277,7 @@ func TestReviewArmedNonRepoFailsSetupUnlessOptional(t *testing.T) {
 	t.Cleanup(func() { sb.Close() })
 
 	cfg := Config{Model: &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}, Sandbox: sb, Root: root, Task: "x", Reviewer: &fakeReviewer{}}
-	res, err := RunNative(context.Background(), cfg)
+	res, err := runNativeT(context.Background(), cfg)
 	if err == nil {
 		t.Fatalf("err = nil, res=%#v; want setup error", res)
 	}
@@ -1287,7 +1287,7 @@ func TestReviewArmedNonRepoFailsSetupUnlessOptional(t *testing.T) {
 	}
 
 	cfg.ReviewPolicy = ReviewPolicyFailOpenOptional
-	res, err = RunNative(context.Background(), cfg)
+	res, err = runNativeT(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("optional RunNative err: %v", err)
 	}

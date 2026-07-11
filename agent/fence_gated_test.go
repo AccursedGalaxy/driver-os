@@ -33,7 +33,7 @@ func TestFenceGated(t *testing.T) {
 
 	ctx := context.Background()
 	// This will call sha256sum through the gated sandbox.
-	f := newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f := newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	if f.snapErr != nil {
 		t.Fatalf("snapshot failed: %v", f.snapErr)
 	}
@@ -80,7 +80,7 @@ func TestFenceGatedDeny(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	f := newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f := newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	if f.snapErr != nil {
 		t.Fatalf("snapshot failed: %v", f.snapErr)
 	}

@@ -50,7 +50,7 @@ func TestGenerateRetriesTransientFault(t *testing.T) {
 	quickBackoff(t)
 	transient := &llm.ProviderError{Provider: "test", Kind: llm.KindUnknown, StatusCode: 504, Retryable: true}
 	m := &flaky{failures: 2, err: transient}
-	resp, err := generateWithRetry(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
+	resp, err := generateWithRetryT(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
 	if err != nil {
 		t.Fatalf("err = %v, want recovery after retries", err)
 	}
@@ -63,7 +63,7 @@ func TestGenerateRetryGivesUpAfterCap(t *testing.T) {
 	quickBackoff(t)
 	transient := &llm.ProviderError{Provider: "test", Kind: llm.KindUnknown, Retryable: true}
 	m := &flaky{failures: 10, err: transient}
-	_, err := generateWithRetry(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
+	_, err := generateWithRetryT(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
 	if !errors.Is(err, transient) {
 		t.Fatalf("err = %v, want the transient error after exhausting retries", err)
 	}
@@ -80,7 +80,7 @@ func TestGenerateNoRetryOnNonRetryable(t *testing.T) {
 		"auth":           &llm.ProviderError{Provider: "test", Kind: llm.KindAuth},
 	} {
 		m := &flaky{failures: 10, err: fault}
-		_, err := generateWithRetry(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
+		_, err := generateWithRetryT(context.Background(), Config{Model: m, Obs: nopObserver{}}, llm.Request{})
 		if !errors.Is(err, fault) || m.calls != 1 {
 			t.Errorf("%s: err = %v after %d calls, want the fault untouched after 1 call", name, err, m.calls)
 		}

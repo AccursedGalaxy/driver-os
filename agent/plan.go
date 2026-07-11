@@ -88,23 +88,23 @@ const planHeader = "\n\n----\nIMPLEMENTATION PLAN — prepared by a separate pla
 // the stage's report. nil Planner = stage off: the task passes through
 // untouched and the report is nil, keeping the no-planner path byte-identical.
 // Called by both loops after Obs is defaulted and before seedMessages.
-func runPlanStage(ctx context.Context, cfg Config) (string, *PlanReport) {
-	if cfg.Planner == nil {
-		return cfg.Task, nil
+func runPlanStage(ctx context.Context, rt Runtime, content Content) (string, *PlanReport) {
+	if rt.Planner == nil {
+		return content.Task, nil
 	}
 	rep := &PlanReport{}
-	po, _ := cfg.Obs.(PlanObserver)
+	po, _ := rt.Obs.(PlanObserver)
 	if po != nil {
 		po.PlanStart()
 	}
-	cfg.Obs.Note("plan: preparing an implementation plan…")
+	rt.Obs.Note("plan: preparing an implementation plan…")
 	pctx, pcancel := gateContext(ctx, planTimeout)
 	defer pcancel()
-	pr, err := cfg.Planner.Plan(pctx, PlanInput{Task: cfg.Task, Root: cfg.Root, Continuing: len(cfg.History) > 0})
+	pr, err := rt.Planner.Plan(pctx, PlanInput{Task: content.Task, Root: content.Root, Continuing: len(content.History) > 0})
 	var plan string
 	if pr != nil {
 		rep.Model, rep.Usage, rep.PlannerRun = pr.Model, pr.Usage, pr.RunID
-		cfg.Spend.Add(rep.Model, rep.Usage)
+		rt.Spend.Add(rep.Model, rep.Usage)
 		plan = strings.TrimSpace(pr.Plan)
 	}
 	switch {
@@ -114,16 +114,16 @@ func runPlanStage(ctx context.Context, cfg Config) (string, *PlanReport) {
 		rep.Skipped = "plan skipped: the planner returned an empty plan"
 	}
 	if rep.Skipped != "" {
-		cfg.Obs.Note(rep.Skipped)
+		rt.Obs.Note(rep.Skipped)
 		if po != nil {
 			po.PlanDone("", rep.Skipped)
 		}
-		return cfg.Task, rep
+		return content.Task, rep
 	}
 	rep.Plan = plan
-	cfg.Obs.Note("plan: ready — handing it to the solver")
+	rt.Obs.Note("plan: ready — handing it to the solver")
 	if po != nil {
 		po.PlanDone(plan, "")
 	}
-	return cfg.Task + planHeader + plan, rep
+	return content.Task + planHeader + plan, rep
 }

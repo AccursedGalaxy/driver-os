@@ -16,7 +16,7 @@ import (
 
 // promptFor resolves a fixed profile the way RunNative does (no model routing).
 func promptFor(profile string) (string, error) {
-	s, _, err := resolveSystemPrompt(Config{PromptProfile: profile})
+	s, _, err := resolveSystemPromptT(Config{PromptProfile: profile})
 	return s, err
 }
 
@@ -67,7 +67,7 @@ func TestSystemPromptForProfiles(t *testing.T) {
 func TestRunNativeUnknownPromptProfileRefusesBeforeModelCall(t *testing.T) {
 	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("should never run")}}}
 	sb := sbWith(t, nil)
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", PromptProfile: "nope"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", PromptProfile: "nope"})
 	if err == nil {
 		t.Fatalf("RunNative accepted an unknown PromptProfile (res=%+v)", res)
 	}
@@ -80,7 +80,7 @@ func TestRunNativeUnknownPromptProfileRefusesBeforeModelCall(t *testing.T) {
 func TestRunNativeStructuredProfileRidesSystemPrompt(t *testing.T) {
 	ns := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}
 	sb := sbWith(t, nil)
-	res, err := RunNative(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", PromptProfile: "structured"})
+	res, err := runNativeT(context.Background(), Config{Model: ns, Sandbox: sb, Task: "t", PromptProfile: "structured"})
 	if err != nil {
 		t.Fatalf("RunNative: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestRunNativeStructuredProfileRidesSystemPrompt(t *testing.T) {
 	}
 	// And the default arm must NOT carry it (the A/B differs in this field alone).
 	ns2 := &nativeScript{turns: [][]llm.ContentPart{{llm.Text("done")}}}
-	if _, err := RunNative(context.Background(), Config{Model: ns2, Sandbox: sbWith(t, nil), Task: "t"}); err != nil {
+	if _, err := runNativeT(context.Background(), Config{Model: ns2, Sandbox: sbWith(t, nil), Task: "t"}); err != nil {
 		t.Fatalf("legacy run: %v", err)
 	}
 	if len(ns2.calls) == 0 || strings.Contains(ns2.calls[0].System, "Working rules:") {

@@ -117,7 +117,7 @@ func TestRunNativeSalvagesStreamedTextOnProviderError(t *testing.T) {
 		turns: [][]llm.Chunk{{{Text: "the leak is in the idle-worker restart path"}}},
 		err:   errors.New("stream torn down"),
 	}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "diagnose",
@@ -142,7 +142,7 @@ func TestRunStreamsDeltasToObserver(t *testing.T) {
 		{{Text: "answer "}, {Text: "hello world"}, {Done: true, FinishReason: llm.FinishStop}},
 	}}
 	cap := &deltaCapture{}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "hi",
@@ -168,7 +168,7 @@ func TestRunStreamsDeltasToObserver(t *testing.T) {
 func TestRunStreamFallsBackWhenUnsupported(t *testing.T) {
 	sp := &scripted{replies: []string{"answer ok"}} // Capabilities{} => Streaming false.
 	cap := &deltaCapture{}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:   sp,
 		Sandbox: sbWith(t, map[string]string{"go.mod": "module x\n"}),
 		Task:    "hi",

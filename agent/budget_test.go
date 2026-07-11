@@ -16,7 +16,7 @@ func TestRunHitsTokenBudget(t *testing.T) {
 	files := map[string]string{"a": "1\n", "b": "2\n", "c": "3\n", "d": "4\n"}
 	sp := &scripted{replies: []string{"read_file a", "read_file b", "read_file c", "read_file d"}}
 	obs := &recordObserver{}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:          sp,
 		Sandbox:        sbWith(t, files),
 		Obs:            obs,
@@ -56,7 +56,7 @@ func TestRunNativeHitsTokenBudget(t *testing.T) {
 		{structuredCall("c4", "read_file", map[string]any{"path": "d"})},
 	}
 	ns := &nativeScript{turns: turns}
-	res, err := RunNative(context.Background(), Config{
+	res, err := runNativeT(context.Background(), Config{
 		Model:          ns,
 		Sandbox:        sbWith(t, files),
 		Task:           "t",
@@ -79,7 +79,7 @@ func TestRunAnswerOnCrossingTurnStillAnswers(t *testing.T) {
 	// Budget 16: turn 1 (15) is under, turn 2 runs (and answers) even though it
 	// pushes the total to 30.
 	sp := &scripted{replies: []string{"read_file a", "answer done"}}
-	res, err := Run(context.Background(), Config{
+	res, err := runT(context.Background(), Config{
 		Model:          sp,
 		Sandbox:        sbWith(t, map[string]string{"a": "1\n"}),
 		Task:           "t",
@@ -109,12 +109,12 @@ func TestDollarBudgetStopUsesSpendAcrossRoles(t *testing.T) {
 	var missing bool
 
 	spend.Add("cheap-solver", llm.Usage{TotalTokens: 10}) // $0.01: below cap by itself.
-	if stop, reason := dollarBudgetStop(cfg, llm.Usage{}, 1, &missing); stop {
+	if stop, reason := dollarBudgetStopT(cfg, llm.Usage{}, 1, &missing); stop {
 		t.Fatalf("solver-only spend stopped = %v, %q; want continue", stop, reason)
 	}
 
 	spend.Add("flagship-reviewer", llm.Usage{TotalTokens: 2}) // +$0.04: combined spend reaches cap.
-	stop, reason := dollarBudgetStop(cfg, llm.Usage{}, 1, &missing)
+	stop, reason := dollarBudgetStopT(cfg, llm.Usage{}, 1, &missing)
 	if !stop {
 		t.Fatalf("combined solver+reviewer spend did not stop; reason %q", reason)
 	}
@@ -135,7 +135,7 @@ func TestDollarBudgetStopSpendSupersedesCostFn(t *testing.T) {
 	}
 	var missing bool
 
-	if stop, reason := dollarBudgetStop(cfg, llm.Usage{TotalTokens: 1}, 1, &missing); stop {
+	if stop, reason := dollarBudgetStopT(cfg, llm.Usage{TotalTokens: 1}, 1, &missing); stop {
 		t.Fatalf("dollarBudgetStop used CostFn instead of Spend: stopped with %q", reason)
 	}
 }
@@ -147,7 +147,7 @@ func TestDollarBudgetStopFallsBackToCostFnWhenSpendNil(t *testing.T) {
 	}
 	var missing bool
 
-	stop, reason := dollarBudgetStop(cfg, llm.Usage{TotalTokens: 1}, 2, &missing)
+	stop, reason := dollarBudgetStopT(cfg, llm.Usage{TotalTokens: 1}, 2, &missing)
 	if !stop {
 		t.Fatalf("dollarBudgetStop with Spend nil did not use CostFn; reason %q", reason)
 	}

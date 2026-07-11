@@ -41,11 +41,11 @@ const (
 	diagDirty                    // the check ran and failed — report carries the errors.
 )
 
-func diagnoseSource(ctx context.Context, cfg Config, timeout time.Duration) (report string, state diagState) {
-	if cfg.DiagnoseCmd == "" {
+func diagnoseSource(ctx context.Context, diagnoseCmd string, verifySB sandbox.Sandbox, timeout time.Duration) (report string, state diagState) {
+	if diagnoseCmd == "" {
 		return "", diagUnknown
 	}
-	out, err := runOp(ctx, cfg.verifySandbox(), cfg.DiagnoseCmd, timeout)
+	out, err := runOp(ctx, verifySB, diagnoseCmd, timeout)
 	if err != nil {
 		return "", diagUnknown
 	}
@@ -92,12 +92,12 @@ func verifyTimeout(cfg Config, runTimeout time.Duration) time.Duration {
 //     check DETACHED from cancellation (context.WithoutCancel) — an expired
 //     budget must not block the final ground-truth check — bounded by the
 //     sandbox's own command timeout so it can't hang.
-func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out string, skipped bool, err error) {
+func verifyRun(ctx context.Context, vs *verifyState, rt Runtime, ev *evidenceLog) (out string, skipped bool, err error) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "", true, nil
 	}
-	out, err = runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cfg.VerifyCmd, verifyTimeout(cfg, runTimeout))
-	if cfg.evidence != nil && cfg.evidence.closingReady {
+	out, err = runOp(context.WithoutCancel(ctx), rt.verifySandbox(), vs.Cmd, vs.Timeout)
+	if ev != nil && ev.closingReady {
 		status := EvidencePassed
 		switch {
 		case err != nil:
@@ -107,7 +107,7 @@ func verifyRun(ctx context.Context, cfg Config, runTimeout time.Duration) (out s
 		case isRunFailure(out):
 			status = EvidenceFailed
 		}
-		cfg.evidence.recordVerify(cfg.VerifyCmd, status)
+		ev.recordVerify(vs.Cmd, status)
 	}
 	return out, false, err
 }
@@ -146,40 +146,39 @@ func isInfraFault(out string) bool { return infraFaultSignature(out) != "" }
 //     absence answer can follow a non-zero exit (grep-no-match) — hence opt-in.
 //
 // With neither configured it returns "" (the historical behavior: trust the answer).
-func verifyTermination(ctx context.Context, cfg Config, lastRunFailed bool, runTimeout time.Duration) (reason, verifyOut string) {
-	if cfg.VerifyCmd != "" {
-		out, skipped, err := verifyRun(ctx, cfg, runTimeout)
+func verifyTermination(ctx context.Context, vs *verifyState, rt Runtime, ev *evidenceLog, lastRunFailed bool) (reason, verifyOut string) {
+	if vs.Cmd != "" {
+		out, skipped, err := verifyRun(ctx, vs, rt, ev)
 		if skipped { // user cancel — no check ran, so the claim stays unconfirmed (and no VerifyResult: nothing was measured).
-			return fmt.Sprintf("run canceled before verification command %q could confirm success", cfg.VerifyCmd), ""
+			return fmt.Sprintf("run canceled before verification command %q could confirm success", vs.Cmd), ""
 		}
-		notifyVerify(cfg.Obs, cfg.VerifyCmd, err == nil && !isRunFailure(out))
+		notifyVerify(rt.Obs, vs.Cmd, err == nil && !isRunFailure(out))
 		if err != nil { // couldn't even start it — we cannot confirm success.
-			return fmt.Sprintf("could not run verification command %q: %v", cfg.VerifyCmd, err), ""
+			return fmt.Sprintf("could not run verification command %q: %v", vs.Cmd, err), ""
 		}
 		if isRunFailure(out) && !isRunTimeout(out) && isInfraFault(out) {
 			// A transient environment fault at the FINAL gate would cost the
 			// whole run's outcome — retry once before conceding. (The
 			// 2026-07-07 incident: tmpfs EDQUOT failed the closing verify;
 			// the identical command re-ran green.)
-			retry, retrySkipped, retryErr := verifyRun(ctx, cfg, runTimeout)
+			retry, retrySkipped, retryErr := verifyRun(ctx, vs, rt, ev)
 			if !retrySkipped && retryErr == nil {
-				notifyVerify(cfg.Obs, cfg.VerifyCmd, !isRunFailure(retry))
+				notifyVerify(rt.Obs, vs.Cmd, !isRunFailure(retry))
 				out = retry
 			}
 		}
 		if isRunFailure(out) {
 			if isRunTimeout(out) {
-				bound := verifyTimeout(cfg, runTimeout)
-				return fmt.Sprintf("verification command %q was INCONCLUSIVE (timed out after %s — raise -verify-timeout):\n%s", cfg.VerifyCmd, bound, out), out
+				return fmt.Sprintf("verification command %q was INCONCLUSIVE (timed out after %s — raise -verify-timeout):\n%s", vs.Cmd, vs.Timeout, out), out
 			}
 			if sig := infraFaultSignature(out); sig != "" {
-				return fmt.Sprintf("verification command %q was INCONCLUSIVE (environment fault: %s — disk quota / no space / OOM, not a code failure; retried once):\n%s", cfg.VerifyCmd, sig, out), out
+				return fmt.Sprintf("verification command %q was INCONCLUSIVE (environment fault: %s — disk quota / no space / OOM, not a code failure; retried once):\n%s", vs.Cmd, sig, out), out
 			}
-			return fmt.Sprintf("verification command %q did not pass:\n%s", cfg.VerifyCmd, out), out
+			return fmt.Sprintf("verification command %q did not pass:\n%s", vs.Cmd, out), out
 		}
 		return "", out
 	}
-	if cfg.VerifyLastRun && lastRunFailed {
+	if vs.VerifyLastRun && lastRunFailed {
 		return "the most recent command run was still failing and nothing succeeded after it — the task does not look complete", ""
 	}
 	return "", ""

@@ -29,7 +29,7 @@ func TestFenceLargeFiles(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	f := newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f := newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	if f.snapErr != nil {
 		t.Fatalf("snapshot failed: %v", f.snapErr)
 	}
@@ -53,7 +53,7 @@ func TestFenceLargeFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, threeMiBPath), threeMiBContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f = newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f = newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 
 	// Mutate one byte at offset MiB+10.
 	threeMiBContent[MiB+10] = 'd'
@@ -70,7 +70,7 @@ func TestFenceLargeFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, tailPath), tailContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f = newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f = newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	tailContent[len(tailContent)-1] = 'f'
 	if err := os.WriteFile(filepath.Join(root, tailPath), tailContent, 0o644); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestFenceLargeFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, dashPath), []byte(dashContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f = newFenceState(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
+	f = newFenceStateT(ctx, Config{Sandbox: sb, TestFence: []string{"*_test.go"}})
 	if err := os.WriteFile(filepath.Join(root, dashPath), []byte(dashContent+"h"), 0o644); err != nil {
 		t.Fatal(err)
 	}
