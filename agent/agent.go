@@ -28,6 +28,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/mneme"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
@@ -39,7 +40,7 @@ const (
 	// DefaultMaxIterations is the (P5) hard cap when Config.MaxIterations is unset:
 	// non-negotiable termination, prevents infinite spend. Exported so the CLI can
 	// use it as a flag default. A longer/complex task raises this via Config.
-	DefaultMaxIterations = 8
+	DefaultMaxIterations = runspec.DefaultMaxIterations
 
 	// UncappedIterations is a MaxIterations sentinel meaning "effectively no cap" —
 	// for interactive front-ends where a human watches the loop and can interrupt.
@@ -50,7 +51,7 @@ const (
 	// unset (see agent/loop_shared.go). 1024 was anomalously low and silently
 	// truncated long final answers or write_file/edit_file content blocks mid-block,
 	// forcing a recovery round-trip. 8192 aligns with provider/anthropic.DefaultMaxTokens.
-	DefaultMaxTokens = 8192
+	DefaultMaxTokens = runspec.DefaultMaxTokens
 
 	maxRepeats = 2 // (P5) tight-loop detector: the SAME action this many times -> kill.
 
@@ -127,7 +128,7 @@ const (
 	// defaultRunTimeout bounds a single `run` command when Config.RunTimeout is
 	// unset (P5: a runaway command is the sandbox's job to kill). A real build or
 	// test suite can exceed it — raise it via Config for longer-running work.
-	defaultRunTimeout = 30 * time.Second
+	defaultRunTimeout = runspec.DefaultRunTimeout
 
 	// writeByteCap is the BACKSTOP on a single write_file, not its policy (cf.
 	// observationCap). A turn's content can't realistically exceed the model's own

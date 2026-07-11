@@ -1,21 +1,11 @@
 package agent
 
-// TerminationPolicy is the versioned collection of thresholds used by the
-// no-progress detectors. A recorded policy is always fully resolved.
-type TerminationPolicy struct {
-	Version              string `json:"version"`
-	MaxRepeats           int    `json:"max_repeats"`
-	MaxReasoningRepeats  int    `json:"max_reasoning_repeats"`
-	MaxStagnant          int    `json:"max_stagnant"`
-	NavSpiralWindow      int    `json:"nav_spiral_window"`
-	WanderMultiple       int    `json:"wander_multiple"`
-	FrontierCap          int    `json:"frontier_cap"`
-	GreenRepeatThreshold int    `json:"green_repeat_threshold"`
-}
+import "github.com/AccursedGalaxy/driver-os/internal/runspec"
 
-func DefaultTerminationPolicy() TerminationPolicy {
-	return TerminationPolicy{Version: "tp-2026-07-10", MaxRepeats: maxRepeats, MaxReasoningRepeats: maxReasoningRepeats, MaxStagnant: maxStagnant, NavSpiralWindow: noProgressWindow, WanderMultiple: spiralWanderMultiple, FrontierCap: spiralFrontierCap, GreenRepeatThreshold: 3}
-}
+// TerminationPolicy remains source-compatible while its ownership lives in runspec.
+type TerminationPolicy = runspec.TerminationPolicy
+
+func DefaultTerminationPolicy() TerminationPolicy { return runspec.DefaultTerminationPolicy() }
 
 func resolveTerminationPolicy(p TerminationPolicy, navOverride int) TerminationPolicy {
 	d := DefaultTerminationPolicy()
@@ -43,7 +33,6 @@ func resolveTerminationPolicy(p TerminationPolicy, navOverride int) TerminationP
 	if p.GreenRepeatThreshold <= 0 {
 		p.GreenRepeatThreshold = d.GreenRepeatThreshold
 	}
-	// The long-standing Config knob is an explicit compatibility override and wins.
 	if navOverride > 0 {
 		p.NavSpiralWindow = navOverride
 	}
