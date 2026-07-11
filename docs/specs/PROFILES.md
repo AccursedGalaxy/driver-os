@@ -424,14 +424,14 @@ the eventual unification diff smaller. Do S6 first; do not couple them.
 
 ## Open for Robin ⚑
 
-6. **Headless profile-field fix — migration shape only** (narrowed by
-   council O6: profiles are global contracts, wiring bugs don't get
-   versioned into them — S6a honors declared `coding-v2` semantics in ALL
-   binaries). Remaining call: take the behavior change directly (headless
-   runs without `-verify-cmd` gain the soft auto-derived verify gate;
-   StandingContext/nudge windows likewise start applying), or also ship an
-   opt-in `legacy-headless-v1` compat profile with a recorded removal date
-   for in-flight tooling.
+6. ~~Headless profile-field fix — migration shape~~ — RESOLVED 2026-07-11
+   (Robin, via "proceed" on the recommendation): take the behavior change
+   DIRECTLY — headless runs without `-verify-cmd` gain the soft
+   auto-derived verify gate, StandingContext/nudge windows start applying;
+   NO `legacy-headless-v1` compat profile (every affected run was silently
+   violating its own recorded profile; nothing external depends on the
+   buggy posture). Narrowing rationale: council O6 — profiles are global
+   contracts, wiring bugs don't get versioned into them.
 
 ## Older open items ⚑
 
