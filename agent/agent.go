@@ -524,6 +524,10 @@ type Config struct {
 
 	Obs Observer // optional: live progress sink; nil = silent.
 
+	// PerfMark receives optional latency instrumentation from the native tool
+	// loop. It is nil for callers that do not collect performance timelines.
+	PerfMark func(event string, attrs map[string]any)
+
 	// ModelInfo describes the selected solver model's known limits. A zero value
 	// means unknown and disables proactive context-window telemetry.
 	ModelInfo llm.ModelInfo

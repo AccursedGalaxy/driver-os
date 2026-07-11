@@ -18,12 +18,19 @@ echo "out: $OUT" >&2
 
 go build -o "$BIN" "$REPO/cmd/driver"
 
-# Fixture: a minimal git repo with no Go markers, so -auto-verify derives no
-# gate and the run is deterministic. README.md is what the mock's read_file hits.
+# Fixture: a minimal git repo. Default has no language markers, so -auto-verify
+# derives no gate and the run is deterministic. FIXTURE=go adds a tiny Go module
+# so the auto-verify derivation + baseline path is exercised too (its cost shows
+# up between host_send and gates_start on turn 1).
 FIX="$OUT/fixture"
 mkdir -p "$FIX"
 git -C "$FIX" init -q 2>/dev/null || true
 echo "hello from the latency fixture" >"$FIX/README.md"
+if [[ "${FIXTURE:-}" == "go" ]]; then
+  printf 'module fixture\n\ngo 1.22\n' >"$FIX/go.mod"
+  printf 'package main\n\nfunc main() { println(add(1, 2)) }\n\nfunc add(a, b int) int { return a + b }\n' >"$FIX/main.go"
+  printf 'package main\n\nimport "testing"\n\nfunc TestAdd(t *testing.T) {\n\tif add(1, 2) != 3 {\n\t\tt.Fatal("bad add")\n\t}\n}\n' >"$FIX/main_test.go"
+fi
 git -C "$FIX" add -A && git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm fixture --allow-empty-message 2>/dev/null || true
 
 cleanup() { tmux kill-session -t "$SES" 2>/dev/null || true; }

@@ -74,6 +74,14 @@ func parseOpenRouterPrice(value string) float64 {
 	return parsed * 1e6
 }
 
+// WarmPricing eagerly loads the live OpenRouter price catalog (once). Call it
+// from a background goroutine at process startup: CostOf's live-catalog
+// fallback otherwise blocks the FIRST cost lookup — which sits on the agent
+// loop's hot path between a model response and its tool dispatch — on a
+// synchronous HTTP fetch (measured 200ms online, up to the 5s client timeout
+// offline).
+func WarmPricing() { loadOpenRouterPricing() }
+
 func openRouterPrice(model string) (Price, bool) {
 	loadOpenRouterPricing()
 	price, ok := openRouterPricing[model]

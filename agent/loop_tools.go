@@ -182,7 +182,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 	maxIter, maxTok, runTimeout := knobs.maxIter, knobs.maxTok, knobs.runTimeout
 	policy := knobs.terminationPolicy
 	cfg.Tools = wrapTools(cfg, runTimeout)
+	if cfg.PerfMark != nil {
+		cfg.PerfMark("gates_start", nil)
+	}
 	gs, err := newGates(ctx, cfg, runTimeout)
+	if cfg.PerfMark != nil {
+		cfg.PerfMark("gates_done", nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +248,9 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		recalled = recall(ctx, cfg.Obs, cfg.Memory, scope, cfg.Task)
 	}()
 	setupWG.Wait()
+	if cfg.PerfMark != nil {
+		cfg.PerfMark("setup_done", nil)
+	}
 	messages := seedMessages(seedCfg, environment+verifyGatePreamble(cfg)+gs.baselinePreamble())
 	// Expose the final conversation on every loop exit (the continuation seam, see
 	// RunResult.Messages). Separate from the top-of-func salvage defer; this one is
@@ -353,7 +362,13 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 			ReasoningEffort: cfg.ReasoningEffort,
 		}
 		noteContextEstimate(cfg, req, &contextEstimateNoted)
+		if cfg.PerfMark != nil {
+			cfg.PerfMark("model_start", map[string]any{"iter": i})
+		}
 		resp, messages, err = generateWithEviction(loopCtx, cfg, req)
+		if cfg.PerfMark != nil {
+			cfg.PerfMark("model_done", map[string]any{"iter": i})
+		}
 		modelMs := time.Since(modelStart).Milliseconds()
 		if err != nil {
 			// A streamed turn that died mid-flight still returns the prose collected

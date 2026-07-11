@@ -102,6 +102,12 @@ var Pricing = map[string]Price{
 // priced at all. ok=false means the slug is absent from Pricing — the caller
 // renders "—", not 0, because free and unknown are different facts.
 func CostOf(model string, u llm.Usage) (cost float64, ok bool) {
+	// The scripted mock provider is keyless and free by construction; bail before
+	// the live-catalog fallback so it never triggers a network fetch mid-turn.
+	if strings.HasPrefix(model, "mock:") {
+		return 0, true
+	}
+
 	// Try the ref verbatim (covers slash refs and bare slugs).
 	if p, ok := Pricing[model]; ok {
 		return p.Cost(u), true
