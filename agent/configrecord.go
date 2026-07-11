@@ -197,6 +197,13 @@ func newConfigRecord(cfg Config, systemPrompt string, toolRepresentation any, pr
 	return rec
 }
 
+// EffectiveConfigOf returns the effective behavior configuration for cfg.
+// It uses the native-tools protocol, the compatibility default for Config values
+// constructed outside a running loop.
+func EffectiveConfigOf(cfg Config) EffectiveConfig {
+	return effectiveConfig(cfg, "tools")
+}
+
 func effectiveConfig(cfg Config, effectiveProtocol string) EffectiveConfig {
 	// RequestedProtocol and ProtocolFallbackReason are provenance rather than
 	// behavior. EffectiveProtocol is included because it changes the model API.
