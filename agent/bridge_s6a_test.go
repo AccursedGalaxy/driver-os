@@ -351,7 +351,7 @@ func newGateOld(ctx context.Context, cfg Config) (*Gate, error) {
 func newConfigRecordT(cfg Config, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
 	spec, rt, _ := mustSplitT(cfg)
 	pol := spec.Policy()
-	return newConfigRecord(pol, rt, runVerifyState(pol, rt), systemPrompt, toolRepresentation, protocols...)
+	return newConfigRecord(spec, rt, runVerifyState(pol, rt), systemPrompt, toolRepresentation, protocols...)
 }
 
 // wrapToolsRepro rebuilds the fenced toolset for a constructed gates value.

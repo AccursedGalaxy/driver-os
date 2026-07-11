@@ -24,8 +24,14 @@ func TestRunNativeStampsConfigRecord(t *testing.T) {
 	if cr == nil {
 		t.Fatal("RunResult.ConfigRecord is nil — the native loop must stamp it on every run")
 	}
-	if cr.Effective.EffectiveProtocol != "tools" {
-		t.Fatalf("effective protocol = %q, want tools", cr.Effective.EffectiveProtocol)
+	if cr.EffectiveProtocol != "tools" {
+		t.Fatalf("effective protocol = %q, want tools", cr.EffectiveProtocol)
+	}
+	if cr.Policy == nil || cr.ResolutionTrace == nil || cr.ResolutionTraceSHA256 == "" {
+		t.Fatal("v9 record must carry the canonical policy value and resolution trace")
+	}
+	if cr.Effective != nil {
+		t.Fatal("v9 record must not re-derive the legacy EffectiveConfig projection")
 	}
 	if cr.PromptSHA256 == "" || cr.ToolSchemaSHA256 == "" || cr.ConfigSHA256 == "" {
 		t.Fatalf("hashes must all be set: prompt=%q toolschema=%q config=%q",
@@ -49,7 +55,7 @@ func TestRunStampsTextConfigRecord(t *testing.T) {
 	if res.ConfigRecord == nil {
 		t.Fatal("RunResult.ConfigRecord is nil — the text loop must stamp it")
 	}
-	if got := res.ConfigRecord.Effective.EffectiveProtocol; got != "text" {
+	if got := res.ConfigRecord.EffectiveProtocol; got != "text" {
 		t.Fatalf("effective protocol = %q, want text", got)
 	}
 	if res.ConfigRecord.RequestedProtocol != "text" || res.ConfigRecord.ProtocolFallbackReason != "" {
@@ -95,8 +101,8 @@ func TestConfigRecordDeterministicAndInputSensitive(t *testing.T) {
 func TestInvocationSurfaceDoesNotChangeConfigSHA256(t *testing.T) {
 	cfg := Config{Task: "t", BinaryIdentity: BinaryIdentityDriver, InvocationSurface: InvocationSurfaceDriverRun}
 	run := newConfigRecordT(cfg, "system prompt", nil)
-	if run.SchemaVersion != 8 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
-		t.Fatalf("v8 identity record = %+v", run)
+	if run.SchemaVersion != 9 || run.BinaryIdentity != BinaryIdentityDriver || run.InvocationSurface != InvocationSurfaceDriverRun {
+		t.Fatalf("v9 identity record = %+v", run)
 	}
 	cfg.InvocationSurface = InvocationSurfaceDriverAgent
 	compat := newConfigRecordT(cfg, "system prompt", nil)
@@ -119,17 +125,24 @@ func TestConfigRecordProtocolHashing(t *testing.T) {
 	if explicit.ProtocolFallbackReason == "" || explicit.RequestedProtocol != "tools" {
 		t.Fatalf("fallback provenance not recorded: %+v", explicit)
 	}
+	// v9: the wire protocol is loop-selected, recorded BESIDE the policy —
+	// policy identity (ConfigSHA256) is protocol-independent (§7.3), and the
+	// protocol difference is visible in its own field (plus the per-protocol
+	// prompt/tool-schema hashes).
 	native := newConfigRecordT(cfg, "native prompt", nil, "tools")
-	if native.ConfigSHA256 == explicit.ConfigSHA256 {
-		t.Fatal("different effective protocols must change ConfigSHA256")
+	if native.ConfigSHA256 != explicit.ConfigSHA256 {
+		t.Fatal("policy identity must be protocol-independent in v9")
+	}
+	if native.EffectiveProtocol == explicit.EffectiveProtocol {
+		t.Fatal("records must retain their distinct effective protocols")
 	}
 }
 
 // The record survives the transcript write→read round trip, and the
 // transcript schema version is bumped for the new field.
 func TestTranscriptRoundTripsConfigRecord(t *testing.T) {
-	if TranscriptSchemaVersion != "8" {
-		t.Fatalf("TranscriptSchemaVersion = %q, want \"7\" (v7 adds the config record)", TranscriptSchemaVersion)
+	if TranscriptSchemaVersion != "9" {
+		t.Fatalf("TranscriptSchemaVersion = %q, want \"9\" (v9 = canonical policy-value record)", TranscriptSchemaVersion)
 	}
 	dir := t.TempDir()
 	rec := RunRecord{
@@ -178,8 +191,8 @@ func TestConfigRecordV8ResolutionProvenance(t *testing.T) {
 	cfg := Config{RequiredTrust: "reviewed-local", Canonical: true, FieldProvenance: map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli"}}
 	a := newConfigRecordT(cfg, "system", nil)
 	b := newConfigRecordT(cfg, "system", nil)
-	if a.SchemaVersion != 8 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
-		t.Fatalf("v8 resolution fields = %+v", a)
+	if a.SchemaVersion != 9 || a.RequiredTrust != "reviewed-local" || !a.Canonical {
+		t.Fatalf("v9 resolution fields = %+v", a)
 	}
 	for key, source := range map[string]string{"max_iters": "profile", "worktree": "trust", "custom": "cli", "model_configured": "derived", "finish_tool_configured": "derived"} {
 		if a.FieldProvenance[key] != source {
@@ -261,7 +274,7 @@ func TestConfigRecordDecodesV4(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"schema_version":4,"binary_identity":"driver","invocation_surface":"driver-run","effective":{}}`), &rec); err != nil {
 		t.Fatalf("unmarshal v4 config record: %v", err)
 	}
-	if rec.SchemaVersion != 4 || rec.BinaryIdentity != "driver" || rec.InvocationSurface != "driver-run" || rec.RequestedProtocol != "" || rec.Effective.EffectiveProtocol != "" {
+	if rec.SchemaVersion != 4 || rec.BinaryIdentity != "driver" || rec.InvocationSurface != "driver-run" || rec.RequestedProtocol != "" || rec.Effective == nil || rec.Effective.EffectiveProtocol != "" {
 		t.Fatalf("v4 record was not preserved without invented v5 values: %+v", rec)
 	}
 }

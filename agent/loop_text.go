@@ -50,7 +50,7 @@ func Run(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Con
 		// No protocol prompt or tool grammar has been built before this safety
 		// refusal; record that absence as hashes of empty representations.
 		refusal.TerminationPolicy = pol.TerminationPolicy
-		refusal.ConfigRecord = newConfigRecord(pol, rt, vs, "", nil, "text")
+		refusal.ConfigRecord = newConfigRecord(spec, rt, vs, "", nil, "text")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
@@ -116,7 +116,7 @@ func Run(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Con
 	scope := scopeOrDefault(pol.MemoryScope)
 	systemPrompt := withPersona(pol.Persona, buildSystemPrompt(tools))
 	system := systemPrompt + recall(ctx, rt.Obs, rt.Memory, scope, content.Task)
-	res.ConfigRecord = newConfigRecord(pol, rt, vs, systemPrompt, textToolGrammar(tools), "text")
+	res.ConfigRecord = newConfigRecord(spec, rt, vs, systemPrompt, textToolGrammar(tools), "text")
 	temp := 0.0 // deterministic-ish; this is our knob, not the model's (P7).
 
 	var lastAction string

@@ -28,9 +28,20 @@ func TestConfigFieldClassificationOracleRejectsUnclassifiedField(t *testing.T) {
 }
 
 func TestConfigRecordRuntimeIdentitiesAffectConfigHash(t *testing.T) {
+	// v9: ConfigSHA256 is the CANONICAL POLICY hash (§7.3) — runtime bindings
+	// like ModelInfo are recorded in Bindings but must NOT perturb policy
+	// identity (two runs with the same effective policy share the hash).
 	base := newConfigRecordT(Config{}, "system", nil)
 	withModelInfo := newConfigRecordT(Config{ModelInfo: llm.ModelInfo{ContextWindow: 42}}, "system", nil)
-	if base.ConfigSHA256 == withModelInfo.ConfigSHA256 {
-		t.Fatal("behavior-affecting ModelInfo must change ConfigSHA256")
+	if base.ConfigSHA256 != withModelInfo.ConfigSHA256 {
+		t.Fatal("runtime bindings must not perturb the canonical policy hash")
+	}
+	if withModelInfo.Bindings.ModelInfo.ContextWindow != 42 {
+		t.Fatal("ModelInfo must be recorded in Bindings")
+	}
+	// A POLICY difference must change the hash.
+	withPolicy := newConfigRecordT(Config{MaxIterations: 17}, "system", nil)
+	if base.ConfigSHA256 == withPolicy.ConfigSHA256 {
+		t.Fatal("a policy difference must change ConfigSHA256")
 	}
 }

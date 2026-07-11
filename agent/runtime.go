@@ -135,6 +135,35 @@ type verifyState struct {
 
 	provenance string // the project marker that produced an auto-derived Cmd.
 	resolved   bool   // the one-per-session auto-verify decision has been made.
+
+	// events is the append-only runtime-resolution sequence (PROFILES.md §7.3):
+	// values derived OUTSIDE Resolve that control behavior (an auto-derived
+	// VerifyCmd, a session /verify override) are not config and never mutate
+	// the spec, but they execute code — so each derivation is recorded as an
+	// ordered event, serialized into the ConfigRecord and hashed into bundle
+	// identity. A singular "selected value" slot would let overwrites hide
+	// temporal divergence; the sequence cannot.
+	events []RuntimeResolution
+}
+
+// RuntimeResolution is one runtime-derivation event (§7.3): the derived value,
+// where it came from, and the gate that consumes it.
+type RuntimeResolution struct {
+	Seq        int    `json:"seq"`
+	Phase      string `json:"phase"` // "pre-run" | "session"
+	Field      string `json:"field"` // "verify_cmd"
+	Value      string `json:"value"`
+	Provenance string `json:"provenance"` // project marker (go.mod, …) or "user"
+	Consumer   string `json:"consumer"`   // "verify-gate"
+	Disarmed   bool   `json:"disarmed,omitempty"`
+	Note       string `json:"note,omitempty"`
+}
+
+func (vs *verifyState) recordResolution(phase, field, value, provenance, consumer string, disarmed bool, note string) {
+	vs.events = append(vs.events, RuntimeResolution{
+		Seq: len(vs.events) + 1, Phase: phase, Field: field, Value: value,
+		Provenance: provenance, Consumer: consumer, Disarmed: disarmed, Note: note,
+	})
 }
 
 func newVerifyState(pol runspec.PolicyValue) *verifyState {

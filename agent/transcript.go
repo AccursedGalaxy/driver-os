@@ -30,7 +30,11 @@ import (
 //	v7 = RunRecord carries the config record: canonical effective config,
 //	     prompt/tool-schema/config hashes, build identity, and reserved profile fields.
 //	v8 = RunRecord carries resolved termination policy and detector telemetry.
-const TranscriptSchemaVersion = "8"
+//	v9 = ConfigRecord replaces the lazily re-derived EffectiveConfig with the
+//	     canonical policy-value + resolution-trace serializations and the
+//	     runtime-resolution event sequence (PROFILES.md §7.3 / S6c); old
+//	     records still decode via the legacy `effective` pointer field.
+const TranscriptSchemaVersion = "9"
 
 // newRunID is "<YYYYMMDD-HHMMSS>-<hex>" — sortable by time, unique by suffix.
 // Mirrors the council recorder's scheme so the two corpora read alike.

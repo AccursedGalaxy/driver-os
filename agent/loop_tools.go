@@ -164,7 +164,7 @@ func RunNative(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, conte
 		// Prompt resolution and native schemas have not run on this safety refusal;
 		// the record deliberately hashes empty protocol representations.
 		refusal.TerminationPolicy = pol.TerminationPolicy
-		refusal.ConfigRecord = newConfigRecord(pol, rt, vs, "", nil, "tools")
+		refusal.ConfigRecord = newConfigRecord(spec, rt, vs, "", nil, "tools")
 		return refusal, nil // (P2/§5) too-weak sandbox — refuse before the first model call.
 	}
 	ev.isolation = EvidencePassed
@@ -270,7 +270,7 @@ func RunNative(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, conte
 	// (P3) Recalled long-term memory rides in the system prompt, labelled stale.
 	system := withPersona(pol.Persona, basePrompt) + recalled
 	schemas := nativeSchemas(tools) // typed per-tool schemas, with a single-`arg` bridge fallback.
-	res.ConfigRecord = newConfigRecord(pol, rt, vs, withPersona(pol.Persona, basePrompt), schemas, "tools")
+	res.ConfigRecord = newConfigRecord(spec, rt, vs, withPersona(pol.Persona, basePrompt), schemas, "tools")
 
 	temp := 0.0
 

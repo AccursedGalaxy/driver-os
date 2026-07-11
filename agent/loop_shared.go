@@ -106,6 +106,7 @@ func applyAutoVerifyResolution(vs *verifyState, res autoVerifyResolution, obs Ob
 	}
 	vs.SkipVerifyBaseline = true
 	if res.disarmNote != "" {
+		vs.recordResolution("pre-run", "verify_cmd", res.cmd, res.provenance, "verify-gate", true, res.disarmNote)
 		if emit && obs != nil {
 			obs.Note(res.disarmNote)
 		}
@@ -115,6 +116,7 @@ func applyAutoVerifyResolution(vs *verifyState, res autoVerifyResolution, obs Ob
 	vs.AutoVerifySoft = true
 	vs.VerifyContinue = true
 	vs.provenance = res.provenance
+	vs.recordResolution("pre-run", "verify_cmd", res.cmd, res.provenance, "verify-gate", false, "auto-derived soft verify gate")
 	if emit && obs != nil {
 		obs.Note(fmt.Sprintf("auto-verify: armed soft verify gate `%s` (derived from %s)", res.cmd, res.provenance))
 	}

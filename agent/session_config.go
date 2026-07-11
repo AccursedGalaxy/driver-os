@@ -85,6 +85,7 @@ func (s *Session) SetVerifyCmd(cmd string) {
 	s.vs.Cmd = cmd
 	s.vs.AutoVerifySoft = false
 	s.vs.provenance = ""
+	s.vs.recordResolution("session", "verify_cmd", cmd, "user", "verify-gate", cmd == "", "session /verify override")
 	if cmd == "" && s.vs.AutoVerify {
 		// An explicit /verify off is a user decision, not an invitation for the next
 		// turn to auto-arm the gate again.

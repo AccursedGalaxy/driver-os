@@ -16,8 +16,15 @@ import (
 	"github.com/AccursedGalaxy/mneme"
 )
 
-// ConfigRecord schema v8 adds resolved termination policy.
-const configRecordSchemaVersion = 8
+// ConfigRecord schema v9 (PROFILES.md §7.3 / S6c): the lazily re-derived
+// EffectiveConfig projection is replaced by the CANONICAL serializations of
+// the values the run actually held — the resolved policy value (whose hash is
+// ConfigSHA256: two runs with the same effective policy share it regardless of
+// how each value was reached), the resolution trace (its own hash, so identity
+// and audit questions stay separable), and the append-only runtime-resolution
+// event sequence for values derived outside Resolve. v8's Effective survives
+// only to decode old transcripts.
+const configRecordSchemaVersion = 9
 
 // Binary and invocation-surface identifiers are stable transcript values.
 const (
@@ -48,12 +55,37 @@ type ConfigRecord struct {
 	HarnessDirty           bool   `json:"harness_dirty,omitempty"`
 	PromptSHA256           string `json:"prompt_sha256"`
 	ToolSchemaSHA256       string `json:"tool_schema_sha256"`
-	// ConfigSHA256 proves that the recorded effective behavior inputs were the
-	// same. It does not prove semantic task equivalence, environment identity,
-	// unrecorded runtime state, or provider-side behavior.
+	// ConfigSHA256 is the hash of the canonical POLICY-VALUE serialization
+	// (runspec.ResolvedSpec.ConfigSHA256): two runs with the same effective
+	// policy share it regardless of HOW each value was reached. It does not
+	// prove semantic task equivalence, environment identity, unrecorded runtime
+	// state, or provider-side behavior.
 	ConfigSHA256 string `json:"config_sha256"`
 
-	Effective          EffectiveConfig   `json:"effective"`
+	// EffectiveProtocol is the wire protocol the loop actually ran ("text" /
+	// "tools") — loop-selected, so recorded beside the policy, not inside it.
+	EffectiveProtocol string `json:"effective_protocol,omitempty"`
+
+	// Policy is the canonical policy value the loop held (v9).
+	Policy *runspec.PolicyValue `json:"policy,omitempty"`
+	// ResolutionTrace is the per-field provenance captured at Resolve, under
+	// its own hash — "same policy?" and "same way of asking for it?" stay
+	// separable questions (§7.3).
+	ResolutionTrace       *runspec.Trace `json:"resolution_trace,omitempty"`
+	ResolutionTraceSHA256 string         `json:"resolution_trace_sha256,omitempty"`
+	// RuntimeResolutions is the append-only runtime-derivation event sequence
+	// (auto-verify, session /verify overrides) with its hash — included in
+	// bundle identity so two runs sharing ConfigSHA256 cannot execute different
+	// derived verify commands invisibly.
+	RuntimeResolutions      []RuntimeResolution `json:"runtime_resolutions,omitempty"`
+	RuntimeResolutionSHA256 string              `json:"runtime_resolution_sha256,omitempty"`
+	// Bindings records which runtime dependencies were configured (presence
+	// only — the bindings themselves are never serialized).
+	Bindings RuntimeBindings `json:"bindings"`
+
+	// Effective is the legacy v<=8 projection, retained ONLY so old transcript
+	// JSON continues to decode; nil in v9 records.
+	Effective          *EffectiveConfig  `json:"effective,omitempty"`
 	TrustProfile       *string           `json:"trust_profile"`
 	ExecProfile        *string           `json:"exec_profile"`
 	ExecProfileHash    string            `json:"exec_profile_hash,omitempty"`
@@ -131,19 +163,47 @@ type EffectiveConfig struct {
 	FinishToolTrustsCaller bool              `json:"finish_tool_trusts_caller"`
 }
 
+// RuntimeBindings records the PRESENCE of injected runtime dependencies plus
+// their reproducibility-relevant identity (model limits, reviewer/planner
+// implementation types). The bindings themselves are never serialized (§7.1).
+type RuntimeBindings struct {
+	ModelConfigured         bool          `json:"model_configured"`
+	MemoryConfigured        bool          `json:"memory_configured"`
+	VerifySandboxConfigured bool          `json:"verify_sandbox_configured"`
+	CostFnConfigured        bool          `json:"cost_fn_configured"`
+	SpendConfigured         bool          `json:"spend_configured"`
+	ReviewConfigured        bool          `json:"review_configured"`
+	PlannerConfigured       bool          `json:"planner_configured"`
+	ModelInfo               llm.ModelInfo `json:"model_info"`
+	ReviewerIdentity        string        `json:"reviewer_identity,omitempty"`
+	PlannerIdentity         string        `json:"planner_identity,omitempty"`
+}
+
+func runtimeBindingsOf(rt Runtime) RuntimeBindings {
+	return RuntimeBindings{
+		ModelConfigured: rt.Model != nil, MemoryConfigured: rt.Memory != nil,
+		VerifySandboxConfigured: rt.VerifySandbox != nil, CostFnConfigured: rt.CostFn != nil,
+		SpendConfigured: rt.Spend != nil, ReviewConfigured: rt.Reviewer != nil,
+		PlannerConfigured: rt.Planner != nil, ModelInfo: rt.ModelInfo,
+		ReviewerIdentity: runtimeImplementationIdentity(rt.Reviewer),
+		PlannerIdentity:  runtimeImplementationIdentity(rt.Planner),
+	}
+}
+
 // newConfigRecord constructs the single shared reproducibility record path
-// from the run's ACTUALLY HELD values: the resolved policy, the runtime
-// bindings, and the run-local verification state (post auto-verify derivation,
-// matching the historical record timing). Callers supply the exact protocol
-// prompt, its stable tool representation, and the loop that actually ran.
-// Text representations are textToolGrammar values; native representations are
-// []llm.Tool API schemas.
-func newConfigRecord(pol runspec.PolicyValue, rt Runtime, vs *verifyState, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
+// from the run's ACTUALLY HELD values: the resolved spec (canonical policy +
+// trace), the runtime bindings, and the run-local verification state (post
+// auto-verify derivation — its events ride the runtime-resolution sequence).
+// Callers supply the exact protocol prompt, its stable tool representation,
+// and the loop that actually ran. Text representations are textToolGrammar
+// values; native representations are []llm.Tool API schemas.
+func newConfigRecord(spec runspec.ResolvedSpec, rt Runtime, vs *verifyState, systemPrompt string, toolRepresentation any, protocols ...string) *ConfigRecord {
 	effectiveProtocol := "tools" // compatibility default for direct legacy callers.
 	if len(protocols) > 0 {
 		effectiveProtocol = protocols[0]
 	}
-	eff := effectiveConfigFromSpec(pol, rt, vs, effectiveProtocol)
+	pol := spec.Policy()
+	trace := spec.Trace()
 	meta := rt.Record
 	binaryIdentity := meta.BinaryIdentity
 	if binaryIdentity == "" {
@@ -163,23 +223,29 @@ func newConfigRecord(pol runspec.PolicyValue, rt Runtime, vs *verifyState, syste
 		}
 	}
 	rec := &ConfigRecord{
-		SchemaVersion:          configRecordSchemaVersion,
-		Binary:                 binaryIdentity,
-		BinaryIdentity:         binaryIdentity,
-		InvocationSurface:      meta.InvocationSurface,
-		RequestedProtocol:      meta.RequestedProtocol,
-		ProtocolFallbackReason: meta.ProtocolFallbackReason,
-		PromptSHA256:           sha256Hex([]byte(systemPrompt)),
-		ToolSchemaSHA256:       jsonSHA256(toolRepresentation),
-		ConfigSHA256:           jsonSHA256(eff),
-		Effective:              eff,
-		ApprovalPolicyName:     meta.ApprovalPolicyName,
-		ApprovalPolicyHash:     meta.ApprovalPolicyHash,
-		ExecProfileHash:        meta.ExecProfileHash,
-		CLIOverrides:           append([]string(nil), meta.CLIOverrides...),
-		RequiredTrust:          meta.RequiredTrust,
-		Canonical:              meta.Canonical,
-		FieldProvenance:        provenance,
+		SchemaVersion:           configRecordSchemaVersion,
+		Binary:                  binaryIdentity,
+		BinaryIdentity:          binaryIdentity,
+		InvocationSurface:       meta.InvocationSurface,
+		RequestedProtocol:       meta.RequestedProtocol,
+		ProtocolFallbackReason:  meta.ProtocolFallbackReason,
+		PromptSHA256:            sha256Hex([]byte(systemPrompt)),
+		ToolSchemaSHA256:        jsonSHA256(toolRepresentation),
+		ConfigSHA256:            spec.ConfigSHA256(),
+		EffectiveProtocol:       effectiveProtocol,
+		Policy:                  &pol,
+		ResolutionTrace:         &trace,
+		ResolutionTraceSHA256:   trace.TraceSHA256(),
+		RuntimeResolutions:      append([]RuntimeResolution(nil), vs.events...),
+		RuntimeResolutionSHA256: jsonSHA256(vs.events),
+		Bindings:                runtimeBindingsOf(rt),
+		ApprovalPolicyName:      meta.ApprovalPolicyName,
+		ApprovalPolicyHash:      meta.ApprovalPolicyHash,
+		ExecProfileHash:         meta.ExecProfileHash,
+		CLIOverrides:            append([]string(nil), meta.CLIOverrides...),
+		RequiredTrust:           meta.RequiredTrust,
+		Canonical:               meta.Canonical,
+		FieldProvenance:         provenance,
 	}
 	if meta.TrustProfile != "" {
 		trustProfile := meta.TrustProfile
