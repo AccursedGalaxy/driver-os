@@ -6,7 +6,6 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -216,46 +215,4 @@ func (m *standingCaptureModel) Generate(_ context.Context, req llm.Request) (*ll
 		return &llm.Response{Content: []llm.ContentPart{llm.ToolCallPart{ID: "n1", Name: "noop", Args: json.RawMessage(`{}`)}}}, nil
 	}
 	return &llm.Response{Content: []llm.ContentPart{llm.Text("done")}}, nil
-}
-
-func TestStandingContextDoesNotEnterPersistentMessages(t *testing.T) {
-	sb := sbWith(t, nil)
-	run := func(enabled bool) []llm.Request {
-		m := &standingCaptureModel{}
-		_, err := RunNative(context.Background(), Config{
-			Model:           m,
-			Sandbox:         sb,
-			Task:            "do it",
-			StandingContext: enabled,
-			Tools: map[string]Tool{"noop": {
-				Name:   "noop",
-				Schema: json.RawMessage(`{"type":"object","properties":{}}`),
-				RunJSON: func(context.Context, json.RawMessage) (string, error) {
-					return "observed", nil
-				},
-			}},
-			MaxIterations: 3,
-			Obs:           nopObserver{},
-		})
-		if err != nil {
-			t.Fatalf("RunNative(%v): %v", enabled, err)
-		}
-		return m.calls
-	}
-	off := run(false)
-	on := run(true)
-	if len(off) != len(on) || len(on) < 2 {
-		t.Fatalf("call counts off=%d on=%d", len(off), len(on))
-	}
-	for i := range off {
-		if !reflect.DeepEqual(off[i].Messages, on[i].Messages) {
-			t.Fatalf("persistent Messages differ at call %d\noff=%#v\non=%#v", i, off[i].Messages, on[i].Messages)
-		}
-		if off[i].StandingContext != "" {
-			t.Fatalf("feature-off request unexpectedly has standing context: %q", off[i].StandingContext)
-		}
-		if on[i].StandingContext == "" {
-			t.Fatalf("feature-on request %d lacks standing context", i)
-		}
-	}
 }

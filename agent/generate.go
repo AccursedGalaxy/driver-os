@@ -40,7 +40,7 @@ func noteContextEstimate(cfg Config, req llm.Request, noted *bool) {
 	if *noted || cfg.ModelInfo.ContextWindow <= 0 {
 		return
 	}
-	bytes := len(req.System) + len(req.StandingContext)
+	bytes := len(req.System)
 	for _, msg := range req.Messages {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
@@ -168,11 +168,6 @@ func generateWithEviction(ctx context.Context, cfg Config, req llm.Request) (*ll
 		}
 		if err == nil || !errors.Is(err, llm.ErrContextLength) {
 			return resp, req.Messages, err
-		}
-		if req.StandingContext != "" {
-			cfg.Obs.Note("context overflow — dropped standing context trailer and retrying before evicting real turns (HP-1 reactive fallback)")
-			req.StandingContext = ""
-			continue
 		}
 		if attempt >= evictionMaxRetries {
 			return nil, req.Messages, err // still overflowing after the paid retries — degrade.

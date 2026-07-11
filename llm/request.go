@@ -19,12 +19,6 @@ type Request struct {
 	// Messages is the conversation so far.
 	Messages []Message
 
-	// StandingContext, when non-empty, is rendered as a FINAL user message placed
-	// AFTER Messages and OUTSIDE every cache breakpoint. It is regenerated each turn
-	// and never enters Messages, so the cached prefix (System + Messages) stays
-	// byte-stable across turns.
-	StandingContext string
-
 	// MaxTokens caps generated tokens. 0 means unset (provider default).
 	MaxTokens int
 

@@ -296,6 +296,7 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		standing = newStandingState()
 		defer standing.cleanup()
 	}
+	lastStandingBlock := ""
 	answerNudged := false
 	sayNudged := false
 
@@ -341,9 +342,12 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		}
 		cfg.Obs.Iteration(i, maxIter)
 
-		standingBlock := ""
 		if cfg.StandingContext && standing != nil {
-			standingBlock = standing.block(loopCtx, cfg, gs, tr, i)
+			standingBlock := standing.block(loopCtx, cfg, gs, tr, i)
+			if standingBlock != "" && standingBlock != lastStandingBlock {
+				messages = append(messages, llm.Message{Role: llm.RoleUser, Parts: []llm.ContentPart{llm.TextPart{Text: standingBlock}}})
+				lastStandingBlock = standingBlock
+			}
 		}
 
 		// generateWithEviction adds HP-1's reactive fallback: on a window overflow it
@@ -355,7 +359,6 @@ func RunNative(ctx context.Context, cfg Config) (out *RunResult, err error) {
 		req := llm.Request{
 			System:          system,
 			Messages:        messages,
-			StandingContext: standingBlock,
 			Tools:           schemas,
 			Temperature:     &temp,
 			MaxTokens:       maxTok,

@@ -245,16 +245,11 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 	}
 	if p.cache {
 		// (HP-8) Two anchors, same shape as openaicompat's breakpoints: the
-		// stable system prefix and the last REAL transcript block. Mark the real
-		// tail before appending StandingContext so the changing trailer is never a
-		// cache breakpoint.
+		// stable system prefix and the last transcript block.
 		if n := len(params.System); n > 0 {
 			params.System[n-1].CacheControl = sdk.NewCacheControlEphemeralParam()
 		}
 		markTailCacheControl(params.Messages)
-	}
-	if req.StandingContext != "" {
-		params.Messages = append(params.Messages, sdk.NewUserMessage(sdk.NewTextBlock(req.StandingContext)))
 	}
 	if req.Temperature != nil && !isClaude5(model) {
 		// Claude 5 models REJECT temperature outright ("`temperature` is

@@ -193,30 +193,25 @@ func TestThinkingRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStandingContextTrailerAfterRealTailCacheControl(t *testing.T) {
+func TestStandingMessageTailCacheControl(t *testing.T) {
 	var gotBody map[string]any
 	p := newTestProvider(t, Config{PromptCache: true}, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"id":"msg_trailer","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		io.WriteString(w, `{"id":"msg_standing","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 	})
-	if _, err := p.Generate(context.Background(), llm.Request{System: "sys", Messages: []llm.Message{llm.User("real one"), llm.User("real tail")}, StandingContext: "standing trailer"}); err != nil {
+	if _, err := p.Generate(context.Background(), llm.Request{System: "sys", Messages: []llm.Message{llm.User("real one"), llm.User("standing context")}}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	msgs := gotBody["messages"].([]any)
-	if len(msgs) != 3 {
-		t.Fatalf("messages = %d, want 2 real + trailer", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2 transcript messages", len(msgs))
 	}
-	realTailBlocks := msgs[1].(map[string]any)["content"].([]any)
-	realTail := realTailBlocks[len(realTailBlocks)-1].(map[string]any)
-	if realTail["cache_control"] == nil {
-		t.Fatalf("last real block lacks cache_control: %v", realTail)
-	}
-	trailerBlocks := msgs[2].(map[string]any)["content"].([]any)
-	trailer := trailerBlocks[0].(map[string]any)
-	if trailer["text"] != "standing trailer" || trailer["cache_control"] != nil {
-		t.Fatalf("standing trailer should be final unmarked user text: %v", msgs[2])
+	blocks := msgs[1].(map[string]any)["content"].([]any)
+	tail := blocks[len(blocks)-1].(map[string]any)
+	if tail["text"] != "standing context" || tail["cache_control"] == nil {
+		t.Fatalf("standing transcript tail should carry cache control: %v", msgs[1])
 	}
 }
 
