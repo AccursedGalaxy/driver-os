@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // LoopFunc is the shared signature of the two agent loops, Run (text protocol)
@@ -44,6 +45,14 @@ type Session struct {
 	loop           LoopFunc      // Run or RunNative.
 	messages       []llm.Message // the full conversation carried across turns.
 	verifyBaseline *verifyBaselineCache
+
+	// autoVerifyProbe is separate from cfg: its goroutine only writes this
+	// mutex-protected slot, never the session's base configuration.
+	autoVerifyProbe struct {
+		sync.Mutex
+		started, done, applied, waitingNoted bool
+		resolution                           autoVerifyResolution
+	}
 }
 
 // NewSession returns a Session that runs each turn through loop with cfg as the
@@ -63,6 +72,32 @@ func NewSessionWith(cfg Config, loop LoopFunc, history []llm.Message) *Session {
 	return &Session{cfg: cfg, loop: loop, messages: append([]llm.Message(nil), history...), verifyBaseline: &verifyBaselineCache{}}
 }
 
+// PrewarmAutoVerify starts the automatic verify derivation and untouched-tree
+// baseline in the background. It is intentionally optional: callers that do
+// not prewarm retain the synchronous auto-verify behavior of Send.
+func (s *Session) PrewarmAutoVerify(ctx context.Context) {
+	if !s.cfg.AutoVerify || s.cfg.VerifyCmd != "" || s.cfg.Root == "" || s.cfg.MinIsolation != sandbox.IsolationNone {
+		return
+	}
+
+	s.autoVerifyProbe.Lock()
+	if s.autoVerifyProbe.started {
+		s.autoVerifyProbe.Unlock()
+		return
+	}
+	s.autoVerifyProbe.started = true
+	snapshot := s.cfg
+	s.autoVerifyProbe.Unlock()
+
+	go func() {
+		resolution := probeAutoVerify(context.WithoutCancel(ctx), snapshot)
+		s.autoVerifyProbe.Lock()
+		s.autoVerifyProbe.resolution = resolution
+		s.autoVerifyProbe.done = true
+		s.autoVerifyProbe.Unlock()
+	}()
+}
+
 // Send runs one user turn to completion and returns its result. The conversation
 // grows: this turn's input, every assistant turn, and every tool result are
 // retained so the next Send continues from them. On a result that reached the
@@ -78,6 +113,37 @@ func (s *Session) Send(ctx context.Context, input string) (*RunResult, error) {
 // and RunResult; images are attached only to this turn's user message.
 func (s *Session) SendParts(ctx context.Context, text string, images []llm.ImagePart) (*RunResult, error) {
 	cfg := s.cfg
+
+	// A prewarm is deliberately non-blocking. While it is in flight, marking the
+	// per-turn copy resolved prevents the loop from doing the old synchronous
+	// preflight; the first turn after completion receives the saved resolution.
+	var apply *autoVerifyResolution
+	var waiting bool
+	s.autoVerifyProbe.Lock()
+	if s.autoVerifyProbe.started {
+		if s.autoVerifyProbe.done {
+			if !s.autoVerifyProbe.applied {
+				resolution := s.autoVerifyProbe.resolution
+				apply = &resolution
+				s.autoVerifyProbe.applied = true
+			}
+		} else {
+			cfg.autoVerifyResolved = true
+			if !s.autoVerifyProbe.waitingNoted {
+				s.autoVerifyProbe.waitingNoted = true
+				waiting = true
+			}
+		}
+	}
+	s.autoVerifyProbe.Unlock()
+	if apply != nil {
+		applyAutoVerifyResolution(&s.cfg, *apply, false)
+		applyAutoVerifyResolution(&cfg, *apply, true)
+	}
+	if waiting && cfg.Obs != nil {
+		cfg.Obs.Note("auto-verify: baseline probe still running in the background — this turn runs without the soft gate")
+	}
+
 	cfg.Task = text
 	cfg.TaskImages = images
 	cfg.History = s.messages

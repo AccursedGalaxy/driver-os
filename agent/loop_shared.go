@@ -92,6 +92,64 @@ func wrapTools(cfg Config, runTimeout time.Duration) map[string]Tool {
 	return tools
 }
 
+type autoVerifyResolution struct {
+	cmd, provenance string
+	derived         bool
+	disarmNote      string
+}
+
+// probeAutoVerify derives and preflights an automatic verify command without
+// changing configuration or reporting observations. It is safe to run before a
+// turn because its result can be applied to a later per-turn config copy.
+func probeAutoVerify(ctx context.Context, cfg Config) autoVerifyResolution {
+	cmd, prov := deriveVerifyCmd(ctx, cfg.verifySandbox(), cfg.Root)
+	if cmd == "" {
+		return autoVerifyResolution{}
+	}
+	res := autoVerifyResolution{cmd: cmd, provenance: prov, derived: true}
+	out, err := runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cmd, autoVerifyBaselineTimeout)
+	if err != nil {
+		res.disarmNote = fmt.Sprintf("auto-verify: disarmed `%s` because the baseline could not run: %v", cmd, err)
+		return res
+	}
+	if isRunFailure(out) {
+		if isRunTimeout(out) {
+			res.disarmNote = fmt.Sprintf("auto-verify: disarmed `%s` because the baseline timed out after %s", cmd, autoVerifyBaselineTimeout)
+		} else {
+			res.disarmNote = fmt.Sprintf("auto-verify: disarmed `%s` because it is already red on the untouched workspace", cmd)
+		}
+		return res
+	}
+	return res
+}
+
+// applyAutoVerifyResolution applies a completed probe. emit controls the
+// per-turn observations: background probes must report only when their result
+// is consumed by a turn.
+func applyAutoVerifyResolution(cfg *Config, res autoVerifyResolution, emit bool) {
+	cfg.autoVerifyResolved = true
+	if !res.derived {
+		return
+	}
+	if emit && cfg.Obs != nil {
+		cfg.Obs.Note(fmt.Sprintf("verify gate auto-derived from %s: `%s`", res.provenance, res.cmd))
+	}
+	cfg.SkipVerifyBaseline = true
+	if res.disarmNote != "" {
+		if emit && cfg.Obs != nil {
+			cfg.Obs.Note(res.disarmNote)
+		}
+		return
+	}
+	cfg.VerifyCmd = res.cmd
+	cfg.AutoVerifySoft = true
+	cfg.VerifyContinue = true
+	cfg.autoVerifyProvenance = res.provenance
+	if emit && cfg.Obs != nil {
+		cfg.Obs.Note(fmt.Sprintf("auto-verify: armed soft verify gate `%s` (derived from %s)", res.cmd, res.provenance))
+	}
+}
+
 func resolveAutoVerify(ctx context.Context, cfg *Config) {
 	if !cfg.AutoVerify || cfg.VerifyCmd != "" || cfg.Root == "" || cfg.autoVerifyResolved {
 		return
@@ -105,30 +163,7 @@ func resolveAutoVerify(ctx context.Context, cfg *Config) {
 		cfg.Obs.Note("auto-verify: off for untrusted isolation; supply -verify-cmd to arm an explicit gate")
 		return
 	}
-	cmd, prov := deriveVerifyCmd(ctx, cfg.verifySandbox(), cfg.Root)
-	if cmd == "" {
-		return
-	}
-	cfg.Obs.Note(fmt.Sprintf("verify gate auto-derived from %s: `%s`", prov, cmd))
-	out, err := runOp(context.WithoutCancel(ctx), cfg.verifySandbox(), cmd, autoVerifyBaselineTimeout)
-	cfg.SkipVerifyBaseline = true
-	if err != nil {
-		cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because the baseline could not run: %v", cmd, err))
-		return
-	}
-	if isRunFailure(out) {
-		if isRunTimeout(out) {
-			cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because the baseline timed out after %s", cmd, autoVerifyBaselineTimeout))
-		} else {
-			cfg.Obs.Note(fmt.Sprintf("auto-verify: disarmed `%s` because it is already red on the untouched workspace", cmd))
-		}
-		return
-	}
-	cfg.VerifyCmd = cmd
-	cfg.AutoVerifySoft = true
-	cfg.VerifyContinue = true
-	cfg.autoVerifyProvenance = prov
-	cfg.Obs.Note(fmt.Sprintf("auto-verify: armed soft verify gate `%s` (derived from %s)", cmd, prov))
+	applyAutoVerifyResolution(cfg, probeAutoVerify(ctx, *cfg), true)
 }
 
 func recordAutoVerifyResolution(res *RunResult, cfg Config) {
