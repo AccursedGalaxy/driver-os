@@ -21,7 +21,6 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/AccursedGalaxy/driver-os/internal/memoryadapter"
 	"github.com/AccursedGalaxy/driver-os/memory"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
@@ -467,7 +466,7 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 			InvocationSurface: invocationSurface,
 			TrustPlan:         plan, Session: *f.session,
 			Review: *f.review, KeepWorktree: *f.keepWorktree, Approve: *f.approve, ReviewAction: *f.reviewAction, ReviewRounds: *f.reviewRounds, ReviewRequired: effectiveReviewRequired, ReviewFailOpen: reviewFailOpen, ReviewOptional: *f.reviewOptional, ReviewUnverified: *f.reviewUnverified, RequireDiff: resolved.RequireDiff, Reviewer: reviewer,
-			Planner: planner, Memory: *f.useMemory, SkillsFlag: *f.skillsFlag, Protocol: *f.protocol, OutFmt: outFmt, Finalize: finalize, TranscriptDir: *f.transcriptDir,
+			Planner: planner, Memory: *f.useMemory, OpenMemory: extras.OpenMemory, MemoryDBName: extras.MemoryDBName, SkillsFlag: *f.skillsFlag, Protocol: *f.protocol, OutFmt: outFmt, Finalize: finalize, TranscriptDir: *f.transcriptDir,
 			MaxIters: resolved.MaxIters, MaxTokens: resolved.MaxTokens, RunTimeout: resolved.RunTimeout, VerifyTimeout: *f.verifyTimeout, VerifyCmd: *f.verifyCmd, SkipVerifyBaseline: f.verifyBaseline.skip, AbortOnRedBaseline: f.verifyBaseline.abort, VerifyLastRun: *f.verifyLastRun, VerifyContinue: resolved.VerifyContinue,
 			TestFence: fence, DiffScope: scope, ReasoningEffort: resolved.Effort, PromptProfile: *f.promptProfile, CodeAct: *f.codeAct, ReproFirst: *f.reproFirst, ReproGate: *f.reproGate, BatchReads: resolved.BatchReads, BootContext: resolved.BootContext, ChurnNudge: resolved.ChurnNudgeRuns, FinishNudge: resolved.FinishNudge,
 			AutoVerify: resolved.AutoVerify, AutoVerifySoft: resolved.AutoVerifySoft, StandingContext: resolved.StandingContext, NavSpiralWindow: resolved.NavSpiralWindow, AnswerNudgeWindow: resolved.AnswerNudgeWindow,
@@ -632,34 +631,29 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		}
 	}
 
-	// Long-term memory across runs (mneme). Best-effort: nil when no key, and the
-	// agent runs fine without it (Principle 6 — a missing dependency is a degraded
-	// mode, not a crash).
+	// Long-term memory across runs. Best-effort: nil when no key or no backend,
+	// and the agent runs fine without it (Principle 6 — a missing dependency is
+	// a degraded mode, not a crash). The backend itself is an injected Extras
+	// capability; the recovery guidance for backend-specific failures (e.g. a
+	// changed embedder) travels in the returned error's message.
 	var mem memory.Store
-	memoryDBPath := memoryadapter.DBPath
-	if worktreeOn {
-		memoryDBPath = filepath.Join(origCwd, memoryadapter.DBPath)
-	}
 	if *f.useMemory {
-		m, err := memoryadapter.SetupAt(memoryDBPath)
-		var mismatch *memoryadapter.EmbedderMismatchError
-		switch {
-		case errors.As(err, &mismatch):
-			// A changed embedding model against an existing store — running anyway
-			// would compare vectors across spaces, so mneme refuses. Point us at a
-			// clear fix instead of the raw guard message (Principle 6: degrade
-			// gracefully, but tell the human exactly how to recover).
-			fmt.Fprintf(errW,
-				"memory: embedder changed since %s was created (%v); "+
-					"delete it to switch embedders, or restore the previous MNEME_EMBED_MODEL. Continuing without memory.\n",
-				memoryDBPath, err)
-		case err != nil:
-			fmt.Fprintln(errW, "memory: setup failed (continuing without it):", err)
-		}
-		mem = m
-		if mem != nil {
-			defer mem.Close()
-			fmt.Fprintln(errW, "memory: enabled (mneme @ "+memoryDBPath+")")
+		if extras.OpenMemory == nil {
+			fmt.Fprintln(errW, "memory: not available in this build; running stateless")
+		} else {
+			memoryDBPath := extras.MemoryDBName
+			if worktreeOn {
+				memoryDBPath = filepath.Join(origCwd, extras.MemoryDBName)
+			}
+			m, err := extras.OpenMemory(memoryDBPath)
+			if err != nil {
+				fmt.Fprintln(errW, "memory: setup failed (continuing without it):", err)
+			}
+			mem = m
+			if mem != nil {
+				defer mem.Close()
+				fmt.Fprintln(errW, "memory: enabled ("+memoryDBPath+")")
+			}
 		}
 	}
 
@@ -1043,6 +1037,8 @@ type bestOfCLIOptions struct {
 	MaxTotalCostUSD                float64
 	AllowUnpricedSpend             bool
 	Price                          PriceLookup
+	OpenMemory                     func(string) (memory.Store, error)
+	MemoryDBName                   string
 	ReadWindow                     int
 	ReadOutline                    bool
 	ExecProfileName                string
@@ -1304,8 +1300,8 @@ func buildAgentConfigInDir(ctx context.Context, opts bestOfCLIOptions, cwd strin
 		}
 	}
 	var mem memory.Store
-	if opts.Memory {
-		m, _ := memoryadapter.SetupAt(filepath.Join(opts.OrigCwd, memoryadapter.DBPath))
+	if opts.Memory && opts.OpenMemory != nil {
+		m, _ := opts.OpenMemory(filepath.Join(opts.OrigCwd, opts.MemoryDBName))
 		mem = m
 		if mem != nil {
 			prevCleanup := cleanup

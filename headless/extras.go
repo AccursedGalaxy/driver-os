@@ -5,6 +5,7 @@ import (
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/memory"
 )
 
 // PriceLookup returns the modeled cost for a model and usage.
@@ -40,4 +41,13 @@ type Extras struct {
 	NewPlanner  func(llm.Provider, string, string) agent.Planner
 	LoadLadder  func(string) (LadderConfig, error)
 	RunLadder   func(context.Context, LadderRequest) (*LadderResult, error)
+
+	// OpenMemory opens the cross-run memory store at dbPath. Nil means this
+	// binary ships no memory backend: -memory degrades to a stateless run
+	// with a stderr notice, because memory is best-effort by contract and a
+	// missing backend must never fail a run.
+	OpenMemory func(dbPath string) (memory.Store, error)
+	// MemoryDBName is the backend's store filename, joined to the run's
+	// original cwd for worktree runs. Empty when OpenMemory is nil.
+	MemoryDBName string
 }
