@@ -31,7 +31,7 @@ func TestSignedBundleWithTypedEvidenceVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Verify(r.Path, false); err != nil {
+	if _, err := Verify(r.Path); err != nil {
 		t.Fatalf("clean signed bundle failed verification: %v", err)
 	}
 }

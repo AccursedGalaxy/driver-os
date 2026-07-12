@@ -1,4 +1,5 @@
-// Package bundle implements the portable proof-bundle v1 format.
+// Package bundle implements the portable proof-bundle format (schema v2;
+// v1 bundles still verify).
 //
 // A bundle proves the integrity of the artifacts it contains and records the
 // harness's evidence and attestations. It does not prove that the configured
@@ -15,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -51,14 +51,14 @@ type Identity struct {
 	// different derived verify commands invisibly.
 	ResolutionTraceSHA256   string `json:"resolution_trace_sha256,omitempty"`
 	RuntimeResolutionSHA256 string `json:"runtime_resolution_sha256,omitempty"`
-	PromptSHA256          string `json:"prompt_sha256"`
-	ToolSchemaSHA256      string `json:"tool_schema_sha256"`
-	Solver                string `json:"solver,omitempty"`
-	Reviewer              string `json:"reviewer,omitempty"`
-	Planner               string `json:"planner,omitempty"`
-	HarnessCommit         string `json:"harness_commit,omitempty"`
-	HarnessDirty          bool   `json:"harness_dirty"`
-	BuildIdentity         string `json:"build_identity,omitempty"`
+	PromptSHA256            string `json:"prompt_sha256"`
+	ToolSchemaSHA256        string `json:"tool_schema_sha256"`
+	Solver                  string `json:"solver,omitempty"`
+	Reviewer                string `json:"reviewer,omitempty"`
+	Planner                 string `json:"planner,omitempty"`
+	HarnessCommit           string `json:"harness_commit,omitempty"`
+	HarnessDirty            bool   `json:"harness_dirty"`
+	BuildIdentity           string `json:"build_identity,omitempty"`
 }
 type Cost struct {
 	Usage    any      `json:"usage"`
@@ -100,7 +100,6 @@ type VerificationResult struct {
 	ReproducibleEvidence []string
 	Attestations         Attestations
 	SignatureStatus      string
-	RerunOutput          string
 }
 
 func canonical(v any) ([]byte, error) { return json.Marshal(v) }
@@ -182,7 +181,10 @@ func Create(parent string, in Input) (Result, error) {
 	return Result{Path: dir, ManifestSHA256: mh}, nil
 }
 
-func Verify(path string, rerun bool) (VerificationResult, error) {
+// Verify checks a bundle offline: manifest hash, per-component digests, and
+// the embedded signature if present. It never executes anything recorded in
+// the bundle.
+func Verify(path string) (VerificationResult, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return VerificationResult{}, err
@@ -252,27 +254,7 @@ func Verify(path string, rerun bool) (VerificationResult, error) {
 	} else if m.Signature.Status != "unsigned" {
 		return out, errors.New("signature: invalid status")
 	}
-	if rerun && m.Verification != nil {
-		cmd := verificationCommand(m.Verification)
-		if cmd != "" {
-			c := exec.Command("sh", "-c", cmd)
-			c.Dir = dir
-			b, e := c.CombinedOutput()
-			out.RerunOutput = string(b)
-			if e != nil {
-				return out, fmt.Errorf("rerun verifier: %w", e)
-			}
-		}
-	}
 	return out, nil
-}
-func verificationCommand(v any) string {
-	b, _ := json.Marshal(v)
-	var x struct {
-		Command string `json:"command"`
-	}
-	_ = json.Unmarshal(b, &x)
-	return x.Command
 }
 
 func ParsePrivateKey(s string) (ed25519.PrivateKey, error) {

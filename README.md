@@ -7,10 +7,10 @@
 
 driver-os is a headless coding agent in Go: a think→act→observe loop with
 typed run outcomes, sandbox isolation tiers, verification gates, per-role cost
-accounting, and signed proof bundles. It runs any model behind one provider
-interface. The design premise is that an agent's "done" is worthless until an
-external oracle agrees, so every run ends in a typed outcome decided by gates,
-not by the model's own claim.
+accounting, and optionally self-signed proof bundles. It runs any model
+behind one provider interface. The design premise is that an agent's "done"
+is worthless until an external oracle agrees, so every run ends in a typed
+outcome decided by gates, not by the model's own claim.
 
 What this repository releases, in order of stability:
 
@@ -82,10 +82,13 @@ budget) · `4` stuck (a loop detector fired) · `5` provider/transport error ·
 `6` refused on policy · `7` canceled by caller · `8` scope violation
 (`-diff-scope`) · `1` setup error.
 
-`answered` means the verify command ran green immediately before the answer
-was accepted, and a run that was rescued by a closing gate records what it
-was rescued from (`rescued_from`). Branch on `$?` to retry, escalate, or give
-up.
+`answered` means the harness accepted a final answer. When a verify command
+is configured, `answered` additionally requires that command to have run
+green immediately before the answer was accepted; without one, `answered`
+carries no correctness evidence. Check `guarantees.verification.status` in
+the result rather than treating the outcome name as a verification claim. A
+run rescued by a closing gate records what it was rescued from
+(`rescued_from`). Branch on `$?` to retry, escalate, or give up.
 
 ### Driving it from scripts
 
@@ -123,22 +126,24 @@ runner -format=ndjson -task "run the tests, report failures" | jq -c 'select(.ty
 Every completed headless run with transcript persistence writes
 `<run-id>.bundle/` beside its transcript. The canonical `manifest.json`
 separates reproducible artifacts (patch, transcript, and captured verifier
-output) from harness attestations and hashes every component. Inspect the
-JSON directly, then verify it offline without executing the recorded command:
+output) from harness attestations and hashes every component. Verification
+is offline only: it checks hashes and the signature and never executes
+anything recorded in the bundle.
 
 ```sh
 runner -format=json -task "fix the test" | jq '{bundle_path,bundle_manifest_sha256}'
 runner bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
-# Explicit opt-in only: re-run the recorded verifier command
-runner bundle verify -rerun-verify ~/.local/share/driver-os/runs/<run-id>.bundle
 ```
 
 Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key
-to sign newly produced bundles. No credentials or environment dump are
-included. Bundle-write failures are warnings and never change the run
-outcome. A bundle proves artifact integrity and records verification
-evidence; it does **not** prove that the verifier fully captures task
-correctness.
+to sign newly produced bundles. Signatures are currently self-signed: a
+valid signature proves the manifest was signed by the key embedded in that
+same manifest, not that the signer is anyone in particular — verification
+does not yet take a trusted-key or expected-fingerprint input. No
+credentials or environment dump are included. Bundle-write failures are
+warnings and never change the run outcome. A bundle proves artifact
+integrity and records verification evidence; it does **not** prove that the
+verifier fully captures task correctness.
 
 ## Running untrusted code (sandbox backends)
 
@@ -170,8 +175,15 @@ make sandbox-integration  # runs the docker-backed tests against a real daemon
 
 Network is off by default (`--network none`) so untrusted code can't
 exfiltrate; pass `-network` to allow egress. The workspace is the only
-writable mount, and the path fence is symlink-safe (the confused-deputy guard
-in `sandbox/local`).
+writable mount, and the path fence rejects planted symlink escapes (the
+confused-deputy guard in `sandbox/local`); it is check-then-use, so it does
+not close all concurrent symlink races — details and residual risk in
+`docs/specs/SANDBOX.md`.
+
+The gVisor tier is supported in code and covered by unit tests, but its
+real-host integration gate (`-trust untrusted` yields kernel isolation; a
+missing `runsc` refuses rather than silently downgrades) has not yet been
+validated on a gVisor host — treat it as integration-validation pending.
 
 ### Execution profiles
 

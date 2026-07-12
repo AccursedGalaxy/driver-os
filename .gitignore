@@ -11,6 +11,7 @@ CLAUDE.md
 
 # Go
 /bin/
+/runner
 *.out
 *.test
 __debug_bin*

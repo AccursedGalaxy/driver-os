@@ -38,7 +38,7 @@ func TestAttachProofBundleSuccessSetsCompleteAndClosingEvidence(t *testing.T) {
 	if r.BundleWarning != "" || r.BundleStatus != "complete" || r.BundlePath == nil {
 		t.Fatalf("success path not marked complete: %+v", r)
 	}
-	res, err := bundle.Verify(*r.BundlePath, false)
+	res, err := bundle.Verify(*r.BundlePath)
 	if err != nil {
 		t.Fatalf("fresh bundle failed offline verification: %v", err)
 	}

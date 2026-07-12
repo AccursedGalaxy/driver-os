@@ -48,7 +48,7 @@ func TestVerifierRejectsTamperedComponentClasses(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := fixture(t, false)
 			flip(t, filepath.Join(r.Path, name))
-			_, err := Verify(r.Path, false)
+			_, err := Verify(r.Path)
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("error=%v, want component name", err)
 			}
@@ -58,7 +58,7 @@ func TestVerifierRejectsTamperedComponentClasses(t *testing.T) {
 func TestVerifierRejectsTamperedManifest(t *testing.T) {
 	r := fixture(t, false)
 	flip(t, filepath.Join(r.Path, "manifest.json"))
-	_, err := Verify(r.Path, false)
+	_, err := Verify(r.Path)
 	if err == nil || !strings.Contains(err.Error(), "manifest") {
 		t.Fatalf("error=%v", err)
 	}
@@ -90,23 +90,46 @@ func TestVerifierRejectsSignatureTamper(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(r.Path, "manifest.sha256"), []byte(hex.EncodeToString(h[:])+"  manifest.json\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Verify(r.Path, false)
+	_, err = Verify(r.Path)
 	if err == nil || !strings.Contains(err.Error(), "signature") {
 		t.Fatalf("error=%v", err)
 	}
 }
-func TestVerifyDoesNotRunCommandWithoutOptIn(t *testing.T) {
+
+// TestVerifyNeverExecutesRecordedCommand pins that verification is offline
+// only: the recorded verifier command in the manifest is data, never executed.
+func TestVerifyNeverExecutesRecordedCommand(t *testing.T) {
 	r := fixture(t, false)
-	marker := filepath.Join(r.Path, "ran") // Rewrite fixture command isn't needed: true has no side effects; this asserts API default returns no rerun output.
-	v, err := Verify(r.Path, false)
+	marker := filepath.Join(r.Path, "ran")
+	rewriteManifestCommand(t, r.Path, "touch "+marker)
+	if _, err := Verify(r.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("recorded command unexpectedly ran")
+	}
+}
+
+// rewriteManifestCommand swaps the recorded verification command and re-stamps
+// the manifest hash so the bundle still verifies (unsigned fixtures only).
+func rewriteManifestCommand(t *testing.T, dir, cmd string) {
+	t.Helper()
+	path := filepath.Join(dir, "manifest.json")
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.RerunOutput != "" {
-		t.Fatal("unexpected rerun output")
+	s := strings.Replace(string(b), `"command":"true"`, `"command":"`+cmd+`"`, 1)
+	if s == string(b) {
+		t.Fatal("recorded command not found in manifest")
 	}
-	if _, err = os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("command unexpectedly ran")
+	if err = os.WriteFile(path, []byte(s), 0600); err != nil {
+		t.Fatal(err)
+	}
+	trim := strings.TrimSuffix(s, "\n")
+	h := sha256.Sum256([]byte(trim))
+	if err = os.WriteFile(filepath.Join(dir, "manifest.sha256"), []byte(hex.EncodeToString(h[:])+"  manifest.json\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -143,7 +166,7 @@ func TestVerifierAcceptsV1Bundle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.sha256"), []byte(digest(body)+"  manifest.json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Verify(dir, false)
+	res, err := Verify(dir)
 	if err != nil {
 		t.Fatalf("v1 bundle must verify under the v2 verifier: %v", err)
 	}

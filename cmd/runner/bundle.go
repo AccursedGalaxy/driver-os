@@ -11,12 +11,11 @@ import (
 
 func bundleCommand(args []string) int {
 	if len(args) == 0 || args[0] != "verify" {
-		fmt.Fprintln(os.Stderr, "Usage: runner bundle verify [-rerun-verify] <bundle-dir|manifest.json>")
+		fmt.Fprintln(os.Stderr, "Usage: runner bundle verify <bundle-dir|manifest.json>")
 		return 2
 	}
 	fs := flag.NewFlagSet("runner bundle verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	rerun := fs.Bool("rerun-verify", false, "execute the recorded verifier command (off by default)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -24,7 +23,7 @@ func bundleCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "bundle verify: exactly one path is required")
 		return 2
 	}
-	r, err := bundle.Verify(fs.Arg(0), *rerun)
+	r, err := bundle.Verify(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bundle verify:", err)
 		return 1
@@ -35,8 +34,7 @@ func bundleCommand(args []string) int {
 		ReproducibleEvidence []string            `json:"reproducible_evidence"`
 		ProducerAttestations bundle.Attestations `json:"producer_attestations"`
 		SignatureStatus      string              `json:"signature_status"`
-		RerunOutput          string              `json:"rerun_output,omitempty"`
-	}{true, r.ManifestSHA256, r.ReproducibleEvidence, r.Attestations, r.SignatureStatus, r.RerunOutput}
+	}{true, r.ManifestSHA256, r.ReproducibleEvidence, r.Attestations, r.SignatureStatus}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
 	return 0
