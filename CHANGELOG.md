@@ -7,8 +7,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased] — 0.2.0: repository split
 
-This repository was narrowed to the public core (docs/specs/REPO-SPLIT.md,
-2026-07-12). The TUI, council, escalation ladder, eval suites, model-research
+This repository was narrowed to the public core (2026-07-12). The TUI,
+council, escalation ladder, eval suites, model-research
 findings, and the `driver`/`driver-agent`/`chat` binaries moved to a private
 lab repository; the GoBench mining/grading/launch machinery moved to a
 separate `gobench` repository. Changes to those components are no longer

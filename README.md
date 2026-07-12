@@ -1,36 +1,69 @@
+<div align="center">
+
 # driver-os
+
+### Does your coding agent deserve to say it passed?
 
 [![CI](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml/badge.svg)](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/AccursedGalaxy/driver-os.svg)](https://pkg.go.dev/github.com/AccursedGalaxy/driver-os)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-driver-os is a headless coding agent in Go: a think→act→observe loop with
-typed run outcomes, sandbox isolation tiers, verification gates, per-role cost
-accounting, and optionally self-signed proof bundles. It runs any model
-behind one provider interface. The design premise is that an agent's "done"
-is worthless until an external oracle agrees, so every run ends in a typed
-outcome decided by gates, not by the model's own claim.
+A headless coding agent in Go that refuses to take the model's word for
+"done". Typed run outcomes decided by external gates, sandbox isolation
+tiers, per-role cost accounting, and signed proof bundles, all behind one
+provider interface that runs any model.
+
+</div>
+
+---
+
+## 01 · The thesis
+
+Coding agents are graded on their own word: the model declares a task
+green, the harness believes it, and the number goes up. Some of those greens
+are false: the code doesn't compile, the test never ran, the fix quietly
+regressed something else. driver-os is built on the opposite premise: **an
+agent's "done" is worthless until an external oracle agrees.** Every run
+ends in a typed outcome decided by gates (a verify command, diff
+requirements, loop detectors, resource caps), never by the model's own
+claim.
+
+| verdict | meaning |
+|---|---|
+| **true green** | An external check re-ran the work and it holds. The only green that should count. |
+| **false green** | The agent reported success; independent verification disagrees. This is the failure mode the whole harness is built to expose. |
+
+## 02 · The system, in five pieces
+
+1. **One contract.** A run never ends in prose. It ends in one value of a
+   closed outcome enum, carried in the exit code, so scripts can branch on
+   it.
+2. **One oracle seam.** `-verify-cmd` is the external command that decides
+   `answered`; `-test-fence` keeps the agent from editing the tests that
+   gate it.
+3. **One auditable artifact.** Every completed run writes a proof bundle:
+   hashed, optionally signed, verifiable offline.
+4. **One effect boundary.** Every command and file access flows through a
+   single `sandbox.Sandbox` interface, with backends ranging from a bare
+   subprocess to a gVisor userspace kernel.
+5. **One benchmark seed (preview).** The validation pipeline for a Go
+   benchmark that grades honesty as well as resolve.
 
 What this repository releases, in order of stability:
 
-1. **Core library** (`llm/`, `provider/`, `sandbox/`, `memory/`): provider
-   abstraction modeled on the `database/sql` driver pattern, the sandbox
-   interfaces, and the long-term-memory contract. The most stable surface.
-2. **Execution engine** (`agent/`, `runspec/`, `profile/`, `headless/`,
-   `cmd/runner`): the agent loop, its gates and detectors, the typed outcome
-   contract, evidence bundles, and a small reference runner.
-3. **GoBench validator (preview)** (`cmd/gobench-validate`,
-   `eval/suite/gobench`): the instance validation pipeline for a Go agent
-   benchmark that grades honesty as well as resolve, with five canonical
-   demonstration fixtures.
+| layer | packages | stability |
+|---|---|---|
+| Core library | `llm/`, `provider/`, `sandbox/`, `memory/` | most stable: provider abstraction on the `database/sql` driver pattern, sandbox interfaces, memory contract |
+| Execution engine | `agent/`, `runspec/`, `profile/`, `headless/`, `cmd/runner` | the loop, gates, detectors, outcome contract, bundles, reference runner |
+| GoBench validator | `cmd/gobench-validate`, `eval/suite/gobench` | preview |
 
 The TUI, long-term memory backend, multi-model council, routing experiments,
-issue bot, and the model research that shaped these defaults live outside this
-repository; this repo is deliberately narrow. See [DESIGN.md](DESIGN.md) for
-the library spec and the reasoning behind each decision.
+issue bot, and the model research that shaped these defaults live outside
+this repository; this repo is deliberately narrow. [DESIGN.md](DESIGN.md)
+has the library spec and the reasoning behind each decision.
 
-## Supported providers
+## 03 · Run any model
 
 | Provider          | Adapter         | Env var              | `-provider` value | Status |
 |-------------------|-----------------|----------------------|-------------------|--------|
@@ -40,13 +73,14 @@ the library spec and the reasoning behind each decision.
 | Local (Ollama, …) | `openaicompat`  | (keyless)            | `ollama`          | ✅ |
 | Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | `anthropic`       | ✅ |
 
-The first four speak the OpenAI Chat Completions wire format, so a single
-adapter covers them. Claude uses its own native Messages API via the
-`anthropic` adapter (DESIGN.md, decision 3): signed-thinking replay, the
-effort knob, and prompt caching. The runner selects any of the five with
-`-provider`.
+The first four speak the OpenAI Chat Completions wire format, so one adapter
+covers them. Claude gets its own native Messages adapter (DESIGN.md,
+decision 3): signed-thinking replay, the effort knob, and prompt caching.
+The runner selects any of the five with `-provider`.
 
-## Quick start (library)
+## 04 · Quick start
+
+As a library:
 
 ```go
 reg := llm.NewRegistry()
@@ -60,27 +94,31 @@ resp, err := reg.MustGet("grok").Generate(ctx, llm.Request{
 fmt.Println(resp.Text(), resp.Usage.TotalTokens)
 ```
 
-## The reference runner
-
-`cmd/runner` is the headless loop with no optional capabilities armed: no
-escalation ladder, no reviewer or planner roles, no pricing table. It exists
-to demonstrate the run contract with the smallest possible dependency
-surface.
+As a harness: `cmd/runner` is the headless loop with no optional
+capabilities armed: no escalation ladder, no reviewer or planner roles, no
+pricing table. It exists to demonstrate the run contract with the smallest
+possible dependency surface.
 
 ```sh
 go run ./cmd/runner -trust trusted-local -task "What module path does this project declare?"
 ```
 
-### Typed outcomes
+## 05 · Typed outcomes
 
-A run never ends in prose. It ends in one value of a closed outcome enum,
-decided by the harness (verify command, diff requirements, loop detectors,
-resource caps), and the exit code carries it:
+The exit code carries the outcome, so a pipe, Makefile, or CI step can
+branch on `$?` to retry, escalate, or give up:
 
-`0` answered · `2` unverified · `3` resource cap (iterations/wall/context/
-budget) · `4` stuck (a loop detector fired) · `5` provider/transport error ·
-`6` refused on policy · `7` canceled by caller · `8` scope violation
-(`-diff-scope`) · `1` setup error.
+| exit | outcome | decided by |
+|---|---|---|
+| `0` | answered | harness accepted a final answer |
+| `2` | unverified | answer given, no green verify evidence |
+| `3` | resource cap | iterations / wall clock / context / budget |
+| `4` | stuck | a loop detector fired |
+| `5` | provider error | transport or upstream failure |
+| `6` | refused | model declined on policy |
+| `7` | canceled | caller canceled the run |
+| `8` | scope violation | diff left `-diff-scope` |
+| `1` | setup error | run never started |
 
 `answered` means the harness accepted a final answer. When a verify command
 is configured, `answered` additionally requires that command to have run
@@ -88,23 +126,22 @@ green immediately before the answer was accepted; without one, `answered`
 carries no correctness evidence. Check `guarantees.verification.status` in
 the result rather than treating the outcome name as a verification claim. A
 run rescued by a closing gate records what it was rescued from
-(`rescued_from`). Branch on `$?` to retry, escalate, or give up.
+(`rescued_from`).
 
-### Driving it from scripts
+## 06 · Driving it from scripts
 
-The runner obeys the Unix contract, so it composes in a pipe, a Makefile, or
-CI (full contract in
+The runner obeys the Unix contract (full contract in
 [docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
 
 - **`-format text|json|ndjson`**: `text` (default) prints the answer + a
-  `SUMMARY` line for humans; `json` emits one result object; `ndjson` streams
-  one event per turn ending in a terminal `result` event. **stdout is the
-  data channel; the live trace and banners always go to stderr**, so
+  `SUMMARY` line for humans; `json` emits one result object; `ndjson`
+  streams one event per turn ending in a terminal `result` event. **stdout
+  is the data channel; the live trace and banners always go to stderr**, so
   `runner -format=json … | jq .answer` just works.
 - **`-verify-cmd`** is the single highest-leverage flag: it is the external
   oracle that decides `answered`. `-test-fence` keeps the agent from editing
-  the tests that gate it (a canonical Go/Python fence auto-arms when a verify
-  command is set).
+  the tests that gate it (a canonical Go/Python fence auto-arms when a
+  verify command is set).
 - **Headless defaults favor unattended runs**: inside a git repo the run
   isolates itself in a throwaway worktree (`-worktree` defaults to `auto`;
   changes come back as a banked `<run-id>.patch`), and reasoning effort
@@ -121,7 +158,7 @@ echo "what is the module path?" \
 runner -format=ndjson -task "run the tests, report failures" | jq -c 'select(.type=="result")'
 ```
 
-## Proof bundles
+## 07 · Proof bundles
 
 Every completed headless run with transcript persistence writes
 `<run-id>.bundle/` beside its transcript. The canonical `manifest.json`
@@ -138,18 +175,19 @@ runner bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
 Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key
 to sign newly produced bundles. Signatures are currently self-signed: a
 valid signature proves the manifest was signed by the key embedded in that
-same manifest, not that the signer is anyone in particular — verification
+same manifest, not that the signer is anyone in particular; verification
 does not yet take a trusted-key or expected-fingerprint input. No
 credentials or environment dump are included. Bundle-write failures are
 warnings and never change the run outcome. A bundle proves artifact
 integrity and records verification evidence; it does **not** prove that the
 verifier fully captures task correctness.
 
-## Running untrusted code (sandbox backends)
+## 08 · Running untrusted code
 
-Every effect the agent causes (running a command, reading or writing a file)
-flows through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`).
-The backend, not the tool, decides how strongly that boundary isolates:
+Every effect the agent causes (running a command, reading or writing a
+file) flows through one `sandbox.Sandbox` boundary (see
+[docs/specs/SANDBOX.md](docs/specs/SANDBOX.md)). The backend, not the tool,
+decides how strongly that boundary isolates:
 
 | `-sandbox` / `-runtime` | isolation | use for |
 |---|---|---|
@@ -177,13 +215,13 @@ Network is off by default (`--network none`) so untrusted code can't
 exfiltrate; pass `-network` to allow egress. The workspace is the only
 writable mount, and the path fence rejects planted symlink escapes (the
 confused-deputy guard in `sandbox/local`); it is check-then-use, so it does
-not close all concurrent symlink races — details and residual risk in
+not close all concurrent symlink races. Details and residual risk are in
 `docs/specs/SANDBOX.md`.
 
 The gVisor tier is supported in code and covered by unit tests, but its
 real-host integration gate (`-trust untrusted` yields kernel isolation; a
 missing `runsc` refuses rather than silently downgrades) has not yet been
-validated on a gVisor host — treat it as integration-validation pending.
+validated on a gVisor host. Treat it as integration-validation pending.
 
 ### Execution profiles
 
@@ -193,9 +231,9 @@ recorded in every transcript, so "driver-os + model X" names a reproducible
 configuration. Explicitly-set flags override the profile (the transcript
 records each field's source and whether the run stayed `canonical`), and
 trust floors can only tighten a profile, never the reverse. Details:
-`docs/specs/PROFILES.md`.
+[docs/specs/PROFILES.md](docs/specs/PROFILES.md).
 
-## GoBench validator (preview)
+## 09 · GoBench validator (preview)
 
 `cmd/gobench-validate` is the instance validation pipeline for a rolling Go
 agent benchmark whose scoring axis is honesty as well as resolve: does the

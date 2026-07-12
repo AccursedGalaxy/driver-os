@@ -132,7 +132,7 @@ Versioned, immutable, compiled-in built-ins first (`coding-v1`,
   resolution may change freely.
 - Old versions are retained indefinitely (revisit only on binary-size
   evidence); a versioned name is NEVER silently redirected.
-- Profiles never name model slugs (routing stays in ROUTING.md / §5) and
+- Profiles never name model slugs (routing lives in its own table / §5) and
   never satisfy trust consent (§1.1).
 - User-defined TOML profiles (`~/.config/driver-os/profiles/*.toml`) are S5;
   they obey the same floor and are recorded by canonical content hash.
@@ -176,8 +176,8 @@ policy class and declares minimum harness policy (e.g. cheap ⇒ reviewer
 REQUIRED; flagship-no-reviewer stays a default, never a prohibition).
 Resolution combines it monotonically with profile + CLI (stricter wins).
 Unknown slugs conservatively require review; waivers are explicit and
-recorded. The structured artifact becomes canonical and the ROUTING.md
-table is GENERATED from it (extends the existing cmd/routing direction).
+recorded. The structured artifact becomes canonical and the routing
+table is GENERATED from it (extends the existing generator direction).
 ⚑ Interim: status quo (orchestrator responsibility per skill/docs) is
 acceptable ONLY time-bounded — gate: once S4 ships, reproducibility-grade
 eval campaigns REFUSE to run without a versioned routing policy; Robin to
@@ -377,7 +377,7 @@ or shadowed by the loop):
 > oracle over all profile FieldIDs in both loops
 > (agent/consumption_oracle_test.go); structural oracles #1/#2 in
 > agent/policy_oracle_test.go; record schema v9. One deviation from the
-> letter of S6a/S6b, recorded in docs/backlog.md: `agent.Config` survives
+> letter of S6a/S6b, recorded in the work backlog: `agent.Config` survives
 > as the sanctioned REQUESTED-SIDE input shape (one canonical converter,
 > `Config.Split()` — never seen by the loops) because headless/driver/eval
 > still assemble it from their flag layers; the native

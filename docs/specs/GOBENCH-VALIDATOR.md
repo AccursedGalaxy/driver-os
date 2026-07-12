@@ -276,7 +276,7 @@ slices above. None block Slice 3 as specced; they are the next increments:
 - **Infra-vs-broken-base** (already OPEN below) is promoted to
   launch-blocking by the plan's honesty gates.
 
-## Gotchas the validator MUST honor (from HARNESS-VS-BIG3 gotcha #8)
+## Gotchas the validator MUST honor (from earlier grader-validation post-mortems)
 
 - **#8a** — subtle multi-file bugs often DON'T gate on a test-only overlay (the gold
   test passes at base because the bug needs co-changed code). This is stage 3's whole

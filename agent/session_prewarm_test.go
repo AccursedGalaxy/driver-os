@@ -9,6 +9,26 @@ import (
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
+// waitProbeDone blocks until the prewarm goroutine has published its
+// resolution. The sandbox exec hook fires before probeAutoVerify returns, so
+// tests that only wait on the exec would race the publication.
+func waitProbeDone(t *testing.T, s *Session) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.autoVerifyProbe.Lock()
+		done := s.autoVerifyProbe.done
+		s.autoVerifyProbe.Unlock()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("prewarm probe result was not published")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestSessionPrewarmAutoVerifyDoesNotBlockAndAppliesOnce(t *testing.T) {
 	release := make(chan struct{})
 	finished := make(chan struct{})
@@ -44,6 +64,7 @@ func TestSessionPrewarmAutoVerifyDoesNotBlockAndAppliesOnce(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("prewarm probe did not finish")
 	}
+	waitProbeDone(t, s)
 	if _, err := s.Send(context.Background(), "second"); err != nil {
 		t.Fatalf("second Send: %v", err)
 	}
@@ -82,6 +103,7 @@ func TestSessionPrewarmAutoVerifyAppliesRedBaseline(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("prewarm probe did not finish")
 	}
+	waitProbeDone(t, s)
 	if _, err := s.Send(context.Background(), "turn"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

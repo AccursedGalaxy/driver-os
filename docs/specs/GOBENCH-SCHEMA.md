@@ -334,8 +334,8 @@ carry five entries in each array.
 }
 ```
 
-The five existing hand-built instances
-(`docs/findings/harness-bench/swe-instances/*/meta.json`) are the round-trip
+The five existing hand-built instances (their migrated fixtures ship in
+`eval/suite/gobench/testdata/instances/`) are the round-trip
 fixtures for Gate G1: they must parse into this schema and reproduce their
 recorded verdicts through the §1.2 grader exactly. Their current `meta.json`
 carries a subset (`repo`, `base_sha`, `module_dir`, `verify_cmd`, `test_pkg`,

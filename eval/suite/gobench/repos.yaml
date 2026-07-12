@@ -62,8 +62,8 @@
 # =============================================================================
 
 repos:
-  # --- PROVEN SEED SET (hand-built instances exist in
-  #     docs/findings/harness-bench/swe-instances/) --------------------------
+  # --- PROVEN SEED SET (hand-built instances ship as the five canonical
+  #     fixtures in eval/suite/gobench/testdata/instances/) -----------------
   - repo: open-policy-agent/opa
     license: Apache-2.0
     test_framework: testify        # mix of stdlib + testify assert/require
@@ -83,7 +83,7 @@ repos:
     status: proven
     notes: >
       Proven (dolt-11215). SOURCE of the grader test-name-collision artifact
-      (HARNESS-VS-BIG3 gotcha #8) — the '*_test.go' reset in the grader is
+      (grader-validation post-mortem) — the '*_test.go' reset in the grader is
       MANDATORY here. go/ is the module root. Repo-wide tests are slow; mine
       individual packages (libraries/doltcore/...). Bats/integration tests
       excluded — Go unit packages only.

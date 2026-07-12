@@ -77,7 +77,7 @@ at it rather than duplicate it on stdout.
             "cached_tokens":0,"reasoning_tokens":0},
   "started_at": "2026-06-03T20:15:00Z",
   "ended_at":   "2026-06-03T20:15:07Z",
-  "transcript_path": "/home/aki/.local/state/driver-os/runs/20260603-201500-a1b2c3.json",
+  "transcript_path": "~/.local/state/driver-os/runs/20260603-201500-a1b2c3.json",
   "worktree_path": null,
   "patch_path": null,
   "error": null,

@@ -155,5 +155,5 @@ most production agents ship without navigation, so do not build it speculatively
   externally-validated answer to our own line-drift finding.
 
 Sources captured inline above; fuller survey lives in the session that produced
-this note (2026-06-03). Relates to `HARD-PROBLEMS.md`, `docs/findings/DOGFOOD.md`,
-`eval/runs/selfhist-eviction-n3/`.
+this note (2026-06-03), with related research notes in the private lab
+repository.

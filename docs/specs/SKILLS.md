@@ -6,8 +6,8 @@ shipped, slice 4 remains conditional on need). Implementation: `agent/skill`
 untrusted gate) and experiments/cmd/jarvis workers; eval suite `eval/suite/skills`
 (`-case skills`); default skills in `.agents/skills/` (humanizer,
 driver-os-deps). Validation results in §10. Companion docs: DESIGN.md
-(architecture), docs/specs/SANDBOX.md (threat model), HARD-PROBLEMS.md (HP-1 context
-policy — skills are partly an answer to it).
+(architecture), docs/specs/SANDBOX.md (threat model), and the HP-1
+context-policy research note (skills are partly an answer to it).
 
 ## 1. What and why
 

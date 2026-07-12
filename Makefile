@@ -17,7 +17,7 @@ vet:
 check: vet race
 
 # Install the reference runner onto PATH (~/.local/bin). The fully armed
-# driver/driver-agent binary installs from the driver-os-lab repo.
+# driver/driver-agent binary is built from a companion repository.
 install:
 	GOBIN=$(HOME)/.local/bin go install ./cmd/runner
 	@echo ">> installed runner to $(HOME)/.local/bin/runner"

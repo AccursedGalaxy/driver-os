@@ -49,3 +49,8 @@ _deps/
 # Eval harness generated reports (HP-11)
 eval/runs/
 eval/scripts/review_cost_pass.jsonl
+
+# Session-operational docs live in the private lab repo; symlinked locally.
+docs/ROUTING.md
+docs/backlog.md
+docs/specs/REPO-SPLIT.md

@@ -51,7 +51,10 @@ func Load(dir string) ([]Instance, error) {
 
 func DefaultInstancesDir() string { return "eval/suite/gobench/testdata/instances" }
 
-func DefaultOraclesDir() string { return "docs/findings/harness-bench/swe-instances" }
+// DefaultOraclesDir is the fallback lookup root for per-instance oracle
+// overlays. Oracle receipts are not part of this repository; graded eval
+// runs must supply Opts.OraclesDir.
+func DefaultOraclesDir() string { return "eval/suite/gobench/testdata/oracles" }
 
 // DefaultCacheDir returns the disk-backed per-user cache for GoBench mirrors.
 // It falls back to the historical temp location only when the OS user cache

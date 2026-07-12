@@ -28,8 +28,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 // parallelSafe reports whether a tool has no side effects and no shared state,
@@ -1088,9 +1088,8 @@ func turnSignature(calls []llm.ToolCallPart, tools map[string]Tool) string {
 // gathering pointers and never follows one (list_dir a, search x, list_dir b …).
 // read_file is deliberately EXCLUDED: paging/reads consume content (progress), a
 // re-read of the same arg is the reasoning-aware repeat detector's job, and folding
-// reads into churn would reintroduce the thinking-model false-kill (HARD-PROBLEMS.md
-// HP-2; see docs/findings/HP2-TEMPLATE-COLLAPSE.md for why the heavier working-set design collapses
-// to exactly this).
+// reads into churn would reintroduce the thinking-model false-kill (research note
+// HP-2: the heavier working-set design collapses to exactly this).
 var discoveryTools = map[string]bool{"list_dir": true, "search": true}
 
 // allCallsDiscovery reports whether EVERY call in a turn is a discovery tool — a

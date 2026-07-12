@@ -4,8 +4,8 @@ Status: **Docker/gVisor backend SHIPPED; Firecracker still someday.** The
 `Sandbox` interface, the `local` (IsolationNone) and `docker` (IsolationProcess,
 or IsolationKernel via `--runtime=runsc`) backends, the conformance suite, and the
 `MinIsolation` policy gate all exist. This note records the decided *direction* so
-we don't re-research it. Sandboxing is filed under engineering (see
-`HARD-PROBLEMS.md` appendix: path sandbox), not the research backlog.
+we don't re-research it. Sandboxing is filed under engineering, not the
+research backlog.
 
 ## Where we are today
 

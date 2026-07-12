@@ -1,7 +1,2 @@
-# Keep source-and-design search useful: exclude bulk run artifacts and
-# benchmark corpora from rg (they stay in git where applicable).
-# Findings PROSE (docs/findings/*.md) stays searchable; the harness-bench
-# subtree is per-run receipts/transcripts, not prose.
-docs/findings/harness-bench/
-docs/gobench-g3-audit/
+# Keep source-and-design search useful: exclude bulk validator output from rg.
 gobench-validate-out/
