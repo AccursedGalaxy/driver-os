@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 // ReviewPassOptions configures a closing review gate run over an existing

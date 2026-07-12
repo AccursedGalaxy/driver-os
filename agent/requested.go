@@ -16,7 +16,7 @@ package agent
 // RequestedConfig natively.
 
 import (
-	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/memory"
 )
 

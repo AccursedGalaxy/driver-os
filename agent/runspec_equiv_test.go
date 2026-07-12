@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 func rsInt(v int) *int                                                { return &v }

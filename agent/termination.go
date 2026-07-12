@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/AccursedGalaxy/driver-os/internal/runspec"
+import "github.com/AccursedGalaxy/driver-os/runspec"
 
 // TerminationPolicy remains source-compatible while its ownership lives in runspec.
 type TerminationPolicy = runspec.TerminationPolicy

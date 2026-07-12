@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"github.com/AccursedGalaxy/driver-os/internal/runspec"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 	"strings"
 	"testing"
 	"time"

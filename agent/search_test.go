@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/internal/profile"
+	"github.com/AccursedGalaxy/driver-os/profile"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 	"github.com/AccursedGalaxy/driver-os/sandbox/gated"
 )
