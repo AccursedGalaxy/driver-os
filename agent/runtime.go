@@ -20,8 +20,8 @@ import (
 
 	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/memory"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
-	"github.com/AccursedGalaxy/mneme"
 )
 
 // Runtime is the injected dependency bundle for one run (spec §7.1 "runtime
@@ -35,7 +35,7 @@ type Runtime struct {
 	// on, when it must differ from Sandbox. nil ⇒ Sandbox. See ../SESSION.md.
 	VerifySandbox sandbox.Sandbox
 
-	Memory mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
+	Memory memory.Store    // optional: cross-run long-term memory; nil = stateless.
 	Tools  map[string]Tool // optional: nil = DefaultTools(Sandbox).
 	Obs    Observer        // optional: live progress sink; nil = silent.
 

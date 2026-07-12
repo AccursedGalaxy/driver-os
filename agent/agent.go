@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/internal/runspec"
-	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/driver-os/memory"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
@@ -471,9 +471,9 @@ type Config struct {
 	evidence *evidenceLog
 	Model    llm.Provider    // required: the (context) -> text engine.
 	Sandbox  sandbox.Sandbox // required: the isolation boundary every effect flows through (P2).
-	Memory   mneme.Memory    // optional: cross-run long-term memory; nil = stateless.
+	Memory   memory.Store    // optional: cross-run long-term memory; nil = stateless.
 
-	// DisableMemoryStore suppresses the post-answer mneme.Add call while leaving
+	// DisableMemoryStore suppresses the post-answer memory Add call while leaving
 	// recall enabled. Ladder attempts use this so losing attempts can benefit from
 	// prior memory without leaking their own failed observations into future runs.
 	DisableMemoryStore bool
@@ -491,7 +491,7 @@ type Config struct {
 	// default scope, preserving single-agent behavior. Set it to a per-agent scope
 	// (e.g. {AgentID: "adam"}) so several agents can share ONE store without their
 	// memories bleeding into each other.
-	MemoryScope mneme.Scope
+	MemoryScope memory.Scope
 
 	// VerifySandbox is the sandbox the CLOSING gates (VerifyCmd/DiagnoseCmd) run on,
 	// when it must differ from Sandbox. nil ⇒ Sandbox (the historical behavior; every

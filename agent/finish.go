@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/driver-os/memory"
 )
 
 type finishInput struct {
@@ -15,7 +15,7 @@ type finishInput struct {
 	trusted              bool
 	verifyContinuePhrase string
 	grounded             bool
-	memoryScope          mneme.Scope
+	memoryScope          memory.Scope
 	unverifiedNotePrefix string
 	reviewBlockedPrefix  string
 }

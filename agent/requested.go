@@ -17,7 +17,7 @@ package agent
 
 import (
 	"github.com/AccursedGalaxy/driver-os/internal/runspec"
-	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/driver-os/memory"
 )
 
 func optNZ[T comparable](v T) *T {
@@ -75,7 +75,7 @@ func (c Config) Requested() runspec.RequestedConfig {
 		FinishTool:             optNZ(c.FinishTool),
 		FinishToolTrustsCaller: optNZ(c.FinishToolTrustsCaller),
 	}
-	if c.MemoryScope != (mneme.Scope{}) {
+	if c.MemoryScope != (memory.Scope{}) {
 		scope := c.MemoryScope
 		r.MemoryScope = &scope
 	}

@@ -12,8 +12,8 @@ import (
 
 	"github.com/AccursedGalaxy/driver-os/internal/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/memory"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
-	"github.com/AccursedGalaxy/mneme"
 )
 
 // ConfigRecord schema v9 (PROFILES.md §7.3 / S6c): the lazily re-derived
@@ -104,7 +104,7 @@ type EffectiveConfig struct {
 	EffectiveProtocol       string            `json:"effective_protocol"`
 	DisableMemoryStore      bool              `json:"disable_memory_store"`
 	Persona                 string            `json:"persona,omitempty"`
-	MemoryScope             mneme.Scope       `json:"memory_scope"`
+	MemoryScope             memory.Scope      `json:"memory_scope"`
 	BootContext             bool              `json:"boot_context"`
 	StandingContext         bool              `json:"standing_context"`
 	Stream                  bool              `json:"stream"`

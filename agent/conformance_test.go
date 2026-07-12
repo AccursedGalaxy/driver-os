@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/llm"
-	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/driver-os/memory"
 )
 
 type conformanceLoop struct {
@@ -644,19 +644,19 @@ type countingMem struct {
 	adds int
 }
 
-func (m *countingMem) Add(context.Context, []mneme.Message, mneme.Scope) ([]mneme.Fact, error) {
+func (m *countingMem) Add(context.Context, []memory.Message, memory.Scope) ([]memory.Fact, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.adds++
-	return []mneme.Fact{{Text: "stored"}}, nil
+	return []memory.Fact{{Text: "stored"}}, nil
 }
-func (m *countingMem) Search(context.Context, string, mneme.Scope, int) ([]mneme.Fact, error) {
+func (m *countingMem) Search(context.Context, string, memory.Scope, int) ([]memory.Fact, error) {
 	return nil, nil
 }
-func (m *countingMem) Get(context.Context, string) (mneme.Fact, error) { return mneme.Fact{}, nil }
-func (m *countingMem) Delete(context.Context, string) error            { return nil }
-func (m *countingMem) Close() error                                    { return nil }
-func (m *countingMem) count() int                                      { m.mu.Lock(); defer m.mu.Unlock(); return m.adds }
+func (m *countingMem) Get(context.Context, string) (memory.Fact, error) { return memory.Fact{}, nil }
+func (m *countingMem) Delete(context.Context, string) error             { return nil }
+func (m *countingMem) Close() error                                     { return nil }
+func (m *countingMem) count() int                                       { m.mu.Lock(); defer m.mu.Unlock(); return m.adds }
 
 func TestConformance_GroundedMemoryPolicy(t *testing.T) {
 	cases := []struct {

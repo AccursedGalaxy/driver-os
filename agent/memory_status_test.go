@@ -5,23 +5,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AccursedGalaxy/mneme"
+	"github.com/AccursedGalaxy/driver-os/memory"
 )
 
-// fakeMem is a minimal mneme.Memory: Search returns one canned fact and Add
+// fakeMem is a minimal memory.Store: Search returns one canned fact and Add
 // reports one written fact — just enough to exercise recall/remember's status
 // reporting without a real embeddings/LLM endpoint.
 type fakeMem struct{}
 
-func (fakeMem) Add(context.Context, []mneme.Message, mneme.Scope) ([]mneme.Fact, error) {
-	return []mneme.Fact{{Text: "stored thing"}}, nil
+func (fakeMem) Add(context.Context, []memory.Message, memory.Scope) ([]memory.Fact, error) {
+	return []memory.Fact{{Text: "stored thing"}}, nil
 }
-func (fakeMem) Search(context.Context, string, mneme.Scope, int) ([]mneme.Fact, error) {
-	return []mneme.Fact{{Text: "recalled thing"}}, nil
+func (fakeMem) Search(context.Context, string, memory.Scope, int) ([]memory.Fact, error) {
+	return []memory.Fact{{Text: "recalled thing"}}, nil
 }
-func (fakeMem) Get(context.Context, string) (mneme.Fact, error) { return mneme.Fact{}, nil }
-func (fakeMem) Delete(context.Context, string) error            { return nil }
-func (fakeMem) Close() error                                    { return nil }
+func (fakeMem) Get(context.Context, string) (memory.Fact, error) { return memory.Fact{}, nil }
+func (fakeMem) Delete(context.Context, string) error             { return nil }
+func (fakeMem) Close() error                                     { return nil }
 
 // recordObserver captures Note() lines so a test can assert memory status flows
 // through the Observer, never stdout (the machine-readable data channel under

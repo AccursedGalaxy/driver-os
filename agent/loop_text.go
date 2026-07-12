@@ -145,7 +145,7 @@ func Run(ctx context.Context, spec runspec.ResolvedSpec, rt Runtime, content Con
 	// the amplification loop — a wrong/hallucinated answer, or one given purely
 	// from recalled memory without re-checking, is NOT written back as a durable
 	// "fact". mneme now consolidates on write (it can UPDATE/DELETE a stale fact
-	// when a later Add contradicts it, see SetupMemory), but that only fires on the
+	// when a later Add contradicts it, see the configured memory adapter), but that only fires on the
 	// facts we DO store — so this gate is still the first line of defense: a guess
 	// we never write can never be the thing consolidation later has to walk back.
 	grounded := false
