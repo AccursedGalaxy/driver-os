@@ -13,5 +13,9 @@ import (
 )
 
 func main() {
-	os.Exit(headless.Main(os.Args[1:]))
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "bundle" {
+		os.Exit(bundleCommand(args[1:]))
+	}
+	os.Exit(headless.Main(args))
 }

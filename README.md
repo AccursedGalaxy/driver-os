@@ -128,9 +128,9 @@ JSON directly, then verify it offline without executing the recorded command:
 
 ```sh
 runner -format=json -task "fix the test" | jq '{bundle_path,bundle_manifest_sha256}'
-driver bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
+runner bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
 # Explicit opt-in only: re-run the recorded verifier command
-driver bundle verify -rerun-verify ~/.local/share/driver-os/runs/<run-id>.bundle
+runner bundle verify -rerun-verify ~/.local/share/driver-os/runs/<run-id>.bundle
 ```
 
 Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key
