@@ -5,26 +5,30 @@
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-driver-os is an experimental agent operating system in Go: a think→act→observe
-coding agent with typed run outcomes, sandbox isolation tiers, verification and
-review gates, per-role cost accounting, and an eval harness that grades runs
-against external oracles rather than trusting the model's own "done". It runs
-any model behind one provider interface, so you can swap providers or race
-several at once.
+driver-os is a headless coding agent in Go: a think→act→observe loop with
+typed run outcomes, sandbox isolation tiers, verification gates, per-role cost
+accounting, and signed proof bundles. It runs any model behind one provider
+interface. The design premise is that an agent's "done" is worthless until an
+external oracle agrees, so every run ends in a typed outcome decided by gates,
+not by the model's own claim.
 
-The repository is three layers with different stability promises. Experimental
-code depends on the engine, never the reverse:
+What this repository releases, in order of stability:
 
-1. **Core library** (`llm/`, `provider/`, `sandbox/`): provider abstraction
-   modeled on the `database/sql` driver pattern, plus the sandbox interfaces.
-   The most stable surface.
-2. **Execution engine** (`agent/`, `internal/headless`, `cmd/driver`): the agent loop,
-   gates, detectors, transcripts, and the headless + TUI binaries.
-3. **Research lab** (`eval/`, `council/`, benchmark tooling, `docs/findings/`):
-   the measurement machinery and its results. Changes fast, breaks freely.
+1. **Core library** (`llm/`, `provider/`, `sandbox/`, `memory/`): provider
+   abstraction modeled on the `database/sql` driver pattern, the sandbox
+   interfaces, and the long-term-memory contract. The most stable surface.
+2. **Execution engine** (`agent/`, `runspec/`, `profile/`, `headless/`,
+   `cmd/runner`): the agent loop, its gates and detectors, the typed outcome
+   contract, evidence bundles, and a small reference runner.
+3. **GoBench validator (preview)** (`cmd/gobench-validate`,
+   `eval/suite/gobench`): the instance validation pipeline for a Go agent
+   benchmark that grades honesty as well as resolve, with five canonical
+   demonstration fixtures.
 
-See [DESIGN.md](DESIGN.md) for the library spec and the reasoning behind each
-decision.
+The TUI, long-term memory backend, multi-model council, routing experiments,
+issue bot, and the model research that shaped these defaults live outside this
+repository; this repo is deliberately narrow. See [DESIGN.md](DESIGN.md) for
+the library spec and the reasoning behind each decision.
 
 ## Supported providers
 
@@ -36,12 +40,13 @@ decision.
 | Local (Ollama, …) | `openaicompat`  | (keyless)            | `ollama`          | ✅ |
 | Claude            | `anthropic`     | `ANTHROPIC_API_KEY`  | `anthropic`       | ✅ |
 
-The first four speak the OpenAI Chat Completions wire format, so a single adapter
-covers them. Claude uses its own **native** Messages API via the `anthropic`
-adapter (DESIGN.md, decision 3): signed-thinking replay, the 5-family effort
-knob, and prompt caching. `driver run` and `driver-agent` can select any of the five with `-provider`.
+The first four speak the OpenAI Chat Completions wire format, so a single
+adapter covers them. Claude uses its own native Messages API via the
+`anthropic` adapter (DESIGN.md, decision 3): signed-thinking replay, the
+effort knob, and prompt caching. The runner selects any of the five with
+`-provider`.
 
-## Quick start
+## Quick start (library)
 
 ```go
 reg := llm.NewRegistry()
@@ -55,120 +60,91 @@ resp, err := reg.MustGet("grok").Generate(ctx, llm.Request{
 fmt.Println(resp.Text(), resp.Usage.TotalTokens)
 ```
 
-Run the demo (sends one prompt to every provider whose key is in `.env`):
+## The reference runner
+
+`cmd/runner` is the headless loop with no optional capabilities armed: no
+escalation ladder, no reviewer or planner roles, no pricing table. It exists
+to demonstrate the run contract with the smallest possible dependency
+surface.
 
 ```sh
-go run ./experiments/cmd/playground
-go run ./experiments/cmd/playground -prompt "your prompt here"
+go run ./cmd/runner -trust trusted-local -task "What module path does this project declare?"
 ```
 
-Override model ids without recompiling: `OPENROUTER_MODEL`, `XAI_MODEL`.
+### Typed outcomes
 
-## Agent loop (with long-term memory)
+A run never ends in prose. It ends in one value of a closed outcome enum,
+decided by the harness (verify command, diff requirements, loop detectors,
+resource caps), and the exit code carries it:
 
-`driver run` (or `driver-agent`) is a minimal think→act→observe agent over the sandbox tools. It has
-**persistent memory across runs** via [mneme](https://github.com/AccursedGalaxy/mneme):
-before thinking it recalls facts relevant to the task, and after answering it
-stores what it learned. So a second, related run starts already knowing the
-answer instead of re-exploring.
+`0` answered · `2` unverified · `3` resource cap (iterations/wall/context/
+budget) · `4` stuck (a loop detector fired) · `5` provider/transport error ·
+`6` refused on policy · `7` canceled by caller · `8` scope violation
+(`-diff-scope`) · `1` setup error.
 
-```sh
-go run ./cmd/driver run -task "What module path does this project declare?"
-go run ./cmd/driver run -task "What is this project's module path?"  # recalls from run 1
-go run ./cmd/driver run -memory=false ...                            # disable memory
-```
+`answered` means the verify command ran green immediately before the answer
+was accepted, and a run that was rescued by a closing gate records what it
+was rescued from (`rescued_from`). Branch on `$?` to retry, escalate, or give
+up.
 
 ### Driving it from scripts
 
-`driver run` and `driver-agent` obey the Unix contract, so it composes in a pipe, a Makefile, or CI
-(full contract in [docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
+The runner obeys the Unix contract, so it composes in a pipe, a Makefile, or
+CI (full contract in
+[docs/specs/CLI-SCRIPTABLE.md](docs/specs/CLI-SCRIPTABLE.md)):
 
-- **`-format text|json|ndjson`**: `text` (default) prints the answer + a `SUMMARY`
-  line for humans; `json` emits one result object; `ndjson` streams one event per
-  turn ending in a terminal `result` event. **stdout is the data channel; the live
-  trace and banners always go to stderr**, so `agent -format=json … | jq .answer`
-  just works.
-- **Exit codes carry the outcome**: `0` answered · `2` unverified · `3` resource
-  cap (iterations/wall/context/budget) · `4` stuck (a loop detector fired) · `5`
-  provider/transport error · `6` refused on policy · `7` canceled by caller
-  (SIGINT / ctx cancel) · `8` scope violation (`-diff-scope`) · `1` setup error.
-  Branch on `$?` to retry, escalate, or give up.
-- **Orchestrator conveniences, all native** (no wrapper script needed):
-  `-trace=compact` reduces the stderr trace to a one-line-per-iteration
-  heartbeat plus gate milestones; `-trace-file` banks the full trace;
-  `-report out.md` writes a one-read markdown report (result, answer, diff,
-  next steps); every run appends a JSONL record to the delegation ledger
-  (`-ledger=false` opts out).
+- **`-format text|json|ndjson`**: `text` (default) prints the answer + a
+  `SUMMARY` line for humans; `json` emits one result object; `ndjson` streams
+  one event per turn ending in a terminal `result` event. **stdout is the
+  data channel; the live trace and banners always go to stderr**, so
+  `runner -format=json … | jq .answer` just works.
+- **`-verify-cmd`** is the single highest-leverage flag: it is the external
+  oracle that decides `answered`. `-test-fence` keeps the agent from editing
+  the tests that gate it (a canonical Go/Python fence auto-arms when a verify
+  command is set).
 - **Headless defaults favor unattended runs**: inside a git repo the run
   isolates itself in a throwaway worktree (`-worktree` defaults to `auto`;
-  changes come back as a banked `<run-id>.patch` — pass `-worktree=false` to
-  edit the working tree directly), and the solver's reasoning effort defaults
-  to `low` (`-effort=default` restores the provider default).
-- **`-provider` / `-model`**: pick the backend and model on the command line
-  instead of via env (the `*_MODEL` vars still work as defaults; the flag wins).
-- **`-task -`** reads the task from stdin: `cat issue.md | agent -task -`.
-- **`-review` non-interactively**: `-approve interactive|policy|never` decides a
-  gated `run` (policy = auto-allow the safe allowlist, block the rest), and
-  `-review-action prompt|commit|discard|keep` decides the diff at the end.
-  Interactive prompts use `/dev/tty`, so they coexist with `-task -` and never
-  pollute stdout; with no terminal an interactive policy fails fast instead of
-  hanging.
+  changes come back as a banked `<run-id>.patch`), and reasoning effort
+  defaults to `low` (`-effort=default` restores the provider default).
+- **`-task -`** reads the task from stdin: `cat issue.md | runner -task -`.
+- `-trace=compact` reduces the stderr trace to one line per iteration plus
+  gate milestones; `-report out.md` writes a one-read markdown report.
 
 ```sh
 # machine-readable, fully unattended:
 echo "what is the module path?" \
-  | agent -task - -format=json -provider=openrouter -model=openai/gpt-4o-mini
+  | runner -task - -format=json -provider=openrouter -model=openai/gpt-4o-mini
 # stream progress events, keep only the final result:
-agent -format=ndjson -task "run the tests, report failures" | jq -c 'select(.type=="result")'
-# scripted edit: auto-allow safe commands, leave the diff unstaged for inspection:
-agent -review -approve=policy -review-action=keep -task "fix the failing test"
+runner -format=ndjson -task "run the tests, report failures" | jq -c 'select(.type=="result")'
 ```
-
-Memory lives in `.agent-memory.db` (pure-Go SQLite, gitignored; delete to
-reset) and reuses `OPENROUTER_API_KEY`. It is best-effort: with no key the agent
-runs statelessly. Each mneme call is bounded by a 30s timeout.
-
-**Caveats (read before trusting recall):**
-
-- **Self-correcting, but only where re-observed.** The agent runs mneme in its
-  `Consolidate` strategy: each store reconciles the new facts against existing
-  ones (ADD / UPDATE / DELETE), so a changed fact about a mutable repo *replaces*
-  the stale one instead of piling up beside it. Bump the Go version and a later
-  grounded run overwrites the old value. The catch: reconciliation only touches
-  facts a run actually re-observes, so a fact no run has revisited can still be
-  stale. Recalled facts stay labelled possibly-stale in the prompt so the model
-  verifies with tools (Principle 4). Treat memory as a strong hint, not gospel.
-  (Consolidation costs one extra LLM call per store, only when the scope already
-  holds facts to reconcile against.)
-- **Only tool-verified answers are stored.** To avoid amplifying a guess or a
-  stale recalled fact into a permanent one, the agent stores an answer *only* if
-  it observed real state via a tool that run. An answer given purely from recall
-  is not written back.
-- **The embedding model is pinned to the store.** Stored vectors and query
-  vectors must come from the same model. Changing `MNEME_EMBED_MODEL` after facts
-  exist silently degrades search (no error), so delete `.agent-memory.db` first.
-- **Storing is on the happy path.** After the answer prints, the store does a
-  synchronous extraction + embedding call before the run returns, so you see the
-  answer and then wait briefly.
 
 ## Proof bundles
 
-Every completed headless run with transcript persistence writes `<run-id>.bundle/` beside its transcript. The canonical `manifest.json` separates reproducible artifacts (patch, transcript, and captured verifier output) from harness attestations and hashes every component. Inspect the JSON directly, then verify it offline without executing the recorded command:
+Every completed headless run with transcript persistence writes
+`<run-id>.bundle/` beside its transcript. The canonical `manifest.json`
+separates reproducible artifacts (patch, transcript, and captured verifier
+output) from harness attestations and hashes every component. Inspect the
+JSON directly, then verify it offline without executing the recorded command:
 
 ```sh
-driver run -format=json -task "fix the test" | jq '{bundle_path,bundle_manifest_sha256}'
+runner -format=json -task "fix the test" | jq '{bundle_path,bundle_manifest_sha256}'
 driver bundle verify ~/.local/share/driver-os/runs/<run-id>.bundle
 # Explicit opt-in only: re-run the recorded verifier command
 driver bundle verify -rerun-verify ~/.local/share/driver-os/runs/<run-id>.bundle
 ```
 
-Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key to sign newly produced bundles. No credentials or environment dump are included. Bundle-write failures are warnings/degradations and never change the run outcome. A bundle proves artifact integrity and records verification evidence; it does **not** prove that the verifier fully captures task correctness. Proof-bundle v1 intentionally excludes transparency logs and multi-party signing.
+Set `DRIVER_BUNDLE_SIGNING_KEY` to a base64 or hex Ed25519 seed/private key
+to sign newly produced bundles. No credentials or environment dump are
+included. Bundle-write failures are warnings and never change the run
+outcome. A bundle proves artifact integrity and records verification
+evidence; it does **not** prove that the verifier fully captures task
+correctness.
 
 ## Running untrusted code (sandbox backends)
 
 Every effect the agent causes (running a command, reading or writing a file)
-flows through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`). The
-backend, not the tool, decides how strongly that boundary isolates:
+flows through one `sandbox.Sandbox` boundary (see `docs/specs/SANDBOX.md`).
+The backend, not the tool, decides how strongly that boundary isolates:
 
 | `-sandbox` / `-runtime` | isolation | use for |
 |---|---|---|
@@ -177,34 +153,13 @@ backend, not the tool, decides how strongly that boundary isolates:
 | `docker` / `runsc` | kernel: gVisor userspace kernel | **arbitrary, model-authored code** |
 
 ```sh
-# Run the agent's `run`/`search` commands inside a locked-down container
-# (network off, root fs read-only, CPU/memory/pids capped, non-root user):
-go run ./cmd/driver run -sandbox=docker -task "..."
+# Locked-down container (network off, root fs read-only, resource caps, non-root):
+go run ./cmd/runner -sandbox=docker -task "..."
 
 # Treat the task's code as HOSTILE. The named profile is authoritative and
 # normalizes sandbox, runtime, network, secrets, worktree, and instruction policy:
-go run ./cmd/driver run -trust untrusted -task "..."
+go run ./cmd/runner -trust untrusted -task "..."
 ```
-
-### Execution profiles
-
-Orthogonal to trust, `-profile` names the run's BEHAVIOR defaults (iteration
-caps, effort, worktree, verify posture) as one immutable, versioned identity
-recorded in every transcript — so "driver-os + model X" names a reproducible
-configuration. Pick by task:
-
-```sh
-driver run -trust trusted-local -task "fix the bug"            # coding-v2 (default): implementation runs; a run that changes nothing fails
-driver run -trust trusted-local -profile observe-v1 \
-  -task "why does startup read .env twice?"                    # read/answer runs; unchanged workspace is a valid answer
-driver -profile interactive-v2                                 # the TUI default
-# eval-swe-v1 is cmd/eval's benchmark treatment; campaigns pin it by name
-```
-
-Explicitly-set flags override the profile (the transcript records each
-field's source — profile, cli, or trust — and whether the run stayed
-`canonical`, i.e. fully described by the profile name). Trust floors can
-only tighten a profile, never the reverse. Details: `docs/specs/PROFILES.md`.
 
 Build the container image once (it carries `sh`, `rg`, `git`, `go`):
 
@@ -213,67 +168,49 @@ make sandbox-image        # builds driver-os-sandbox:latest
 make sandbox-integration  # runs the docker-backed tests against a real daemon
 ```
 
-Notes:
+Network is off by default (`--network none`) so untrusted code can't
+exfiltrate; pass `-network` to allow egress. The workspace is the only
+writable mount, and the path fence is symlink-safe (the confused-deputy guard
+in `sandbox/local`).
 
-- **Network is off by default** (`--network none`) so untrusted code can't
-  exfiltrate. Pass `-network` to allow egress (e.g. a trusted dep-fetch). With the
-  network off, in-container `go build`/`go test` resolve modules only from a
-  read-only host `GOMODCACHE` mount, exposed via the library `docker.Options`
-  (`ExtraMounts`), which the integration tests exercise.
-- **The workspace is the only writable mount.** For a genuinely untrusted task,
-  point the sandbox at a *throwaway copy*, not your live checkout. The backend
-  takes a `dir`; the trust decision is the caller's.
-- **The fence is symlink-safe.** A symlink planted inside the workspace by
-  in-container code can't redirect a host-side read/write off-root (the
-  confused-deputy guard in `sandbox/local`).
-- `issue-bot` and the `eval` harness stay on `local` (trusted fixtures); they
-  don't pay container startup cost.
+### Execution profiles
 
-## Status
+Orthogonal to trust, `-profile` names the run's behavior defaults (iteration
+caps, effort, worktree, verify posture) as one immutable, versioned identity
+recorded in every transcript, so "driver-os + model X" names a reproducible
+configuration. Explicitly-set flags override the profile (the transcript
+records each field's source and whether the run stayed `canonical`), and
+trust floors can only tighten a profile, never the reverse. Details:
+`docs/specs/PROFILES.md`.
 
-The original library build order (DESIGN.md, decision 11) is **complete**: core
-types + registry, the `openaicompat` adapter (chat + `iter.Seq2` streaming), the
-native `anthropic` adapter, self-contained dual-schema tools, the `Runner`
-tool-exec loop, and the comparison/fan-in harness. All are end-to-end tested.
+## GoBench validator (preview)
 
-On top of that foundation the project has grown into an agent-harness research
-platform:
+`cmd/gobench-validate` is the instance validation pipeline for a rolling Go
+agent benchmark whose scoring axis is honesty as well as resolve: does the
+agent's claimed outcome match what an external grader can reproduce? The
+pipeline checks schema and toolchain pins, reproduces the red/green oracle,
+scrubs problem statements, and screens for solution leakage.
 
-- **Agent loop** (`driver run` or `driver-agent`): think→act→observe over the sandbox tools, with
-  cross-run memory ([mneme](https://github.com/AccursedGalaxy/mneme)),
-  reasoning-trace round-tripping, per-turn timing, and stuck-detection backed by
-  a build-diagnostics feed (see `docs/specs/CODE-INTELLIGENCE.md`).
-- **Sandbox** (`docs/specs/SANDBOX.md`, `docs/specs/SESSION.md`): one effect
-  boundary, three isolation tiers (local / docker-runc / docker-gVisor), plus a
-  long-lived process host and stateful shell sessions.
-- **Eval harness** (`eval/`): multiple suites including a dogfood corpus
-  regression scored against real human verdicts (see `docs/findings/DOGFOOD.md`).
-- **Command approval benchmark** (`cmd/command-bench`): screens OpenRouter
-  models on labelled `ok` versus `review` shell commands, with fail-closed parsing,
-  budget enforcement, confidence bounds, and per-task cost reporting (see
-  `docs/specs/COMMAND-APPROVAL-BENCH.md`).
-- **Council** (`docs/specs/COUNCIL.md`): adversarial multi-model review (author ↔
-  critic ↔ referee) plus a structured consult/Q&A mode; every run recorded as
-  dogfood corpus.
-- **Dogfood integrations**: `cmd/commit-msg` (commit-message generator) and
-  `cmd/issue-bot`.
-
-The open research backlog lives in `HARD-PROBLEMS.md`.
+Five canonical demonstration fixtures ship in
+`eval/suite/gobench/testdata/instances/` (urfave/cli, OPA, Prometheus,
+Lipgloss, Dolt). **These are a preview**: they demonstrate the instance
+format and the validation gates, and they are burned for scoring purposes
+precisely because they are public. The benchmark's real instance sets are
+mined fresh per release and stay private until publication.
 
 ## Develop
 
 ```sh
-go test ./...        # deterministic unit tests (no network)
-go run ./experiments/cmd/playground   # live round-trip (needs keys in .env)
+go vet ./... && go test -race ./...   # the repo gate (deterministic, no network)
 ```
 
 ## Status & stability
 
-This is a **v0.1.0 beta** and a personal research platform. The `v0.x` version
-line means the API and CLI surface are still moving, so expect breaking changes
-between minor versions until v1. It's shared because the pieces are genuinely
-useful and the research process is out in the open; it is not (yet) a hardened
-product with compatibility guarantees.
+This is a v0.x beta and the API and CLI surface are still moving, so expect
+breaking changes between minor versions until v1. The narrow scope is
+deliberate: the run contract, the gates, and the bundle format are the parts
+built to be depended on. The experimentation that pressure-tests them
+happens in companion repositories and lands here only after it survives.
 
 ## License
 
