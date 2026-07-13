@@ -1,0 +1,24 @@
+{
+  "calls": [
+    {
+      "pre_delay_ms": 250,
+      "chunk_delay_ms": 18,
+      "chunks": ["I found the bug and fixed the answer."],
+      "tool_calls": [
+        {
+          "name": "write_file",
+          "args": {
+            "path": "answer.txt",
+            "content": "41\n",
+            "append": false
+          }
+        }
+      ]
+    },
+    {
+      "pre_delay_ms": 250,
+      "chunk_delay_ms": 18,
+      "chunks": ["Done. The answer is now correct and all checks pass."]
+    }
+  ]
+}

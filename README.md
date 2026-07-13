@@ -34,6 +34,20 @@ claim.
 | **true green** | An external check re-ran the work and it holds. The only green that should count. |
 | **false green** | The agent reported success; independent verification disagrees. This is the failure mode the whole harness is built to expose. |
 
+## See it catch a false green
+
+Run the same deterministic agent twice. It writes the wrong answer and says
+all checks pass both times. The first run trusts that claim. The second adds
+one external gate and exits `2: unverified`, then verifies both proof bundles
+offline.
+
+```sh
+make demo-false-green
+```
+
+The demo needs Go and Git, but no API key, network access, Docker, or `jq`. It
+runs in a temporary directory and removes its files when finished.
+
 ## 02 · The system, in five pieces
 
 1. **One contract.** A run never ends in prose. It ends in one value of a

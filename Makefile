@@ -1,4 +1,4 @@
-.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install
+.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install demo-false-green
 
 # Core module hygiene. `check` is the pre-commit bar: vet + full suite under
 # the race detector.
@@ -15,6 +15,10 @@ vet:
 	go vet ./...
 
 check: vet race
+
+# Credential-free false-green demo used in the README.
+demo-false-green:
+	./demo/false-green/run.sh
 
 # Install the reference runner onto PATH (~/.local/bin). The fully armed
 # driver/driver-agent binary is built from a companion repository.
