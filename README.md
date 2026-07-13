@@ -1,18 +1,23 @@
 <div align="center">
 
-# driver-os
+# driver-os — verifiable coding agents
 
-### Does your coding agent deserve to say it passed?
+### Ship code that passed a check, not code that merely says it did.
 
 [![CI](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml/badge.svg)](https://github.com/AccursedGalaxy/driver-os/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/AccursedGalaxy/driver-os.svg)](https://pkg.go.dev/github.com/AccursedGalaxy/driver-os)
 [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A headless coding agent in Go that refuses to take the model's word for
-"done". Typed run outcomes decided by external gates, sandbox isolation
-tiers, per-role cost accounting, and signed proof bundles, all behind one
-provider interface that runs any model.
+**External verification** · **Sandboxed execution** · **Typed outcomes** · **Signed proof bundles** · **Any model**
+
+An open-source, headless coding-agent harness in Go that refuses to take the
+model's word for "done." driver-os runs OpenAI, Anthropic Claude, OpenRouter,
+X.AI, and local Ollama models behind one provider interface, then grades their
+work with external test gates. Every run produces a scriptable outcome, tracks
+cost by role, and can emit a signed proof bundle for offline verification.
+
+[Run the false-green demo](#see-it-catch-a-false-green) · [Quick start](#04--quick-start) · [Use it from scripts](#06--driving-it-from-scripts) · [Read the design](DESIGN.md)
 
 </div>
 
