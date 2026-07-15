@@ -10,18 +10,27 @@ import (
 	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
-// correctedFields are the two policy fields agent.Config cannot round-trip
-// through Requested(), so the legacy Split path records their zero/floor value
-// regardless of what the profile declared: "memory" (Config carries only the
-// memory.Store binding, never a policy bool — so legacy always records false)
-// and "worktree" (TrustProfile is withheld, so legacy always records the
-// trusted-local floor, dropping any exec-profile demand). Both are
-// recording-only — no loop, gate, or session consumes the policy field (the
-// store binding and plan.ForceWorktree drive the real behavior) — so buildBase
-// Request forwarding the profile CORRECTS the record without changing behavior.
-// This is the same defect class as agent's TestPrepareCorrectsWorktreeFloor...,
-// broadened: it moves ConfigSHA256 on essentially every headless run.
-var correctedFields = map[string]bool{"memory": true, "worktree": true}
+// correctedFields are the policy fields the legacy buildBaseConfig→Split path
+// under-records because agent.Config cannot faithfully carry them, so the native
+// buildBaseRequest→Prepare path corrects the RECORD (never behavior — every one
+// is recording-only in headless, where tools are always injected and
+// plan.ForceWorktree drives isolation):
+//   - memory: Config carries only the memory.Store binding, never a policy bool,
+//     so legacy always records false though coding-v2/interactive-v2 declare
+//     Memory=true. (Always differs.)
+//   - worktree: Requested() withholds TrustProfile AND the exec profile, so
+//     legacy records the trusted-local floor "auto", dropping any exec-profile
+//     demand (eval-swe-v1 DEMANDS off). (Differs per profile/trust.)
+//   - read_window / read_outline: buildBaseConfig never puts them in the policy
+//     (headless builds the read tools from the flag directly, injected as a
+//     Runtime binding — loop_shared only falls back to the policy value when
+//     rt.Tools is nil, which headless never leaves), so legacy records the
+//     profile default while native records the flag the operator set. (Differs
+//     only when the flag is explicitly set.)
+//
+// All move ConfigSHA256. Same defect class as agent's
+// TestPrepareCorrectsWorktreeFloorUnderContainerTrust, broadened.
+var correctedFields = map[string]bool{"memory": true, "worktree": true, "read_window": true, "read_outline": true}
 
 // policyDiff returns the JSON field keys on which two resolved policies differ.
 func policyDiff(t *testing.T, a, b runspec.PolicyValue) []string {
@@ -77,6 +86,10 @@ func TestBaseRequestEquivalentToSplit(t *testing.T) {
 		{"effort+standing", func() profile.Overrides {
 			e, s := "high", true
 			return profile.Overrides{Effort: &e, StandingContext: &s}
+		}, nil},
+		{"read-window", func() profile.Overrides {
+			w, o := 200, true
+			return profile.Overrides{ReadWindow: &w, ReadOutline: &o}
 		}, nil},
 		{"non-profile-flags", func() profile.Overrides { return profile.Overrides{} }, func(in *baseRequestInput) {
 			in.VerifyCmd = "go test ./..."

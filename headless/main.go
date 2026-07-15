@@ -206,7 +206,8 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 	}
 
 	// Trust consent succeeded; environment, repository, and runtime setup may
-	resolved, resolutionTrace, err := profile.Resolve(profile.TrustPosture{Selected: plan.Trust, Posture: profile.FloorFor(plan.Trust), Surface: invocationSurface}, execProfile, profileOverrides(fs, f))
+	ov := profileOverrides(fs, f)
+	resolved, resolutionTrace, err := profile.Resolve(profile.TrustPosture{Selected: plan.Trust, Posture: profile.FloorFor(plan.Trust), Surface: invocationSurface}, execProfile, ov)
 	if err != nil {
 		return failSetup(os.Stdout, errW, outFmt, "profile", err.Error())
 	}
@@ -773,7 +774,32 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		}
 	}
 
-	res, runErr := runSplit(ctx, loopFn, baseCfg)
+	// S6d.2s-b: the direct run path resolves through agent.Prepare — the flag
+	// layer's own profile.Resolve no longer feeds the loop. Bindings + record
+	// identity come from baseCfg (unaffected by the requested-side split); only
+	// the POLICY is rebuilt natively so runspec.Resolve owns profile threading
+	// and the memory/worktree record corrections land (PROFILES.md §7.5 S6d.2s).
+	// baseCfg survives for the not-yet-migrated best-of and ladder paths.
+	directReq := buildBaseRequest(baseRequestInput{
+		TrustProfile: string(tr), ExecProfileName: execProfile.Name, Overrides: ov,
+		VerifyTimeout: *f.verifyTimeout, VerifyCmd: *f.verifyCmd,
+		SkipVerifyBaseline: f.verifyBaseline.skip, AbortOnRedBaseline: f.verifyBaseline.abort, VerifyLastRun: *f.verifyLastRun,
+		ReviewPolicy: reviewPolicy, ReviewUnverified: *f.reviewUnverified, ReviewRounds: *f.reviewRounds,
+		TestFence: fence, DiffScope: scope, PromptProfile: *f.promptProfile,
+		CodeAct: *f.codeAct, ReproFirst: *f.reproFirst, ReproGate: *f.reproGate,
+		MaxWallClock: *f.maxWall, MaxTotalTokens: *f.maxTotalTokens, MaxTotalCostUSD: *f.budget, AllowUnpricedSpend: *f.allowUnpricedSpend,
+		DiagnoseCmd: *f.diagnoseCmd, DiagnoseAfterEdits: *f.diagnoseAfterEdits, SolverModel: modelLabel(model),
+	})
+	directRT, directContent := baseCfg.Bindings()
+	directPrepared, prepErr := agent.Prepare(directReq, directRT, directContent, agent.RecordInputs{
+		BinaryIdentity: baseCfg.BinaryIdentity, InvocationSurface: invocationSurface,
+		RequestedProtocol: *f.protocol, ProtocolFallbackReason: fallbackReason, CLIOverrides: cliOverrides(fs),
+		ApprovalPolicyName: baseCfg.ApprovalPolicyName, ApprovalPolicyHash: baseCfg.ApprovalPolicyHash,
+	})
+	if prepErr != nil {
+		return failSetup(os.Stdout, errW, outFmt, "config", prepErr.Error())
+	}
+	res, runErr := loopFn(ctx, directPrepared.Spec(), directPrepared.Runtime(), directPrepared.Content())
 	if runErr != nil {
 		var serr *agent.SetupError
 		if errors.As(runErr, &serr) {
