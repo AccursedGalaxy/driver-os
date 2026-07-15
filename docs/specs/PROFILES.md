@@ -382,7 +382,11 @@ or shadowed by the loop):
 > `Config.Split()` — never seen by the loops) because headless/driver/eval
 > still assemble it from their flag layers; the native
 > RequestedConfig-from-flags builders (and with them Config's deletion)
-> are the owed follow-up.
+> are the owed follow-up — now specified as **S6d** below (specced +
+> council-hardened 2026-07-13, not started). S6d turned out to be larger
+> than "swap the builders": the same audit found a SECOND unrecorded lane
+> (five paths resolve and call a loop directly) and TWO disagreeing
+> provenance views inside every ConfigRecord.
 
 - **S6a — full eager resolution + shared builder + loop signature, zero
   behavior change.** The ResolvedSpec invariant holds from day one of S6a:
@@ -429,6 +433,224 @@ or shadowed by the loop):
   plus schema bump for the record (EffectiveConfig → canonical
   policy-value + resolution-trace serializations, runtime-resolution
   sequence in bundle identity).
+- **S6d — one resolve-and-record seam; delete `agent.Config`**
+  (specced 2026-07-13; council-hardened same day — critic `openai/gpt-5.6-sol`,
+  run `20260713-005417-54ef57`, 4 rounds, hit_cap with signal ratio 1.00: 13
+  objections, all 13 answered, 12 closed by the critic/referee, O13 folded in
+  without a re-read. Every round forced a real revision — v0 of this slice was
+  wrong in four separate ways, listed under "what the council killed" below.)
+
+  ### Residual state (audited 2026-07-13)
+
+  Four production files still write an `agent.Config` literal:
+  `headless/configbuild.go` `buildBaseConfig` (~44 fields), `headless/main.go`
+  `buildAgentConfigInDir` (~40), `cmd/driver/configbuild.go`
+  `buildBaseAgentConfig` (~38, via `NewSessionFromConfig`),
+  `cmd/eval/configbuild.go` `buildEvalConfig` (~24), plus the library riders
+  `eval/trial.go` and `eval/suite/councilab`. `agent.Config` has 76 exported
+  fields. Test tail: ~22 files with qualified `agent.Config{}`, ~64 in-package
+  files with bare `Config{}`.
+
+  Five OTHER paths (council ×3 `observeRunSpec`, `cmd/issue-bot`, `cmd/chat`,
+  `cmd/commit-msg`, `cmd/gate`) already build `RequestedConfig` natively — but
+  they call `runspec.Resolve` and hand the spec straight to a loop, so they are a
+  SECOND unrecorded lane, not a finished migration. All nine producers move.
+
+  ### The defect
+
+  Each of the four flag layers runs `profile.Resolve` ITSELF and hands a
+  pre-resolved Config to `Config.Split()`, whose `Requested()` deliberately
+  withholds `ExecProfileName`/`TrustProfile` from resolution. Consequences:
+  profile threading lives in four surfaces instead of the resolver (correct today
+  only because four hand-written call sites happen to agree — the drift class that
+  produced the since-fixed headless `AutoVerify` drop), and the emitted
+  `ConfigRecord` carries TWO DISAGREEING PROVENANCE VIEWS of the same run: the
+  `ResolutionTrace` from the profile-blind `runspec.Resolve` inside `Split()`, and
+  `FieldProvenance` from the flag layer's own `profile.Resolve`. The flag layer's
+  is the honest one. Until this lands, "one binary" is packaging, not one config
+  path.
+
+  ### The seam
+
+  ONE entry point in core, the only way from a request to a run:
+
+      func Prepare(req runspec.RequestedConfig, rt Runtime, content Content,
+                   meta RecordInputs) (Prepared, error)
+
+  `req` MUST carry `TrustProfile` + `ExecProfileName` (resolution owns profile
+  threading; omitting trust is a hard error, matching the headless refusal).
+  `Prepare` calls `runspec.Resolve` exactly once, keeps the Trace, and builds the
+  `ConfigRecord` — `RecordMeta` packing stays CENTRAL; surfaces supply only
+  surface-specific inputs (invocation surface, binary identity, CLI-override
+  list, task hash).
+
+  The invariant is ENFORCED, not asserted: `Prepared`'s fields are unexported
+  with read accessors and `Prepare` is its only constructor; the loops become
+  `Run(ctx, p Prepared)` / `RunNative(ctx, p Prepared)`, so a bare `ResolvedSpec`
+  no longer type-checks at a loop entry. A structural oracle asserts that no
+  production package calls a loop entry point except through `Prepared`, and that
+  `runspec.Resolve` has no production caller except `Prepare` (test packages
+  exempt by import path). Green oracle is a precondition of the deletion.
+
+  ### The gate, split by field class
+
+  S6d changes no EXECUTED behavior, but "byte-identical ConfigRecord" is the
+  wrong gate, because unifying resolution necessarily collapses the two
+  provenance views:
+
+  | field class | gate |
+  |---|---|
+  | `ConfigSHA256` (canonical policy value) | byte-identical; any diff is a bug, no allowlist |
+  | executed behavior (loops, gates, detectors) | identical; consumption oracle + full suites |
+  | `ResolutionTrace` / `ResolutionTraceSHA256` / `FieldProvenance` | expected to change ONCE PER SURFACE, inside that surface's `s` slice, with a reviewed before/after |
+
+  `ResolutionTraceSHA256` is an AUDIT hash, not an identity hash (`ConfigSHA256`
+  is identity — that separation is §7.3's purpose), so it is legitimately not
+  comparable across the S6d boundary. A schema note lands with the first `s`
+  slice so ledger/gobench/bundle readers do not read a trace delta as a policy
+  change.
+
+  **One named exception to the `ConfigSHA256` gate, found by the S6d.1 oracle
+  (2026-07-13).** `Config.Requested()` withholds `TrustProfile` from resolution,
+  so the legacy path ALWAYS resolves the worktree floor as trusted-local's
+  (`auto`) — even under `container`/`untrusted`, whose floor demands `required`.
+  Today's `ConfigSHA256` therefore MISSTATES the worktree floor on exactly the
+  runs where it matters most (eval over public repos runs `container`). It is a
+  RECORDING defect, not an execution defect: `PolicyValue.Worktree` has no loop
+  consumer — headless forces the worktree from its own profile resolution
+  (`plan.ForceWorktree`, `headless/main.go:407`) — so those runs were isolated as
+  promised; only the recorded policy lied about why. `Prepare` resolves trust, so
+  the floor lands correctly and `ConfigSHA256` MOVES for those two trusts. Pinned
+  by `TestPrepareCorrectsWorktreeFloorUnderContainerTrust`. The gate's
+  "byte-identical" claim therefore covers the values the legacy path represented
+  FAITHFULLY; this is the one it did not.
+
+  ### Presence contract
+
+  Flags are the ONLY policy presence source in all surfaces today (env is read
+  solely for secrets; there is no config file; S5 TOML profiles will enter as a
+  `RequestedConfig` PRODUCER, not a second presence mechanism). Presence must
+  become `fs.Visit`, not value≠zero — today's `optNZ`-based `Requested()` cannot
+  distinguish `-stream=false` from unset, so an explicit false silently loses to
+  a profile default. That is a REAL behavior change, it affects every surface
+  (all four ride the same `Requested()`), and it is therefore NOT bundled into the
+  structural work. Each surface migrates as a PAIR:
+
+  - **`s` (structural)** — the native builder reproduces LEGACY presence exactly
+    (pointer emitted iff value non-zero), so policy value and behavior are
+    provably unchanged.
+  - **`p` (presence)** — flip that surface to `Visit` presence; a reviewed
+    behavior change, preceded by an `optNZ`-sensitivity AUDIT of that surface
+    (bools defaulting true like `-stream`/`-verify-continue`/`-finish-nudge`,
+    ints where 0 means disabled, strings where "" means none — only those can
+    move).
+
+  Precedence otherwise unchanged: profile declarations < explicit overrides;
+  trust-floor tightening always wins; weakening is a startup error. Exactly one
+  alias exists (`NavSpiralWindow`), normalized inside `Resolve` before floor
+  enforcement, conflicts are errors, builders never pre-normalize.
+
+  ### Slices
+
+  Ordering principle: the core API stays ADDITIVE until every consumer is
+  migrated AND deployed. (A green local lab build before a core push proves one
+  workspace state; it does not control what another checkout resolves, and the
+  wrapper's silent fallback to its last good build is exactly what would mask a
+  broken pin — so for the duration of S6d the wrapper warns loudly and exits
+  non-zero on rebuild failure rather than serving stale.)
+
+  1. **S6d.1 — `Prepare` seam, additive. SHIPPED 2026-07-13** (`agent/prepare.go`,
+     `agent/prepare_test.go`; core + lab suites green). `Prepare(req, rt, content,
+     meta RecordInputs) → (Prepared, error)`: resolves once, keeps the trace, and
+     derives `RecordMeta` (trust, exec profile + hash, required trust,
+     canonicality, per-field provenance) FROM that trace — a caller-supplied
+     provenance view is overwritten, pinned by test. `Prepared`'s fields are
+     unexported and `Prepare` is its only constructor;
+     `RunPrepared`/`RunNativePrepared` are the Prepared-taking loop entries that
+     S6d.7 collapses onto `Run`/`RunNative`. Oracles: `Prepare` ≡ `Split` on
+     `ConfigSHA256` across trust × CLI (scoped to the trusts the legacy path
+     represents faithfully — see the worktree exception above), plus a test
+     pinning WHY `Config` is not a legal `Prepare` input (below).
+
+     **Correction to the council's `s`-slice prescription, forced by the code.**
+     "Reproduce legacy `optNZ` presence exactly" is UNSOUND for the 19
+     profile-covered fields once the profile is forwarded to resolution: an
+     explicit `-auto-verify=false` collapses to a zero, `optNZ` reads it as
+     unset, and `coding-v2`'s `AutoVerify=true` is resurrected on top of the
+     operator's explicit false. (That is exactly why `Requested()` withholds the
+     profile — `agent/requested.go:10-13`.) The sound builder uses `fs.Visit`
+     presence for the profile-covered fields — which is what every flag layer
+     ALREADY does (`headless/flags.go:157` `profileOverrides`), so it is still a
+     no-behavior-change migration — and value-presence for the rest. Pinned by
+     `TestPreparePresenceContractExplicitFalseSurvivesProfileDefault`, which
+     fails if a future builder "simplifies" back to `Config.Requested()` + a
+     forwarded profile.
+  2. **S6d.2s / .2p — headless.** 3. **S6d.3s / .3p — TUI** (+ tmux boot drive).
+     4. **S6d.4s / .4p — eval** (eval's `p` slice re-runs a pinned reference
+     trial and diffs the resolved policy, since a presence flip there can move
+     MEASUREMENTS; it may be deferred indefinitely — deletion depends only on the
+     `s` slices).
+  5. **S6d.4b — the five native producers** (council ×3, issue-bot, chat,
+     commit-msg, gate) onto `Prepare`. No `s`/`p` split (they never touched
+     Config), but each gains a central `ConfigRecord`, so each gets a reviewed
+     record before/after.
+  6. **S6d.5 — the oracles.** (a) Per-surface flag→request mapping table: every
+     flag set to a distinguishable value, asserting the `RequestedConfig` field
+     and its survival into `Prepared`; a flag with no table entry FAILS
+     (reflection over the FlagSet). Zero-value expectations are PHASE-SPECIFIC —
+     in an `s` slice an explicit zero must map to nil and resolve exactly as
+     legacy (the oracle asserts the loss); in the matching `p` slice it must map
+     to a non-nil pointer and produce the expected policy change. (b) The
+     entry-point enforcement oracle above. (c) A cross-surface contract test: for
+     inputs meant to have identical semantics, headless and TUI must resolve to
+     the same `ConfigSHA256`, with intended divergences declared as an explicit
+     reasoned list — so a NEW divergence fails the build.
+     Rationale: the existing oracles cover only the 19 profile FieldIDs; the ~57
+     non-profile fields, the Runtime bindings, and Content have no coverage
+     against a builder that drops or miswires a flag.
+  7. **S6d.6 — test-fixture migration**, performed while BOTH paths exist so each
+     migrated file is checked old-vs-new (Resolve-backed fixtures inject
+     defaults, validation and floors that direct literals never had — a failure
+     here must not be confusable with a deletion failure).
+  8. **S6d.7 — deletion.** `agent.Config`, `Split()`, `Requested()`,
+     `Bindings()`, `NewSessionFromConfig`, `bridge_s6a_test.go`, the equivalence
+     test. Preconditions: the entry-point oracle is green, and the lab's migrated
+     commit is the required revision.
+
+  ### Behavior-change budget (exhaustive)
+
+  (a) the trace/provenance unification, once per surface inside its `s` slice — a
+  RECORD change, not executed behavior; (b) the three `p` presence slices, each
+  preceded by a reviewed audit; (c) nothing else. No flag renames, no new flags
+  (the knob freeze holds).
+
+  ### What S6d does NOT buy
+
+  S6d unifies RESOLUTION — one place turns a request into a spec, one place
+  records it, no surface resolves profiles privately, and no lane reaches a loop
+  unrecorded. That is a PRECONDITION for CLI↔TUI convergence, not convergence.
+  It does not equalize per-surface defaults (TUI `reviewed-local`/`interactive-v2`
+  with interactive approval vs headless refuse-without-`-trust`/`coding-v2` —
+  intended, and they stay), runtime bindings, Content construction,
+  session/resume (TUI-only), or approval posture. Those are U2's scope; U2 then
+  turns the sanctioned-divergence list from S6d.5(c) into DATA (a named profile
+  per surface) instead of code.
+
+  ### What the council killed (v0 → v4)
+
+  - "Headless silently drops AutoVerify" — STALE; S6a fixed it
+    (`headless/main.go:209`, `:472`, `:702`). S6d is a pure structural refactor.
+  - "Byte-identical ConfigRecord" as the gate — too strong; the trace MUST move
+    (two disagreeing provenance views exist today). Gate split by field class.
+  - "RecordMeta packing moves into the per-surface builders" — would have
+    recreated the exact drift class S6d deletes. It moves into `Prepare`.
+  - "Build the lab before every core push" — proves one workspace state; replaced
+    by additive-until-deployed ordering + a loud wrapper.
+  - A standalone trace-unification slice — fiction; the collapse happens per
+    surface, when that surface switches resolvers.
+  - "Prepare is the only way to reach a loop" — was unenforced prose while the
+    loops still took a bare `ResolvedSpec` and five native producers bypassed it.
+    Now structural (unforgeable `Prepared` + enforcement oracle).
 
 Interaction with CONTROL-PLANE Design 1 (loop unification): independent and
 prior — a single `ResolvedSpec` shrinks both loops' shared wiring and makes
