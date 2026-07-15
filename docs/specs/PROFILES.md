@@ -585,7 +585,33 @@ or shadowed by the loop):
      `TestPreparePresenceContractExplicitFalseSurvivesProfileDefault`, which
      fails if a future builder "simplifies" back to `Config.Requested()` + a
      forwarded profile.
-  2. **S6d.2s / .2p — headless.** 3. **S6d.3s / .3p — TUI** (+ tmux boot drive).
+  2. **S6d.2s / .2p — headless.** S6d.2s-a SHIPPED 2026-07-15
+     (`headless/configbuild.go` `buildBaseRequest` + `headless/baserequest_test.go`;
+     pure addition, hot path still on `buildBaseConfig`→`Split`). S6d.2s-b (wire
+     the direct run path through `Prepare`) is next.
+
+     **A THIRD, BROADER record correction, found by the S6d.2s oracle
+     (2026-07-15) — the "ConfigSHA256 byte-identical" gate does NOT hold for
+     headless.** `agent.Config` cannot round-trip TWO policy fields through
+     `Requested()`, so the legacy `Split` path records a value that disagrees
+     with the resolution on ESSENTIALLY EVERY headless run:
+     - `memory`: `Config` carries only the `memory.Store` binding, never a policy
+       bool, so legacy records `memory=false` even though `coding-v2` and
+       `interactive-v2` both declare `Memory=true`.
+     - `worktree`: `Requested()` withholds both `TrustProfile` and the exec
+       profile, so legacy records the trusted-local floor `auto`, dropping any
+       exec-profile demand (`eval-swe-v1` DEMANDS `off`).
+     Both are RECORDING-ONLY — no loop/gate/session reads the policy field (the
+     store binding and `plan.ForceWorktree` drive behavior) — so `Prepare`
+     forwarding the profile corrects the record with zero behavior change, but it
+     MOVES `ConfigSHA256` on nearly every headless run. This generalizes S6d.1's
+     container worktree-floor finding: the gate is "identical policy EXCEPT the
+     documented `correctedFields` {memory, worktree}", asserted field-by-field by
+     `TestBaseRequestEquivalentToSplit` + `TestBaseRequestCorrectsDroppedProfile
+     Fields`. Prior headless transcripts' recorded `memory`/`worktree` were
+     wrong; readers comparing `ConfigSHA256` across the S6d boundary must expect
+     these two to move.
+     3. **S6d.3s / .3p — TUI** (+ tmux boot drive).
      4. **S6d.4s / .4p — eval** (eval's `p` slice re-runs a pinned reference
      trial and diffs the resolved policy, since a presence flip there can move
      MEASUREMENTS; it may be deferred indefinitely — deletion depends only on the
