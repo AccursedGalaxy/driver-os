@@ -464,8 +464,8 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		selector := llmBestOfSelector{Provider: sp, Model: bestOfSelectModel, Effort: *f.reviewEffort}
 		return runBestOfCLI(ctx, bestOfCLIOptions{
 			N: *f.bestOf, OrigCwd: origCwd, Task: taskVal, Model: model, ModelLabel: modelLabel(model), Selector: selector, SelectorModel: bestOfSelectModel,
-			InvocationSurface: invocationSurface,
-			TrustPlan:         plan, Session: *f.session,
+			InvocationSurface: invocationSurface, Overrides: ov,
+			TrustPlan: plan, Session: *f.session,
 			Review: *f.review, KeepWorktree: *f.keepWorktree, Approve: *f.approve, ReviewAction: *f.reviewAction, ReviewRounds: *f.reviewRounds, ReviewRequired: effectiveReviewRequired, ReviewFailOpen: reviewFailOpen, ReviewOptional: *f.reviewOptional, ReviewUnverified: *f.reviewUnverified, RequireDiff: resolved.RequireDiff, Reviewer: reviewer,
 			Planner: planner, Memory: *f.useMemory, OpenMemory: extras.OpenMemory, MemoryDBName: extras.MemoryDBName, SkillsFlag: *f.skillsFlag, Protocol: *f.protocol, OutFmt: outFmt, Finalize: finalize, TranscriptDir: *f.transcriptDir,
 			MaxIters: resolved.MaxIters, MaxTokens: resolved.MaxTokens, RunTimeout: resolved.RunTimeout, VerifyTimeout: *f.verifyTimeout, VerifyCmd: *f.verifyCmd, SkipVerifyBaseline: f.verifyBaseline.skip, AbortOnRedBaseline: f.verifyBaseline.abort, VerifyLastRun: *f.verifyLastRun, VerifyContinue: resolved.VerifyContinue,
@@ -1012,14 +1012,19 @@ func (v *verifyBaselineValue) Set(s string) error {
 func (v *verifyBaselineValue) IsBoolFlag() bool { return true }
 
 type bestOfCLIOptions struct {
-	N                     int
-	OrigCwd               string
-	Task                  string
-	Model                 llm.Provider
-	ModelLabel            string
-	InvocationSurface     string
-	Selector              bestOfSelector
-	SelectorModel         string
+	N                 int
+	OrigCwd           string
+	Task              string
+	Model             llm.Provider
+	ModelLabel        string
+	InvocationSurface string
+	Selector          bestOfSelector
+	SelectorModel     string
+	// Overrides are the profile-covered flags the operator explicitly set
+	// (fs.Visit presence) — threaded so buildAgentConfigInDir resolves through
+	// agent.Prepare with the exec profile forwarded (S6d.2s-b). Distinct from
+	// the resolved MaxIters/etc. below, which the legacy Config path used.
+	Overrides             profile.Overrides
 	TrustPlan             trustPlan
 	Session               bool
 	Review                bool
@@ -1274,11 +1279,11 @@ func runBestOfCLI(ctx context.Context, opts bestOfCLIOptions) int {
 	return exitCode
 }
 
-func buildAgentConfigInDir(ctx context.Context, opts bestOfCLIOptions, cwd string, tty *ttyIO) (agent.Config, agent.LoopFunc, func(), *agent.RunResult) {
+func buildAgentConfigInDir(ctx context.Context, opts bestOfCLIOptions, cwd string, tty *ttyIO) (agent.Prepared, agent.LoopFunc, func(), *agent.RunResult) {
 	sb, err := cli.BuildSandboxWithEnvAllowlist(ctx, opts.TrustPlan.SandboxKind, cwd, opts.TrustPlan.Runtime, opts.TrustPlan.Network, opts.TrustPlan.EnvAllowlist)
 	if err != nil {
 		res := &agent.RunResult{Task: opts.Task, Root: cwd, Outcome: agent.ProviderErr, Reason: "sandbox: " + err.Error(), Err: err, StartedAt: time.Now(), EndedAt: time.Now()}
-		return agent.Config{}, nil, func() {}, res
+		return agent.Prepared{}, nil, func() {}, res
 	}
 	cleanup := func() { _ = sb.Close() }
 	caps := sb.Capabilities()
@@ -1414,16 +1419,43 @@ func buildAgentConfigInDir(ctx context.Context, opts bestOfCLIOptions, cwd strin
 	}
 	wireBudgetControls(&cfg, opts.MaxTotalCostUSD, opts.ModelLabel, opts.Price)
 	cfg.AllowUnpricedSpend = opts.AllowUnpricedSpend
-	return cfg, loopFn, cleanup, nil
+
+	// S6d.2s-b: resolve through agent.Prepare so the exec profile is forwarded
+	// and the memory/worktree/read-window record corrections land. Bindings +
+	// record identity come from cfg (unaffected by the requested-side split);
+	// only the POLICY is rebuilt natively. cfg's resolved policy fields are dead
+	// here (Prepare rebuilds them from the request) and vanish with Config at
+	// S6d.7.
+	req := buildBaseRequest(baseRequestInput{
+		TrustProfile: string(opts.TrustPlan.Trust), ExecProfileName: opts.ExecProfileName, Overrides: opts.Overrides,
+		VerifyTimeout: opts.VerifyTimeout, VerifyCmd: opts.VerifyCmd,
+		SkipVerifyBaseline: opts.SkipVerifyBaseline, AbortOnRedBaseline: opts.AbortOnRedBaseline, VerifyLastRun: opts.VerifyLastRun,
+		ReviewPolicy: reviewPolicy, ReviewUnverified: opts.ReviewUnverified, ReviewRounds: opts.ReviewRounds,
+		TestFence: opts.TestFence, DiffScope: opts.DiffScope, PromptProfile: opts.PromptProfile,
+		CodeAct: opts.CodeAct, ReproFirst: opts.ReproFirst, ReproGate: opts.ReproGate,
+		MaxWallClock: opts.MaxWall, MaxTotalTokens: opts.MaxTotalTokens, MaxTotalCostUSD: opts.MaxTotalCostUSD, AllowUnpricedSpend: opts.AllowUnpricedSpend,
+		DiagnoseCmd: opts.DiagnoseCmd, DiagnoseAfterEdits: opts.DiagnoseAfterEdits, SolverModel: opts.ModelLabel,
+	})
+	rt, content := cfg.Bindings()
+	prepared, perr := agent.Prepare(req, rt, content, agent.RecordInputs{
+		BinaryIdentity: cfg.BinaryIdentity, InvocationSurface: opts.InvocationSurface,
+		RequestedProtocol: opts.Protocol, ProtocolFallbackReason: fallbackReason, CLIOverrides: opts.CLIOverrides,
+		ApprovalPolicyName: cfg.ApprovalPolicyName, ApprovalPolicyHash: cfg.ApprovalPolicyHash,
+	})
+	if perr != nil {
+		res := &agent.RunResult{Task: opts.Task, Root: cwd, Outcome: agent.ProviderErr, Reason: "config: " + perr.Error(), Err: perr, StartedAt: time.Now(), EndedAt: time.Now()}
+		return agent.Prepared{}, nil, cleanup, res
+	}
+	return prepared, loopFn, cleanup, nil
 }
 
 func runSolveInDir(ctx context.Context, opts bestOfCLIOptions, cwd string, tty *ttyIO) *agent.RunResult {
-	cfg, loopFn, cleanup, early := buildAgentConfigInDir(ctx, opts, cwd, tty)
+	prepared, loopFn, cleanup, early := buildAgentConfigInDir(ctx, opts, cwd, tty)
 	defer cleanup()
 	if early != nil {
 		return early
 	}
-	res, _ := runSplit(ctx, loopFn, cfg)
+	res, _ := loopFn(ctx, prepared.Spec(), prepared.Runtime(), prepared.Content())
 	return res
 }
 
@@ -1437,16 +1469,12 @@ func reviewBestOfWinner(ctx context.Context, opts bestOfCLIOptions, cwd string, 
 	if opts.Reviewer == nil || res == nil || res.Outcome == agent.RefusedUnsafe {
 		return res, nil
 	}
-	cfg, loopFn, cleanup, early := buildAgentConfigInDir(ctx, opts, cwd, tty)
+	prepared, loopFn, cleanup, early := buildAgentConfigInDir(ctx, opts, cwd, tty)
 	defer cleanup()
 	if early != nil {
 		return early, nil
 	}
-	spec, rt, content, err := cfg.Split()
-	if err != nil {
-		return res, err
-	}
-	return agent.ReviewAndRepairExistingWorkspace(ctx, spec, rt, content, res, agent.ReviewPassOptions{BaseTree: baseTree}, loopFn)
+	return agent.ReviewAndRepairExistingWorkspace(ctx, prepared.Spec(), prepared.Runtime(), prepared.Content(), res, agent.ReviewPassOptions{BaseTree: baseTree}, loopFn)
 }
 
 // runSplit is the headless requested-side conversion: the assembled Config is
