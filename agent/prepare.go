@@ -35,6 +35,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 
 	"github.com/AccursedGalaxy/driver-os/profile"
 	"github.com/AccursedGalaxy/driver-os/runspec"
@@ -75,7 +76,15 @@ func (p Prepared) ConfigSHA256() string       { return p.spec.ConfigSHA256() }
 // Prepare resolves req exactly once and returns a runnable, recordable run.
 // rt.Record is overwritten with the centrally-derived RecordMeta: a caller
 // cannot smuggle in a provenance view that disagrees with the resolution.
+//
+// req MUST carry TrustProfile: runspec.Resolve would default a nil trust to
+// trusted-local (the weakest posture), so the seam refuses instead — the
+// PROFILES.md contract is that omitting trust is a hard error, matching the
+// headless flag layer's refusal, and native producers get no flag layer.
 func Prepare(req runspec.RequestedConfig, rt Runtime, content Content, meta RecordInputs) (Prepared, error) {
+	if req.TrustProfile == nil {
+		return Prepared{}, errors.New("prepare: request carries no trust profile; omitting trust is a hard error")
+	}
 	spec, trace, err := runspec.Resolve(req)
 	if err != nil {
 		return Prepared{}, err

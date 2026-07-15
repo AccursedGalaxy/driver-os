@@ -206,7 +206,8 @@ func TestPreparePresenceContractExplicitFalseSurvivesProfileDefault(t *testing.T
 	// and the profile default is resurrected.
 	cfg := Config{TrustProfile: "trusted-local", AutoVerify: false}
 	req := cfg.Requested()
-	req.ExecProfileName = ptr("coding-v2") // the "simplification" — forwarding a profile over Config presence
+	req.TrustProfile = ptr("trusted-local") // Requested() withholds trust; the seam requires it
+	req.ExecProfileName = ptr("coding-v2")  // the "simplification" — forwarding a profile over Config presence
 	unsound, err := Prepare(req, Runtime{}, Content{Task: "t"}, RecordInputs{})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -214,5 +215,16 @@ func TestPreparePresenceContractExplicitFalseSurvivesProfileDefault(t *testing.T
 	if !unsound.Spec().Verification().AutoVerify {
 		t.Fatal("expected the documented unsoundness (profile default resurrected over a zero-valued Config field); " +
 			"if this no longer holds, Config.Requested() gained real presence and the contract comment must be updated")
+	}
+}
+
+// The seam refuses a request without a trust profile. runspec.Resolve would
+// default nil trust to trusted-local — the weakest posture — so a native
+// producer that forgets TrustProfile must get a hard error, not a silent
+// trusted-local run recorded as canonical (PROFILES.md §7.5, "the seam").
+func TestPrepareRequiresTrustProfile(t *testing.T) {
+	_, err := Prepare(runspec.RequestedConfig{ExecProfileName: ptr("coding-v2")}, Runtime{}, Content{}, RecordInputs{})
+	if err == nil {
+		t.Fatal("Prepare accepted a request without a trust profile; want a hard error (nil trust would silently resolve trusted-local)")
 	}
 }

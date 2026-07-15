@@ -8,6 +8,7 @@ import (
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/profile"
 	"github.com/AccursedGalaxy/driver-os/runspec"
+	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
 // correctedFields are the policy fields the legacy buildBaseConfig→Split path
@@ -172,14 +173,14 @@ func TestBaseRequestEquivalentToSplit(t *testing.T) {
 // goal, so the corrected eval-swe-v1 record matters most.
 func TestBaseRequestCorrectsDroppedProfileFields(t *testing.T) {
 	trust := profile.TrustedLocal
-	prepare := func(t *testing.T, pname string) (legacy, native runspec.PolicyValue) {
+	prepare := func(t *testing.T, pname string, ov profile.Overrides) (legacy, native runspec.PolicyValue) {
 		t.Helper()
 		e, err := profile.ExecByName(pname)
 		if err != nil {
 			t.Fatal(err)
 		}
 		posture := profile.TrustPosture{Selected: trust, Posture: profile.FloorFor(trust), Surface: "headless"}
-		resolved, _, err := profile.Resolve(posture, e, profile.Overrides{})
+		resolved, _, err := profile.Resolve(posture, e, ov)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,7 +192,7 @@ func TestBaseRequestCorrectsDroppedProfileFields(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Split: %v", err)
 		}
-		p, err := agent.Prepare(buildBaseRequest(baseRequestInput{TrustProfile: string(trust), ExecProfileName: e.Name}), agent.Runtime{}, agent.Content{}, agent.RecordInputs{})
+		p, err := agent.Prepare(buildBaseRequest(baseRequestInput{TrustProfile: string(trust), ExecProfileName: e.Name, Overrides: ov}), agent.Runtime{}, agent.Content{}, agent.RecordInputs{})
 		if err != nil {
 			t.Fatalf("Prepare: %v", err)
 		}
@@ -206,7 +207,7 @@ func TestBaseRequestCorrectsDroppedProfileFields(t *testing.T) {
 		if !e.Memory {
 			t.Skip("coding-v2 no longer declares Memory=true; correction moot")
 		}
-		legacy, native := prepare(t, "coding-v2")
+		legacy, native := prepare(t, "coding-v2", profile.Overrides{})
 		if legacy.Memory {
 			t.Fatal("legacy recorded memory=true; the drop defect is gone (Requested now round-trips Memory)")
 		}
@@ -220,7 +221,7 @@ func TestBaseRequestCorrectsDroppedProfileFields(t *testing.T) {
 		if e.Worktree != "off" {
 			t.Skipf("eval-swe-v1 no longer demands worktree=off (got %q); correction moot", e.Worktree)
 		}
-		legacy, native := prepare(t, "eval-swe-v1")
+		legacy, native := prepare(t, "eval-swe-v1", profile.Overrides{})
 		if legacy.Worktree != "auto" {
 			t.Fatalf("legacy worktree = %q, want the documented defect value %q", legacy.Worktree, "auto")
 		}
@@ -228,4 +229,44 @@ func TestBaseRequestCorrectsDroppedProfileFields(t *testing.T) {
 			t.Fatalf("Prepare worktree = %q, want the profile-demanded %q", native.Worktree, "off")
 		}
 	})
+
+	// read_window/read_outline are allowlisted out of the equivalence oracle, so
+	// without this directional pin a builder bug that drops (or swaps) the
+	// forwarding would only ever produce diffs on allowlisted keys and no test
+	// would fail: legacy never carries them in the policy (buildBaseConfig has no
+	// field), native must record the operator's explicit flag values.
+	t.Run("read-window", func(t *testing.T) {
+		w, o := 200, true
+		legacy, native := prepare(t, "coding-v2", profile.Overrides{ReadWindow: &w, ReadOutline: &o})
+		if legacy.ReadWindow == w {
+			t.Fatalf("legacy recorded the explicit read window %d; the drop defect is gone — retire the correction", w)
+		}
+		if native.ReadWindow != w {
+			t.Fatalf("Prepare read_window = %d, want the explicit flag value %d", native.ReadWindow, w)
+		}
+		if native.ReadOutline != o {
+			t.Fatalf("Prepare read_outline = %v, want the explicit flag value %v", native.ReadOutline, o)
+		}
+	})
+}
+
+// The trust plan's MinIsolation can exceed the trust floor (untrusted raises
+// FloorFor's process to kernel — headless/trust.go). The legacy path forwarded
+// the raised value via Config.Requested(); the native builder must too, or the
+// loop's fail-closed sandbox gate and the recorded min_isolation silently fall
+// back to the weaker floor. The equivalence matrix can't see this (its trusts
+// have no plan-raised isolation), so it is pinned directly.
+func TestBaseRequestForwardsPlanMinIsolation(t *testing.T) {
+	req := buildBaseRequest(baseRequestInput{
+		TrustProfile: string(profile.Untrusted), ExecProfileName: "coding-v2",
+		MinIsolation: sandbox.IsolationKernel,
+	})
+	p, err := agent.Prepare(req, agent.Runtime{}, agent.Content{}, agent.RecordInputs{})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if got := p.Spec().Policy().MinIsolation; got != sandbox.IsolationKernel {
+		t.Fatalf("min_isolation = %v, want the plan-raised %v (floor for untrusted is only %v)",
+			got, sandbox.IsolationKernel, profile.FloorFor(profile.Untrusted).MinIsolation)
+	}
 }

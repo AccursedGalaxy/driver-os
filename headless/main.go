@@ -453,6 +453,21 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		}
 		return exit
 	}
+	// S6d.2s: the ONE flags→RequestedConfig transcription. Both migrated paths
+	// (direct below, best-of via bestOfCLIOptions.BaseRequest) resolve from this
+	// same input, so a new policy flag wired here cannot diverge per path.
+	reviewPolicy, _ := agent.ReviewPolicyFrom(effectiveReviewRequired, reviewFailOpen, *f.reviewOptional)
+	baseReqIn := baseRequestInput{
+		TrustProfile: string(tr), ExecProfileName: execProfile.Name, Overrides: ov,
+		MinIsolation:  plan.MinIsolation,
+		VerifyTimeout: *f.verifyTimeout, VerifyCmd: *f.verifyCmd,
+		SkipVerifyBaseline: f.verifyBaseline.skip, AbortOnRedBaseline: f.verifyBaseline.abort, VerifyLastRun: *f.verifyLastRun,
+		ReviewPolicy: reviewPolicy, ReviewUnverified: *f.reviewUnverified, ReviewRounds: *f.reviewRounds,
+		TestFence: fence, DiffScope: scope, PromptProfile: *f.promptProfile,
+		CodeAct: *f.codeAct, ReproFirst: *f.reproFirst, ReproGate: *f.reproGate,
+		MaxWallClock: *f.maxWall, MaxTotalTokens: *f.maxTotalTokens, MaxTotalCostUSD: *f.budget, AllowUnpricedSpend: *f.allowUnpricedSpend,
+		DiagnoseCmd: *f.diagnoseCmd, DiagnoseAfterEdits: *f.diagnoseAfterEdits, SolverModel: modelLabel(model),
+	}
 	if err := validateBestOfSetup(*f.bestOf, bestOfSelectModel, *f.reviewModel, vcs.IsRepo(ctx, origCwd)); err != nil {
 		return failSetup(os.Stdout, errW, outFmt, "best_of", err.Error())
 	}
@@ -464,7 +479,7 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		selector := llmBestOfSelector{Provider: sp, Model: bestOfSelectModel, Effort: *f.reviewEffort}
 		return runBestOfCLI(ctx, bestOfCLIOptions{
 			N: *f.bestOf, OrigCwd: origCwd, Task: taskVal, Model: model, ModelLabel: modelLabel(model), Selector: selector, SelectorModel: bestOfSelectModel,
-			InvocationSurface: invocationSurface, Overrides: ov,
+			InvocationSurface: invocationSurface, BaseRequest: baseReqIn,
 			TrustPlan: plan, Session: *f.session,
 			Review: *f.review, KeepWorktree: *f.keepWorktree, Approve: *f.approve, ReviewAction: *f.reviewAction, ReviewRounds: *f.reviewRounds, ReviewRequired: effectiveReviewRequired, ReviewFailOpen: reviewFailOpen, ReviewOptional: *f.reviewOptional, ReviewUnverified: *f.reviewUnverified, RequireDiff: resolved.RequireDiff, Reviewer: reviewer,
 			Planner: planner, Memory: *f.useMemory, OpenMemory: extras.OpenMemory, MemoryDBName: extras.MemoryDBName, SkillsFlag: *f.skillsFlag, Protocol: *f.protocol, OutFmt: outFmt, Finalize: finalize, TranscriptDir: *f.transcriptDir,
@@ -685,7 +700,6 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		tools = agent.DefaultTools(effects, *f.runTimeout, agent.ReadOptions{Window: *f.readWindow, Outline: *f.readOutline})
 	}
 
-	reviewPolicy, _ := agent.ReviewPolicyFrom(effectiveReviewRequired, reviewFailOpen, *f.reviewOptional)
 	baseCfg := buildBaseConfig(baseConfigInput{
 		InvocationSurface: invocationSurface, RequestedProtocol: *f.protocol, FallbackReason: fallbackReason,
 		ExecProfile: execProfile, CLIOverrides: cliOverrides(fs), Model: model, ModelInfo: llm.Lookup(modelLabel(model)),
@@ -780,16 +794,7 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 	// the POLICY is rebuilt natively so runspec.Resolve owns profile threading
 	// and the memory/worktree record corrections land (PROFILES.md §7.5 S6d.2s).
 	// baseCfg survives for the not-yet-migrated best-of and ladder paths.
-	directReq := buildBaseRequest(baseRequestInput{
-		TrustProfile: string(tr), ExecProfileName: execProfile.Name, Overrides: ov,
-		VerifyTimeout: *f.verifyTimeout, VerifyCmd: *f.verifyCmd,
-		SkipVerifyBaseline: f.verifyBaseline.skip, AbortOnRedBaseline: f.verifyBaseline.abort, VerifyLastRun: *f.verifyLastRun,
-		ReviewPolicy: reviewPolicy, ReviewUnverified: *f.reviewUnverified, ReviewRounds: *f.reviewRounds,
-		TestFence: fence, DiffScope: scope, PromptProfile: *f.promptProfile,
-		CodeAct: *f.codeAct, ReproFirst: *f.reproFirst, ReproGate: *f.reproGate,
-		MaxWallClock: *f.maxWall, MaxTotalTokens: *f.maxTotalTokens, MaxTotalCostUSD: *f.budget, AllowUnpricedSpend: *f.allowUnpricedSpend,
-		DiagnoseCmd: *f.diagnoseCmd, DiagnoseAfterEdits: *f.diagnoseAfterEdits, SolverModel: modelLabel(model),
-	})
+	directReq := buildBaseRequest(baseReqIn)
 	directRT, directContent := baseCfg.Bindings()
 	directPrepared, prepErr := agent.Prepare(directReq, directRT, directContent, agent.RecordInputs{
 		BinaryIdentity: baseCfg.BinaryIdentity, InvocationSurface: invocationSurface,
@@ -1020,11 +1025,11 @@ type bestOfCLIOptions struct {
 	InvocationSurface string
 	Selector          bestOfSelector
 	SelectorModel     string
-	// Overrides are the profile-covered flags the operator explicitly set
-	// (fs.Visit presence) — threaded so buildAgentConfigInDir resolves through
-	// agent.Prepare with the exec profile forwarded (S6d.2s-b). Distinct from
-	// the resolved MaxIters/etc. below, which the legacy Config path used.
-	Overrides             profile.Overrides
+	// BaseRequest is runMain's single flags→RequestedConfig transcription —
+	// buildAgentConfigInDir resolves through agent.Prepare from the SAME input
+	// the direct path uses, so the two paths cannot drift (S6d.2s-b). Distinct
+	// from the resolved MaxIters/etc. below, which the legacy Config path used.
+	BaseRequest           baseRequestInput
 	TrustPlan             trustPlan
 	Session               bool
 	Review                bool
@@ -1423,19 +1428,11 @@ func buildAgentConfigInDir(ctx context.Context, opts bestOfCLIOptions, cwd strin
 	// S6d.2s-b: resolve through agent.Prepare so the exec profile is forwarded
 	// and the memory/worktree/read-window record corrections land. Bindings +
 	// record identity come from cfg (unaffected by the requested-side split);
-	// only the POLICY is rebuilt natively. cfg's resolved policy fields are dead
-	// here (Prepare rebuilds them from the request) and vanish with Config at
-	// S6d.7.
-	req := buildBaseRequest(baseRequestInput{
-		TrustProfile: string(opts.TrustPlan.Trust), ExecProfileName: opts.ExecProfileName, Overrides: opts.Overrides,
-		VerifyTimeout: opts.VerifyTimeout, VerifyCmd: opts.VerifyCmd,
-		SkipVerifyBaseline: opts.SkipVerifyBaseline, AbortOnRedBaseline: opts.AbortOnRedBaseline, VerifyLastRun: opts.VerifyLastRun,
-		ReviewPolicy: reviewPolicy, ReviewUnverified: opts.ReviewUnverified, ReviewRounds: opts.ReviewRounds,
-		TestFence: opts.TestFence, DiffScope: opts.DiffScope, PromptProfile: opts.PromptProfile,
-		CodeAct: opts.CodeAct, ReproFirst: opts.ReproFirst, ReproGate: opts.ReproGate,
-		MaxWallClock: opts.MaxWall, MaxTotalTokens: opts.MaxTotalTokens, MaxTotalCostUSD: opts.MaxTotalCostUSD, AllowUnpricedSpend: opts.AllowUnpricedSpend,
-		DiagnoseCmd: opts.DiagnoseCmd, DiagnoseAfterEdits: opts.DiagnoseAfterEdits, SolverModel: opts.ModelLabel,
-	})
+	// only the POLICY is rebuilt natively — from runMain's single shared
+	// transcription (opts.BaseRequest), so it cannot drift from the direct
+	// path. cfg's resolved policy fields are dead here (Prepare rebuilds them
+	// from the request) and vanish with Config at S6d.7.
+	req := buildBaseRequest(opts.BaseRequest)
 	rt, content := cfg.Bindings()
 	prepared, perr := agent.Prepare(req, rt, content, agent.RecordInputs{
 		BinaryIdentity: cfg.BinaryIdentity, InvocationSurface: opts.InvocationSurface,

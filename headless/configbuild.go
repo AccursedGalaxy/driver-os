@@ -93,6 +93,11 @@ type baseRequestInput struct {
 	// Overrides carries the profile-covered flags the operator explicitly set
 	// (headless's profileOverrides(fs, f) output) — fs.Visit presence.
 	Overrides profile.Overrides
+	// MinIsolation carries the trust plan's isolation requirement, which can
+	// exceed profile.FloorFor(trust) (untrusted raises process → kernel). The
+	// legacy path forwarded it via Config.Requested()'s optNZ; dropping it here
+	// would silently weaken the loop's fail-closed sandbox gate to the floor.
+	MinIsolation sandbox.Isolation
 	// Non-profile policy flags (value-presence).
 	VerifyTimeout                                         time.Duration
 	VerifyCmd                                             string
@@ -149,6 +154,7 @@ func buildBaseRequest(in baseRequestInput) runspec.RequestedConfig {
 		NavSpiralWindow:   o.NavSpiralWindow,
 		AnswerNudgeWindow: o.AnswerNudgeWindow,
 		// Non-profile fields: value-presence (nzp), matching optNZ.
+		MinIsolation:       nzp(in.MinIsolation),
 		EffectiveProtocol:  nzp(in.EffectiveProtocol),
 		VerifyTimeout:      nzp(in.VerifyTimeout),
 		VerifyCmd:          nzp(in.VerifyCmd),
