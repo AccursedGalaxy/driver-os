@@ -587,8 +587,20 @@ or shadowed by the loop):
      forwarded profile.
   2. **S6d.2s / .2p — headless.** S6d.2s-a SHIPPED 2026-07-15
      (`headless/configbuild.go` `buildBaseRequest` + `headless/baserequest_test.go`;
-     pure addition, hot path still on `buildBaseConfig`→`Split`). S6d.2s-b (wire
-     the direct run path through `Prepare`) is next.
+     the native request builder + equivalence oracle). S6d.2s-b routes the run
+     paths through `Prepare`: the DIRECT single-run path (SHIPPED, live-verified —
+     a real run recorded `policy.memory=true` with `field_provenance=profile`)
+     and BEST-OF solve+review (SHIPPED — `buildAgentConfigInDir` returns an
+     `agent.Prepared`, threading `bestOfCLIOptions.Overrides`). REMAINING: the
+     LADDER path, the only cross-repo one — `extras.LadderRequest`'s
+     `Base agent.Config` + `Run func(ctx, agent.Config)` in core, consumed by the
+     lab's `ladder.Run` which mutates a per-rung `Config`. Migrating it means a
+     coordinated core+lab change (base `RequestedConfig`/`Runtime`/`Content` +
+     per-rung overrides → one `Prepare` per rung, which is MORE correct — each
+     rung gets its own honest record) under the `replace`-pin ordering (lab
+     builds green before the core push). Until it lands, a ladder run records the
+     old memory/worktree-wrong policy while direct/best-of runs are corrected —
+     the transient per-path `ConfigSHA256` inconsistency, scoped to the ladder.
 
      **A THIRD, BROADER record correction, found by the S6d.2s oracle
      (2026-07-15) — the "ConfigSHA256 byte-identical" gate does NOT hold for
