@@ -157,6 +157,78 @@ func TestWorktreeAddNonGitFails(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddRewritesRelativeReplaceTargets(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found")
+	}
+	// Layout mirrors the lab repo: repo/go.mod pins a sibling module with a
+	// relative replace that only resolves from the original checkout dir.
+	parent := t.TempDir()
+	dep := filepath.Join(parent, "dep")
+	if err := os.MkdirAll(dep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dep, "go.mod"), "module example.com/dep\n\ngo 1.21\n")
+
+	repo := filepath.Join(parent, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init")
+	git(t, repo, "config", "user.email", "vcs-test@example.com")
+	git(t, repo, "config", "user.name", "VCS Test")
+	gomod := "module example.com/repo\n\ngo 1.21\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ../dep\n"
+	writeTestFile(t, filepath.Join(repo, "go.mod"), gomod)
+	git(t, repo, "add", "go.mod")
+	git(t, repo, "commit", "-m", "initial")
+
+	wi, err := WorktreeAdd(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = WorktreeRemove(context.Background(), wi.Dir) }()
+
+	// The worktree lives under an unrelated temp dir, so `../dep` cannot
+	// resolve from there: the replace target must have been rewritten to the
+	// absolute path it resolved to from the original checkout.
+	wtMod := readTestFile(t, filepath.Join(wi.Dir, "go.mod"))
+	if strings.Contains(wtMod, "=> ../dep") {
+		t.Fatalf("worktree go.mod still has relative replace target:\n%s", wtMod)
+	}
+	if !strings.Contains(wtMod, dep) {
+		t.Fatalf("worktree go.mod replace not rewritten to absolute path %s:\n%s", dep, wtMod)
+	}
+
+	// The rewrite is harness plumbing, not agent work: an untouched worktree
+	// must still collect as clean.
+	changed, err := WorktreeCollect(context.Background(), wi.Dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("WorktreeCollect changed=true on untouched worktree: replace rewrite leaked into the patch")
+	}
+
+	// Real agent edits still collect, and the collected patch must not carry
+	// the go.mod rewrite back to the original checkout.
+	writeTestFile(t, filepath.Join(wi.Dir, "note.txt"), "agent edit\n")
+	patch := filepath.Join(t.TempDir(), "run.patch")
+	changed, err = WorktreeCollect(context.Background(), wi.Dir, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("WorktreeCollect changed=false, want true after agent edit")
+	}
+	patchBody := readTestFile(t, patch)
+	if strings.Contains(patchBody, "go.mod") {
+		t.Fatalf("collected patch contains go.mod rewrite:\n%s", patchBody)
+	}
+	if !strings.Contains(patchBody, "note.txt") {
+		t.Fatalf("collected patch missing agent edit:\n%s", patchBody)
+	}
+}
+
 func newGitRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // WorktreeInfo is the provenance record for a throwaway worktree created by
@@ -76,6 +78,11 @@ func WorktreeAdd(ctx context.Context, origCwd string) (WorktreeInfo, error) {
 		return WorktreeInfo{}, err
 	}
 
+	if err := rewriteRelativeReplaceTargets(ctx, origCwd, dir); err != nil {
+		_ = WorktreeRemove(ctx, dir)
+		return WorktreeInfo{}, err
+	}
+
 	// Dirty checkouts: pin the snapshot commit under a ref so it survives
 	// git gc, and enumerate the paths that differ from HEAD.
 	if baseCommit != headSHA {
@@ -95,6 +102,68 @@ func WorktreeAdd(ctx context.Context, origCwd string) (WorktreeInfo, error) {
 	}
 
 	return WorktreeInfo{Dir: dir, BaseCommit: baseCommit, DirtyFiles: dirtyFiles}, nil
+}
+
+// rewriteRelativeReplaceTargets makes root go.mod replacements usable from a
+// throwaway worktree outside the original checkout. The setup change is committed
+// on the detached worktree HEAD, so WorktreeCollect never includes it in an agent
+// patch. It intentionally leaves go.work alone.
+func rewriteRelativeReplaceTargets(ctx context.Context, origCwd, worktreeDir string) error {
+	worktreeMod := filepath.Join(worktreeDir, "go.mod")
+	data, err := os.ReadFile(worktreeMod)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read worktree go.mod: %w", err)
+	}
+
+	mod, err := modfile.Parse(worktreeMod, data, nil)
+	if err != nil {
+		return fmt.Errorf("parse worktree go.mod: %w", err)
+	}
+	var relative []*modfile.Replace
+	for _, replace := range mod.Replace {
+		if replace.New.Version == "" && isRelativeReplacePath(replace.New.Path) {
+			relative = append(relative, replace)
+		}
+	}
+	if len(relative) == 0 {
+		return nil
+	}
+
+	root, err := run(ctx, origCwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("find original checkout root: %w", err)
+	}
+	root = strings.TrimSpace(root)
+	for _, replace := range relative {
+		target := filepath.Clean(filepath.Join(root, replace.New.Path))
+		if err := mod.AddReplace(replace.Old.Path, replace.Old.Version, target, ""); err != nil {
+			return fmt.Errorf("rewrite replace %s: %w", replace.Old.Path, err)
+		}
+	}
+	if err := os.WriteFile(worktreeMod, modfile.Format(mod.Syntax), 0o644); err != nil {
+		return fmt.Errorf("write worktree go.mod: %w", err)
+	}
+
+	env := []string{
+		"GIT_AUTHOR_NAME=driver-agent",
+		"GIT_AUTHOR_EMAIL=driver-agent@localhost",
+		"GIT_COMMITTER_NAME=driver-agent",
+		"GIT_COMMITTER_EMAIL=driver-agent@localhost",
+	}
+	if _, err := run(ctx, worktreeDir, "add", "go.mod"); err != nil {
+		return fmt.Errorf("stage worktree go.mod rewrite: %w", err)
+	}
+	if _, err := runEnv(ctx, worktreeDir, env, "-c", "commit.gpgSign=false", "commit", "--no-verify", "-m", "driver-agent: resolve relative go.mod replacements"); err != nil {
+		return fmt.Errorf("commit worktree go.mod rewrite: %w", err)
+	}
+	return nil
+}
+
+func isRelativeReplacePath(path string) bool {
+	return strings.HasPrefix(path, "./") || strings.HasPrefix(path, "../")
 }
 
 // diffTreeNames returns the sorted paths that differ between two tree-ish objects
