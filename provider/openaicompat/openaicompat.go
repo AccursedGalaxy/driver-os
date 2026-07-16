@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -200,15 +202,43 @@ func OpenRouter(model string) *Provider {
 }
 
 // Ollama targets a local Ollama server. The key is a placeholder Ollama ignores.
+// OLLAMA_HOST, when set, selects the server using Ollama's host convention.
 // Tool support is per-MODEL with Ollama (many small models can't function-call),
 // so it defaults to no native tools — the agent then uses the transparent text
 // loop, which works everywhere. A tool-capable local model opts in by building
 // the provider with New(Config{..., Capabilities: &llm.Capabilities{Tools: true}}).
 func Ollama(model string) *Provider {
 	return New(Config{
-		Name: "ollama", BaseURL: "http://localhost:11434/v1", APIKey: "ollama", Model: model,
+		Name: "ollama", BaseURL: ollamaBaseURL(os.Getenv("OLLAMA_HOST")), APIKey: "ollama", Model: model,
 		Capabilities: &llm.Capabilities{Tools: false, Streaming: true, Vision: false},
 	})
+}
+
+// ollamaBaseURL converts OLLAMA_HOST into Ollama's OpenAI-compatible API URL.
+// Ollama accepts a bare host or host:port as well as a URL; absent ports default
+// to 11434, except HTTPS defaults to 443.
+func ollamaBaseURL(host string) string {
+	const defaultURL = "http://localhost:11434/v1"
+	if host == "" {
+		return defaultURL
+	}
+
+	if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	u, err := url.Parse(host)
+	if err != nil || u.Hostname() == "" {
+		return defaultURL
+	}
+
+	port := u.Port()
+	if port == "" {
+		port = "11434"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: net.JoinHostPort(u.Hostname(), port), Path: "/v1"}).String()
 }
 
 func (p *Provider) Name() string                   { return p.name }

@@ -67,6 +67,7 @@ func PickProvider(provider, model string) (llm.Provider, error) {
 		})
 	case "ollama":
 		// Keyless local backend; model (or OLLAMA_MODEL) names the local model.
+		// OLLAMA_HOST selects its server.
 		return openaicompat.Ollama(modelOr(model, "OLLAMA_MODEL", "llama3.2")), nil
 	case "mock":
 		// Keyless local scripted backend for deterministic TUI runs.
