@@ -4,11 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
 	"github.com/AccursedGalaxy/driver-os/llm"
 )
+
+// setupReportPath is the -report path armed by run() after flag parsing.
+// failSetup writes a small markdown report to this path on exit-1.
+var setupReportPath string
+
+func configureSetupReport(path string) { setupReportPath = path }
 
 // The CLI output contract (docs/specs/CLI-SCRIPTABLE.md, Tier 1). stdout is the DATA channel
 // (D1): a single final payload in text/json mode. stderr carries the live trace
@@ -229,6 +236,12 @@ func failSetup(stdout, stderr io.Writer, format outputFormat, kind, msg string) 
 		writeResultEvent(stdout, cli)
 	default: // text
 		fmt.Fprintln(stderr, msg)
+	}
+	if setupReportPath != "" {
+		content := "# driver-agent report (exit=1)\ncli_error\n- outcome: cli_error\n- kind: " + kind + "\n- error: " + msg + "\n"
+		if err := os.WriteFile(setupReportPath, []byte(content), 0644); err != nil {
+			fmt.Fprintln(stderr, "setup report write failed:", err)
+		}
 	}
 	return 1
 }

@@ -169,6 +169,7 @@ func runMainWithInvocationExtras(fs *flag.FlagSet, argv []string, invocationSurf
 		return 2
 	}
 	configureSetupLedger(*f.ledger, *f.modelFlag, *f.task)
+	configureSetupReport(*f.report)
 
 	// Resolve the output format up front: every later setup error needs it to
 	// decide between a stderr line (text) and a cli_error object on stdout (json).
