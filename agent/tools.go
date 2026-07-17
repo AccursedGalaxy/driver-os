@@ -735,36 +735,147 @@ func explainWriteErr(path string, err error) error {
 // native loop passes typed {path,old,new,mode} fields straight to editFileOp.
 const replaceSep = " ||| "
 
+// editSeparator accepts the normal framing and, only if it is absent, a
+// mistakenly quoted separator from the text protocol.
+func editSeparator(s string) (at, width int) {
+	if at = strings.Index(s, replaceSep); at >= 0 {
+		return at, len(replaceSep)
+	}
+	for _, sep := range []string{` "|||" `, " `|||` ", " '|||' "} {
+		if at = strings.Index(s, sep); at >= 0 {
+			return at, len(sep)
+		}
+	}
+	return -1, 0
+}
+
+// unescapeEditQuotes is the text-protocol-only repair decoder. It differs from
+// unescape solely by accepting an over-escaped double quote.
+func unescapeEditQuotes(s string) (out, badEscape string) {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b.WriteByte(s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return "", `\`
+		}
+		switch s[i+1] {
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		case '"':
+			b.WriteByte('"')
+		default:
+			return "", `\` + string(s[i+1])
+		}
+		i++
+	}
+	return b.String(), ""
+}
+
+func stripEditWrappers(oldStr, newStr string) (old, new string, ok bool) {
+	if len(oldStr) < 2 {
+		return "", "", false
+	}
+	quote := oldStr[0]
+	if (quote != '"' && quote != '`') || oldStr[len(oldStr)-1] != quote {
+		return "", "", false
+	}
+	if newStr != "" {
+		if len(newStr) < 2 || newStr[0] != quote || newStr[len(newStr)-1] != quote {
+			return "", "", false
+		}
+		new = newStr[1 : len(newStr)-1]
+	}
+	return oldStr[1 : len(oldStr)-1], new, true
+}
+
+func oldTextNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "`old` text not found")
+}
+
 // toolEditFile is the text-protocol entry: parse `<path> <old> ||| <new>
 // [||| <mode>]` (old/new carrying write_file's \n,\t,\\ escapes, since one
 // physical line can't hold real newlines), then defer to the shared editFileOp core.
 func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, error) {
 	arg = strings.TrimSpace(arg)
 	i := strings.IndexAny(arg, " \t")
-	if i < 0 { // path only — not enough to act on.
+	if i < 0 {
 		return "", fmt.Errorf("edit_file needs a path, the exact text to replace, and its replacement: `edit_file main.go OLD%sNEW`", replaceSep)
 	}
 	path := arg[:i]
 	rest := strings.TrimLeft(arg[i+1:], " \t")
-	j := strings.Index(rest, replaceSep)
+	j, sepWidth := editSeparator(rest)
 	if j < 0 {
 		return "", fmt.Errorf("edit_file needs `%s` between the old text and the new text: `edit_file main.go OLD%sNEW`", strings.TrimSpace(replaceSep), replaceSep)
 	}
-	oldStr, badEscape := unescape(rest[:j])
-	if badEscape != "" {
-		return "", fmt.Errorf("invalid escape %q in old text — only \\n, \\t and \\\\ are supported", badEscape)
-	}
-	newField := rest[j+len(replaceSep):]
+	oldField := rest[:j]
+	newField := rest[j+sepWidth:]
 	mode := ""
 	if k := strings.Index(newField, replaceSep); k >= 0 {
 		mode = newField[k+len(replaceSep):]
 		newField = newField[:k]
 	}
-	newStr, badEscape := unescape(newField)
-	if badEscape != "" {
-		return "", fmt.Errorf("invalid escape %q in new text — only \\n, \\t and \\\\ are supported", badEscape)
+
+	oldStr, oldBad := unescape(oldField)
+	newStr, newBad := unescape(newField)
+	var original error
+	if oldBad != "" {
+		original = fmt.Errorf("invalid escape %q in old text — only \\n, \\t and \\\\ are supported", oldBad)
+	} else if newBad != "" {
+		original = fmt.Errorf("invalid escape %q in new text — only \\n, \\t and \\\\ are supported", newBad)
+	} else {
+		out, err := editFileOp(ctx, sb, path, oldStr, newStr, mode)
+		if err == nil {
+			return out, nil // Raw form always wins.
+		}
+		if !oldTextNotFound(err) {
+			return "", err
+		}
+		original = err
 	}
-	return editFileOp(ctx, sb, path, oldStr, newStr, mode)
+
+	// The repair decoder is only available for the measured \" failure shape;
+	// all other malformed escapes retain their old parser error.
+	if oldBad != "" || newBad != "" {
+		if !strings.Contains(oldField, `\"`) && !strings.Contains(newField, `\"`) {
+			return "", original
+		}
+		var bad string
+		oldStr, bad = unescapeEditQuotes(oldField)
+		if bad != "" {
+			return "", original
+		}
+		newStr, bad = unescapeEditQuotes(newField)
+		if bad != "" {
+			return "", original
+		}
+		out, err := editFileOp(ctx, sb, path, oldStr, newStr, mode)
+		if err == nil {
+			return out, nil
+		}
+		if !oldTextNotFound(err) {
+			return "", original
+		}
+	}
+
+	// A stripped retry is allowed only after the exact decoded form was absent.
+	// editFileOp supplies the unique-match safety check for this normalization.
+	strippedOld, strippedNew, ok := stripEditWrappers(oldStr, newStr)
+	if !ok {
+		return "", original
+	}
+	out, err := editFileOp(ctx, sb, path, strippedOld, strippedNew, mode)
+	if err != nil {
+		return "", original
+	}
+	return "note: stripped wrapping quotes from edit_file old and new text\n" + out, nil
 }
 
 // editFileOp is the parse-free core shared by the text handler and the structured
