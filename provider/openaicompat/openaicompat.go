@@ -841,7 +841,9 @@ func (p *Provider) classify(err error) error {
 			kind = llm.KindRateLimit
 			retryable = true
 		case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
-			if isContextLength(apiErr.Message) {
+			// llama-server puts "exceed_context_size_error" in the type
+			// field and may omit message — check both.
+			if isContextLength(apiErr.Message) || isContextLength(apiErr.Type) {
 				kind = llm.KindContextLength
 			} else if llm.IsEncryptedReplayRejection(&llm.ProviderError{StatusCode: apiErr.StatusCode, Err: errors.New(apiErr.Message)}) {
 				// Include the decoded message as SDK Error.Error() is not stable
@@ -878,7 +880,9 @@ func isContextLength(msg string) bool {
 		strings.Contains(m, "context_length") ||
 		strings.Contains(m, "maximum context") ||
 		strings.Contains(m, "too many tokens") ||
-		strings.Contains(m, "reduce the length")
+		strings.Contains(m, "reduce the length") ||
+		strings.Contains(m, "available context size") ||
+		strings.Contains(m, "exceed_context_size")
 }
 
 // pinProviderName maps OpenRouter's display name for an upstream to the routing
