@@ -251,11 +251,11 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 		}
 		markTailCacheControl(params.Messages)
 	}
-	if req.Temperature != nil && !isClaude5(model) {
-		// Claude 5 models REJECT temperature outright ("`temperature` is
+	if req.Temperature != nil && !dropsTemperature(model) {
+		// Some Claude models REJECT temperature outright ("`temperature` is
 		// deprecated for this model", 400) — and the agent loop pins
-		// temperature on every run, so sending it would brick every 5-family
-		// call. Dropped for the 5 family only; 4.x and older still honor it.
+		// temperature on every run, so sending it would brick every call to
+		// such a model. Dropped for those models only; older ones still honor it.
 		params.Temperature = sdk.Float(*req.Temperature)
 	}
 	if req.TopP != nil {
@@ -280,6 +280,14 @@ func (p *Provider) buildParams(req llm.Request) (sdk.MessageNewParams, []option.
 		reqOpts = append(reqOpts, option.WithJSONSet(k, v))
 	}
 	return params, reqOpts
+}
+
+// dropsTemperature reports whether a model id names a model whose API rejects
+// the temperature parameter as deprecated: the whole Claude 5 family, plus
+// Opus 4.8 (observed 400 "`temperature` is deprecated for this model",
+// 2026-07-17) and its dated variants.
+func dropsTemperature(model string) bool {
+	return isClaude5(model) || strings.HasPrefix(model, "claude-opus-4-8")
 }
 
 // isClaude5 reports whether a model id names a Claude 5-family model

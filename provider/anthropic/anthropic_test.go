@@ -466,6 +466,25 @@ func TestIsClaude5(t *testing.T) {
 	}
 }
 
+func TestDropsTemperature(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-fable-5", true},
+		{"claude-sonnet-5-20260101", true},
+		{"claude-opus-4-8", true}, // rejects temperature since 2026-07 despite the 4.x name.
+		{"claude-opus-4-8-20260301", true},
+		{"claude-opus-4-7", false},
+		{"claude-haiku-4-5", false},
+	}
+	for _, c := range cases {
+		if got := dropsTemperature(c.model); got != c.want {
+			t.Errorf("dropsTemperature(%q) = %v, want %v", c.model, got, c.want)
+		}
+	}
+}
+
 // ListModels must surface the account catalog as picker/validation-ready
 // entries (the /v1/models page shape).
 func TestListModels(t *testing.T) {
