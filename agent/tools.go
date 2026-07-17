@@ -784,20 +784,96 @@ func stripEditWrappers(oldStr, newStr string) (old, new string, ok bool) {
 		return "", "", false
 	}
 	quote := oldStr[0]
-	if (quote != '"' && quote != '`') || oldStr[len(oldStr)-1] != quote {
+	if (quote != '"' && quote != '`' && quote != '\'') || oldStr[len(oldStr)-1] != quote {
 		return "", "", false
 	}
-	if newStr != "" {
-		if len(newStr) < 2 || newStr[0] != quote || newStr[len(newStr)-1] != quote {
+
+	if newStr == "" {
+		return oldStr[1 : len(oldStr)-1], "", true
+	}
+	if len(newStr) >= 2 && newStr[0] == quote && newStr[len(newStr)-1] == quote {
+		// Preserve the existing symmetric repair forms. Single quotes are
+		// intentionally old-only: they were not a prior symmetric form.
+		if quote == '\'' {
 			return "", "", false
 		}
-		new = newStr[1 : len(newStr)-1]
+		return oldStr[1 : len(oldStr)-1], newStr[1 : len(newStr)-1], true
 	}
-	return oldStr[1 : len(oldStr)-1], new, true
+	// A bare replacement needs no normalization. Refuse a differently wrapped
+	// replacement rather than guessing which wrapper the caller intended.
+	if len(newStr) >= 2 && (newStr[0] == '"' || newStr[0] == '`' || newStr[0] == '\'') && newStr[len(newStr)-1] == newStr[0] {
+		return "", "", false
+	}
+	return oldStr[1 : len(oldStr)-1], newStr, true
 }
 
 func oldTextNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "`old` text not found")
+}
+
+// nearestEditMatchHint returns a compact location hint only when an old anchor
+// is sufficiently close to a contiguous region of the file. It compares token
+// multisets so harmless whitespace differences do not obscure a useful retry.
+func nearestEditMatchHint(src, oldStr string) string {
+	fileLines := strings.Split(src, "\n")
+	if len(fileLines) > 0 && fileLines[len(fileLines)-1] == "" {
+		fileLines = fileLines[:len(fileLines)-1]
+	}
+	oldLines := strings.Split(oldStr, "\n")
+	if len(oldLines) > 0 && oldLines[len(oldLines)-1] == "" {
+		oldLines = oldLines[:len(oldLines)-1]
+	}
+	if len(oldLines) == 0 || len(oldLines) > len(fileLines) {
+		return ""
+	}
+
+	bestScore, bestStart := -1.0, 0
+	for start := 0; start+len(oldLines) <= len(fileLines); start++ {
+		score := 0.0
+		for i, oldLine := range oldLines {
+			score += editLineSimilarity(oldLine, fileLines[start+i])
+		}
+		score /= float64(len(oldLines))
+		if score > bestScore {
+			bestScore, bestStart = score, start
+		}
+	}
+	if bestScore < 0.6 {
+		return ""
+	}
+
+	end := bestStart + len(oldLines)
+	shownEnd := end
+	if shownEnd > bestStart+8 {
+		shownEnd = bestStart + 8
+	}
+	where := fmt.Sprintf("closest match at line %d:", bestStart+1)
+	if len(oldLines) > 1 {
+		where = fmt.Sprintf("closest match at lines %d-%d:", bestStart+1, end)
+	}
+	return "; " + where + "\n" + strings.Join(fileLines[bestStart:shownEnd], "\n")
+}
+
+func editLineSimilarity(a, b string) float64 {
+	aTokens, bTokens := strings.Fields(a), strings.Fields(b)
+	if len(aTokens) == 0 && len(bTokens) == 0 {
+		return 1
+	}
+	if len(aTokens) == 0 || len(bTokens) == 0 {
+		return 0
+	}
+	counts := make(map[string]int, len(aTokens))
+	for _, token := range aTokens {
+		counts[token]++
+	}
+	common := 0
+	for _, token := range bTokens {
+		if counts[token] > 0 {
+			common++
+			counts[token]--
+		}
+	}
+	return float64(2*common) / float64(len(aTokens)+len(bTokens))
 }
 
 // toolEditFile is the text-protocol entry: parse `<path> <old> ||| <new>
@@ -875,7 +951,11 @@ func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, 
 	if err != nil {
 		return "", original
 	}
-	return "note: stripped wrapping quotes from edit_file old and new text\n" + out, nil
+	note := "note: stripped wrapping quotes from edit_file old text\n"
+	if newStr != strippedNew {
+		note = "note: stripped wrapping quotes from edit_file old and new text\n"
+	}
+	return note + out, nil
 }
 
 // editFileOp is the parse-free core shared by the text handler and the structured
@@ -922,7 +1002,7 @@ func editFileOp(ctx context.Context, sb sandbox.Sandbox, path, oldStr, newStr st
 	src := string(data)
 	switch n := strings.Count(src, oldStr); {
 	case n == 0:
-		return "", fmt.Errorf("`old` text not found in %q — it must match the file byte-for-byte (indentation and whitespace included); read_file to copy the exact text", path)
+		return "", fmt.Errorf("`old` text not found in %q — it must match the file byte-for-byte (indentation and whitespace included); read_file to copy the exact text%s", path, nearestEditMatchHint(src, oldStr))
 	case n > 1:
 		var lineNums []int
 		offset := 0
