@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 // Run is the entire agent. Notice it is tiny — the loop is trivial (P3); the
@@ -568,6 +568,22 @@ func parseAction(reply string, tools map[string]Tool) (verb, arg string) {
 		v, rest, _ := strings.Cut(line, " ")
 		if known[v] {
 			return v, strings.TrimSpace(rest)
+		}
+		// Tag-wrapped form: `<verb> arg [</verb>]`. Sampled local models slide
+		// into their native chat-template tool syntax and wrap text-loop actions
+		// in XML-ish tags (one rung-0 smoke attempt burned 30/30 iterations on
+		// it). Only a KNOWN verb tag with a same-line argument is accepted;
+		// wrapper tags (<tool_call>), unknown tags, and bare `<verb>` lines stay
+		// unrecognized — fail-closed.
+		if len(v) > 2 && v[0] == '<' && v[len(v)-1] == '>' {
+			name := v[1 : len(v)-1]
+			if known[name] {
+				arg := strings.TrimSpace(rest)
+				arg = strings.TrimSpace(strings.TrimSuffix(arg, "</"+name+">"))
+				if arg != "" {
+					return name, arg
+				}
+			}
 		}
 	}
 	// No recognized action: treat the whole reply as a malformed attempt so the
