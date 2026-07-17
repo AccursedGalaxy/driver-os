@@ -1,5 +1,8 @@
 # PROFILES — unified trust + execution profiles
 
+> Some links below (review-triage specs, `eval/` build files) live in the
+> private companion repository and are not published here.
+
 Status: SPEC, council-grilled 2026-07-10 (grill-with-council, critic
 `openai/gpt-5.6-sol`, consult run `20260710-101650-c634ff`, 6 rounds; builds
 on decision run `20260710-094837-ce9409` = docs/specs/REVIEW-TRIAGE-2026-07-10.md

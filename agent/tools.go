@@ -939,6 +939,10 @@ func toolEditFile(ctx context.Context, sb sandbox.Sandbox, arg string) (string, 
 		if !oldTextNotFound(err) {
 			return "", original
 		}
+		// The quote-decode succeeded, so the escape was not the problem — the
+		// decoded anchor being absent is, and its not-found error carries the
+		// location hint the model needs.
+		original = err
 	}
 
 	// A stripped retry is allowed only after the exact decoded form was absent.

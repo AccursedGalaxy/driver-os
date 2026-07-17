@@ -257,7 +257,7 @@ so EVERY caller gets it (raw CLI, adapters, CI):
 - **Headless defaults**: `-worktree=auto` (isolation ON in git repos, see D3),
   `-effort low` for the solver (`-effort=default` = provider default),
   `-verify-continue=true`, `-run-timeout 60s`. Deliberate divergences from the
-  TUI's defaults are documented in `cmd/agent/flags.go`.
+  TUI's defaults are documented in `headless/flags.go`.
 
 ## Non-goals (explicitly Tier 2–4, not this spec)
 - Subcommands and run-lifecycle browsing (`agent ls|show|replay`).

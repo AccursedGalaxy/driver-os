@@ -1,5 +1,8 @@
 # GOBENCH-VALIDATOR — build spec for `cmd/gobench-validate` (Phase 3)
 
+> Some links below (`docs/findings/...` and specs not in this tree) live in the
+> private companion repository and are not published here.
+
 Status: DRAFT (2026-07-07). Owner: Robin. Plan of record: `docs/specs/GOBENCH.md`
 Phase 3. This is the moat: candidates in, validated instances or rejections out.
 

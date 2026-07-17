@@ -216,7 +216,9 @@ func Ollama(model string) *Provider {
 
 // ollamaBaseURL converts OLLAMA_HOST into Ollama's OpenAI-compatible API URL.
 // Ollama accepts a bare host or host:port as well as a URL; absent ports default
-// to 11434, except HTTPS defaults to 443.
+// to 11434, except HTTPS defaults to 443. Only host and port are honored: any
+// path in OLLAMA_HOST (e.g. a reverse-proxy prefix) is intentionally dropped
+// and replaced with /v1, matching Ollama's own client behavior.
 func ollamaBaseURL(host string) string {
 	const defaultURL = "http://localhost:11434/v1"
 	if host == "" {

@@ -18,9 +18,9 @@ package agent
 import (
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
 	"github.com/AccursedGalaxy/driver-os/memory"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 

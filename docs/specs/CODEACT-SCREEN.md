@@ -1,5 +1,8 @@
 # CodeAct-lite screen — is code-as-action worth a build?
 
+> Some links below (`docs/findings/...`, `eval/scripts/...`, and specs not in
+> this tree) live in the private companion repository and are not published here.
+
 > **DECIDED 2026-07-06 — NO (do not default, do not build Stage 2).** Ran the full
 > staged screen (docs/findings/PARALLEL-DISPATCH-AND-CODEACT-PROBE.md §3): a real
 > `-codeact` knob (commit cd5fad5) A/B'd on greenfield + 3 internal edit cases + an

@@ -131,8 +131,17 @@ func TestEditFileOverEscapeFailsClosedOnNoMatch(t *testing.T) {
 		"oc.go": "package oc\n\nvar x = 1\n",
 	})
 	arg := `oc.go "contains(m, \"nope\")" ||| "contains(m, \"never\")"`
-	if _, err := toolEditFile(context.Background(), sb, arg); err == nil {
+	_, err := toolEditFile(context.Background(), sb, arg)
+	if err == nil {
 		t.Fatal("unescaped-quote form absent — must error, not guess")
+	}
+	// The decode itself worked, so the surfaced error must be the not-found one
+	// (which carries the location hint), not the stale escape complaint.
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("want the not-found error after a successful decode, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "invalid escape") {
+		t.Errorf("escape error is misleading here — decode succeeded: %v", err)
 	}
 }
 

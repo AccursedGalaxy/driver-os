@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 // PROMPT-SKILLS slice 3: per-model-family prompt variants (the opencode

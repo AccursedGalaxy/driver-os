@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/AccursedGalaxy/driver-os/agent"
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/llm"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/sandbox/local"
 )
 

@@ -1,5 +1,8 @@
 # GOBENCH-SCHEMA — the instance contract (§1.1)
 
+> Some links below (`docs/findings/...` and specs not in this tree) live in the
+> private companion repository and are not published here.
+
 Status: DRAFT v1 (2026-07-06). Owner: Robin. Part of Phase 1 of
 `docs/specs/GOBENCH.md` (§1.1). Companion: `docs/specs/GOBENCH.md` (§1.2 grader
 contract), `docs/findings/GOBENCH-PRIOR-ART.md` (why the schema carries a

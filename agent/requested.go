@@ -16,8 +16,8 @@ package agent
 // RequestedConfig natively.
 
 import (
-	"github.com/AccursedGalaxy/driver-os/runspec"
 	"github.com/AccursedGalaxy/driver-os/memory"
+	"github.com/AccursedGalaxy/driver-os/runspec"
 )
 
 func optNZ[T comparable](v T) *T {

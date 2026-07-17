@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AccursedGalaxy/driver-os/profile"
 	"github.com/AccursedGalaxy/driver-os/memory"
+	"github.com/AccursedGalaxy/driver-os/profile"
 	"github.com/AccursedGalaxy/driver-os/sandbox"
 )
 
