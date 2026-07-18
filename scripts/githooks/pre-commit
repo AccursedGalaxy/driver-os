@@ -1,0 +1,55 @@
+#!/bin/sh
+# pre-commit: fast safety gate for a public repo. Secrets and private-lab
+# leakage only — the build/test gate runs at pre-push, where the commit
+# actually becomes public. Bypass (emergencies only): git commit --no-verify
+set -u
+
+fail() {
+	echo "pre-commit: $1" >&2
+	echo "pre-commit: bypass with 'git commit --no-verify' only if you are sure." >&2
+	exit 1
+}
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# 1. Secret-shaped files never belong in the repo, whatever they contain.
+echo "$staged" | while IFS= read -r f; do
+	case "$f" in
+	.env | .env.* | *.pem | *_rsa | *.key)
+		fail "refusing secret-shaped file: $f"
+		;;
+	esac
+done || exit 1
+
+# 2. Private-lab paths are gitignored, but gitignore doesn't stop `git add -f`.
+#    (See docs/specs/REPO-SPLIT.md — these live in driver-os-lab.)
+echo "$staged" | while IFS= read -r f; do
+	case "$f" in
+	docs/findings/* | docs/archive/* | docs/ROUTING.md | docs/backlog.md | docs/specs/REPO-SPLIT.md)
+		fail "refusing private-lab path: $f (lives in driver-os-lab, not the public core)"
+		;;
+	esac
+done || exit 1
+
+# 3. Secret scan over staged content.
+if command -v gitleaks >/dev/null 2>&1; then
+	gitleaks protect --staged --redact >/dev/null 2>&1
+	case $? in
+	0) ;;
+	1)
+		gitleaks protect --staged --redact >&2 || true
+		fail "gitleaks found a secret in the staged diff"
+		;;
+	*) echo "pre-commit: gitleaks errored, falling back to regex scan" >&2 ;;
+	esac
+fi
+# Regex fallback (also runs after a gitleaks error). Added lines only.
+# Patterns are written so this file does not match itself.
+hits=$(git diff --cached -U0 | grep -E '^\+' | grep -cE \
+	'sk-ant-[A-Za-z0-9_-]{20,}|sk-or-v1-[a-f0-9]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AIzaSy[A-Za-z0-9_-]{33}')
+if [ "$hits" -gt 0 ]; then
+	fail "staged diff contains $hits line(s) matching known API-key patterns"
+fi
+
+exit 0

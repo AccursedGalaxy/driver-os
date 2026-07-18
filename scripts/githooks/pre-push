@@ -1,0 +1,38 @@
+#!/bin/sh
+# pre-push: the publish gate. master on the public remote is append-only and
+# must always build — this hook enforces both locally.
+#   1. refuse deleting or force-pushing (non-fast-forward) master
+#   2. run the real green gate: go build, go vet, go test
+# Skip the build/test gate (NOT the master protection) with
+# DRIVER_SKIP_PUSH_GATE=1 when you just verified green in the same tree.
+set -u
+
+zero=0000000000000000000000000000000000000000
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+	[ "$remote_ref" = "refs/heads/master" ] || continue
+	if [ "$local_sha" = "$zero" ]; then
+		echo "pre-push: refusing to delete master on a public remote." >&2
+		exit 1
+	fi
+	# Only judge fast-forwardness when we actually have the remote commit.
+	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
+		if ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+			echo "pre-push: non-fast-forward push to master refused — public history is immutable." >&2
+			echo "pre-push: if the remote moved, 'git pull --rebase' first. Never force-push master." >&2
+			exit 1
+		fi
+	fi
+done
+
+if [ "${DRIVER_SKIP_PUSH_GATE:-0}" = "1" ]; then
+	echo "pre-push: DRIVER_SKIP_PUSH_GATE=1 — skipping build/test gate." >&2
+	exit 0
+fi
+
+echo "pre-push: running green gate (go build ./... && go vet ./... && go test ./...)" >&2
+go build ./... || { echo "pre-push: build failed — not pushing a broken master." >&2; exit 1; }
+go vet ./... || { echo "pre-push: vet failed." >&2; exit 1; }
+go test ./... || { echo "pre-push: tests failed — not pushing." >&2; exit 1; }
+
+exit 0

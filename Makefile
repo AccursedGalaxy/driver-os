@@ -1,4 +1,4 @@
-.PHONY: build test race vet check deps-clone sandbox-image sandbox-integration install demo-false-green
+.PHONY: build test race vet check hooks deps-clone sandbox-image sandbox-integration install demo-false-green
 
 # Core module hygiene. `check` is the pre-commit bar: vet + full suite under
 # the race detector.
@@ -15,6 +15,15 @@ vet:
 	go vet ./...
 
 check: vet race
+
+# Install the repo's git hooks (secret scan at pre-commit, green gate +
+# master force-push protection at pre-push). Copies into .git/hooks so they
+# coexist with any locally installed hooks (e.g. noidea's prepare-commit-msg).
+hooks:
+	@for h in pre-commit pre-push; do \
+		cp scripts/githooks/$$h .git/hooks/$$h && chmod +x .git/hooks/$$h && \
+		echo ">> installed $$h"; \
+	done
 
 # Credential-free false-green demo used in the README.
 demo-false-green:
