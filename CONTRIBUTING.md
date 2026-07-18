@@ -5,6 +5,10 @@
 Go 1.26 or newer. The whole gate is `go build ./...`, `go vet ./...`,
 `go test ./...`, and `gofmt -l .` reporting nothing. Run it before opening a PR.
 
+`make hooks` installs the repo's git hooks: a fast secret scan at pre-commit,
+and the full gate plus master force-push protection at pre-push. Recommended
+for anyone pushing regularly.
+
 Keep PRs small and focused: one behavioral change per PR, with a test that
 fails before the change and passes after. Changes without tests will usually
 be asked to add one.
