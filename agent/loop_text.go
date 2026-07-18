@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -563,25 +564,54 @@ func parseAction(reply string, tools map[string]Tool) (verb, arg string) {
 	for name := range tools {
 		known[name] = true
 	}
-	for _, line := range strings.Split(reply, "\n") {
-		line = strings.TrimSpace(line)
+
+	lines := strings.Split(reply, "\n")
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if v, a, ok := jsonAction(line, known); ok {
+			return v, a
+		}
+		line = stripActionPrefix(line, known)
+
 		v, rest, _ := strings.Cut(line, " ")
 		if known[v] {
-			return v, strings.TrimSpace(rest)
+			a := stripArgumentWrappers(rest)
+			// Forward pickup only when the arg was wrapper JUNK that stripped to
+			// empty — a genuinely bare plain verb keeps its documented empty-arg
+			// meaning and must never swallow a following prose line as argument.
+			if a != "" || v == "answer" || strings.TrimSpace(rest) == "" {
+				return v, a
+			}
+			if a = pickupArgument(lines[i+1:]); a != "" {
+				return v, a
+			}
+			continue
 		}
-		// Tag-wrapped form: `<verb> arg [</verb>]`. Sampled local models slide
-		// into their native chat-template tool syntax and wrap text-loop actions
-		// in XML-ish tags (one rung-0 smoke attempt burned 30/30 iterations on
-		// it). Only a KNOWN verb tag with a same-line argument is accepted;
-		// wrapper tags (<tool_call>), unknown tags, and bare `<verb>` lines stay
-		// unrecognized — fail-closed.
-		if len(v) > 2 && v[0] == '<' && v[len(v)-1] == '>' {
-			name := v[1 : len(v)-1]
-			if known[name] {
-				arg := strings.TrimSpace(rest)
-				arg = strings.TrimSpace(strings.TrimSuffix(arg, "</"+name+">"))
-				if arg != "" {
-					return name, arg
+
+		// Parameter names are emitted by several chat templates instead of the
+		// function name itself. Their body has the same argument rules as a tool.
+		if v, rest, ok := parameterAction(line, known); ok {
+			a := stripParameterClose(stripArgumentWrappers(rest))
+			if a != "" {
+				return v, a
+			}
+			if a = pickupArgument(lines[i+1:]); a != "" {
+				return v, a
+			}
+			continue
+		}
+
+		// Tag-wrapped form: `<verb> arg [</verb>]`, including the template's
+		// compact `<verb arg>` and `<verb>arg` variants. Only known verbs are
+		// considered, so wrapper and unknown tags remain fail-closed.
+		if v, rest, ok := angleAction(line, known); ok {
+			a := stripArgumentWrappers(stripVerbClose(rest, v))
+			if a != "" {
+				return v, a
+			}
+			if v != "answer" {
+				if a = pickupArgument(lines[i+1:]); a != "" {
+					return v, a
 				}
 			}
 		}
@@ -589,6 +619,129 @@ func parseAction(reply string, tools map[string]Tool) (verb, arg string) {
 	// No recognized action: treat the whole reply as a malformed attempt so the
 	// no-progress / cap logic still governs it.
 	return "", reply
+}
+
+// stripArgumentWrappers removes only the four measured argument wrapper tokens.
+// It deliberately does not interpret arbitrary angle brackets in shell commands.
+func stripArgumentWrappers(arg string) string {
+	for _, tag := range []string{"<argument>", "</argument>", "<argument_value>", "</argument_value>"} {
+		arg = strings.ReplaceAll(arg, tag, "")
+	}
+	return strings.TrimSpace(arg)
+}
+
+func pickupArgument(lines []string) string {
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || isWrapperTag(line) {
+			continue
+		}
+		return stripArgumentWrappers(line)
+	}
+	return ""
+}
+
+// isWrapperTag identifies the chat-template structural tags that may appear between
+// a known action and its argument. In particular, it does not classify arbitrary
+// angle-bracketed argument text as structure.
+func isWrapperTag(line string) bool {
+	if len(line) < 3 || line[0] != '<' || line[len(line)-1] != '>' {
+		return false
+	}
+	name := strings.TrimSpace(line[1 : len(line)-1])
+	name = strings.TrimPrefix(name, "/")
+	if name == "" {
+		return false
+	}
+	name = strings.Fields(name)[0]
+	name = strings.SplitN(name, "=", 2)[0]
+	switch name {
+	case "tool_call", "function", "parameter", "argument", "argument_value":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripActionPrefix(line string, known map[string]bool) string {
+	for _, prefix := range []string{"\\", "<tool_call>_", "<tool_call>"} {
+		if strings.HasPrefix(line, prefix) && startsKnownVerb(line[len(prefix):], known) {
+			return line[len(prefix):]
+		}
+	}
+	return line
+}
+
+func startsKnownVerb(line string, known map[string]bool) bool {
+	for v := range known {
+		if !strings.HasPrefix(line, v) {
+			continue
+		}
+		rest := line[len(v):]
+		if rest == "" || rest[0] == ' ' || rest[0] == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+func parameterAction(line string, known map[string]bool) (verb, rest string, ok bool) {
+	const eqPrefix = "<parameter="
+	if strings.HasPrefix(line, eqPrefix) {
+		if end := strings.IndexByte(line, '>'); end >= len(eqPrefix) {
+			v := line[len(eqPrefix):end]
+			if known[v] {
+				return v, line[end+1:], true
+			}
+		}
+	}
+	const namePrefix = `<parameter name="`
+	if strings.HasPrefix(line, namePrefix) {
+		tail := line[len(namePrefix):]
+		if end := strings.Index(tail, `">`); end >= 0 && known[tail[:end]] {
+			return tail[:end], tail[end+2:], true
+		}
+	}
+	return "", "", false
+}
+
+func angleAction(line string, known map[string]bool) (verb, rest string, ok bool) {
+	for v := range known {
+		open := "<" + v + ">"
+		if strings.HasPrefix(line, open) {
+			return v, line[len(open):], true
+		}
+		open = "<" + v + " "
+		if strings.HasPrefix(line, open) {
+			return v, line[len(open):], true
+		}
+	}
+	return "", "", false
+}
+
+func stripVerbClose(arg, verb string) string {
+	arg = strings.TrimSpace(arg)
+	arg = strings.TrimSpace(strings.TrimSuffix(arg, "</"+verb+">"))
+	return strings.TrimSpace(strings.TrimSuffix(arg, ">"))
+}
+
+func stripParameterClose(arg string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(arg), "</parameter>"))
+}
+
+func jsonAction(line string, known map[string]bool) (verb, arg string, ok bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(line), &fields) != nil || len(fields) != 2 {
+		return "", "", false
+	}
+	var action, argument string
+	if raw, found := fields["action"]; !found || json.Unmarshal(raw, &action) != nil {
+		return "", "", false
+	}
+	if raw, found := fields["argument"]; !found || json.Unmarshal(raw, &argument) != nil || !known[action] {
+		return "", "", false
+	}
+	return action, argument, true
 }
 
 // textToolGrammar is the stable, JSON-hashed representation of the text
