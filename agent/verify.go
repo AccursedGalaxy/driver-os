@@ -80,6 +80,7 @@ func verifyRun(ctx context.Context, vs *verifyState, rt Runtime, ev *evidenceLog
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "", true, nil
 	}
+	notifyVerifyStart(rt.Obs, vs.Cmd)
 	out, err = runOp(context.WithoutCancel(ctx), rt.verifySandbox(), vs.Cmd, vs.Timeout)
 	if ev != nil && ev.closingReady {
 		status := EvidencePassed

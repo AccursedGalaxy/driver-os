@@ -274,6 +274,7 @@ func (g *gates) measureVerifyBaseline(ctx context.Context) {
 	}
 	// Run detached from cancellation (like verifyRun) but bounded by the
 	// verify timeout — the baseline runs the SAME VerifyCmd as the closing gate.
+	notifyVerifyStart(g.d.rt.Obs, g.d.vs.Cmd)
 	out, err := runOp(context.WithoutCancel(ctx), g.d.rt.verifySandbox(), g.d.vs.Cmd, g.d.vs.Timeout)
 	if err == nil && isRunFailure(out) {
 		if isRunTimeout(out) {
@@ -502,11 +503,19 @@ func (g *gates) verifyCompletion(ctx context.Context, lastRunFailed bool) (outco
 	if out, reason, stop := g.requireDiffFailure(ctx); reason != "" {
 		return out, reason, stop
 	}
-	if g.runBaseTree != "" && !g.d.vs.SkipVerifyBaseline && g.verifyBaselineMeasured {
+	if g.runBaseTree != "" && (g.d.vs.AutoVerifySoft || (!g.d.vs.SkipVerifyBaseline && g.verifyBaselineMeasured)) {
 		gctx, cancel := gateContext(ctx, gateDiffTimeout)
 		curTree, err := vcs.WriteTree(gctx, g.d.root)
 		cancel()
 		if err == nil && curTree == g.runBaseTree {
+			if g.d.vs.AutoVerifySoft && !g.verifyBaselineMeasured {
+				// A soft gate arms only after its probe ran the derived suite
+				// GREEN on the untouched tree (probeAutoVerify disarms on red/
+				// timeout/error), so an unchanged tree needs no re-run — a
+				// conversational turn must not pay a full suite at its close.
+				g.d.rt.Obs.Note("auto-verify: no file changes this run — skipping soft verify gate (probe baseline was green)")
+				return "", "", false
+			}
 			if !g.verifyBaselineRed {
 				g.d.rt.Obs.Note("verify: no file changes this run — nothing to verify (baseline was green)")
 				return "", "", false

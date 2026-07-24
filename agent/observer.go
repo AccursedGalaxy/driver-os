@@ -46,6 +46,17 @@ type VerifyObserver interface {
 	VerifyResult(cmd string, ok bool)
 }
 
+// VerifyStartObserver is an OPTIONAL Observer extension, discovered by
+// type-assertion like VerifyObserver: an Observer that ALSO implements it is
+// told immediately BEFORE a VerifyCmd executes. It exists for live front-ends:
+// a closing suite can run for minutes after the model's final token, and a
+// spinner that keeps saying "running" makes gate time indistinguishable from
+// model time. The matching VerifyResult (or the next iteration, for the
+// pre-flight baseline) ends the phase.
+type VerifyStartObserver interface {
+	VerifyStart(cmd string)
+}
+
 // UsageObserver is an OPTIONAL Observer extension, discovered by type-assertion
 // like DeltaObserver/VerifyObserver. It receives typed per-model-call usage for
 // live UI telemetry; the string note path stays intact for observers that print
@@ -93,6 +104,14 @@ func notifyNote(obs Observer, kind NoteKind, msg string) {
 func notifyVerify(obs Observer, cmd string, ok bool) {
 	if v, ok2 := obs.(VerifyObserver); ok2 {
 		v.VerifyResult(cmd, ok)
+	}
+}
+
+// notifyVerifyStart forwards one about-to-run VerifyCmd to the observer when it
+// opted in.
+func notifyVerifyStart(obs Observer, cmd string) {
+	if v, ok := obs.(VerifyStartObserver); ok {
+		v.VerifyStart(cmd)
 	}
 }
 

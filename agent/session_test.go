@@ -294,8 +294,20 @@ func TestSessionPersistsAutoVerifyResolutionAcrossTurns(t *testing.T) {
 	if preflights != 1 {
 		t.Fatalf("auto-verify preflights = %d, want 1", preflights)
 	}
-	if closing != 3 {
-		t.Fatalf("closing verify runs = %d, want one per turn (3)", closing)
+	// No turn changes the workspace, and the soft gate's probe already ran the
+	// suite green on the untouched tree — every closing gate short-circuits on
+	// the unchanged run tree instead of re-running the full suite per turn.
+	if closing != 0 {
+		t.Fatalf("closing verify runs = %d, want 0 (unchanged tree skips the soft gate)", closing)
+	}
+	var skipNotes int
+	for _, n := range spy.notes {
+		if strings.Contains(n, "skipping soft verify gate") {
+			skipNotes++
+		}
+	}
+	if skipNotes != 3 {
+		t.Fatalf("soft-gate skip notes = %d, want one per turn (3); notes=%q", skipNotes, spy.notes)
 	}
 	if got := s.VerifyCmd(); got != wantCmd {
 		t.Fatalf("session VerifyCmd = %q, want persisted %q", got, wantCmd)
