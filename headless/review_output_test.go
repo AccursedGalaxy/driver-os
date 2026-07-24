@@ -19,7 +19,7 @@ func TestNDJSONReviewEvents(t *testing.T) {
 	if !ok {
 		t.Fatal("ndjsonObserver must implement agent.ReviewObserver")
 	}
-	ro.ReviewStart(1)
+	ro.ReviewStart(1, "openai/gpt-5.5")
 	ro.ReviewFinding(agent.ReviewFinding{File: "client.go", Severity: "blocker", Confidence: 9, FailureScenario: "leak"})
 	ro.ReviewVerdict(1, 1, "Looks good.")
 

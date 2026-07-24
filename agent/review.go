@@ -203,9 +203,22 @@ type ReviewReport struct {
 // receives typed review-gate events; every other Observer only sees the
 // Obs.Note progress lines.
 type ReviewObserver interface {
-	ReviewStart(round int)
+	// ReviewStart announces a round beginning. model is the reviewer model id
+	// when the harness knows it at round start — from an earlier round's
+	// verdict, or from a Reviewer implementing ReviewerModelNamer — and ""
+	// otherwise; a front-end labeling the live round must not need to carry
+	// the model out-of-band.
+	ReviewStart(round int, model string)
 	ReviewFinding(f ReviewFinding)
 	ReviewVerdict(blocking int, round int, summary string)
+}
+
+// ReviewerModelNamer is an optional Reviewer extension, discovered by
+// type-assertion: a Reviewer that knows which model it will run reports it so
+// ReviewStart can carry the model from round 1 (ReviewVerdict.Model only
+// becomes available after a round completes).
+type ReviewerModelNamer interface {
+	ReviewerModel() string
 }
 
 // reviewState is the run-scoped review gate: the git base tree captured at run

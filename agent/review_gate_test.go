@@ -621,7 +621,7 @@ type recordingReviewObs struct {
 	events []string
 }
 
-func (r *recordingReviewObs) ReviewStart(round int) {
+func (r *recordingReviewObs) ReviewStart(round int, model string) {
 	r.events = append(r.events, fmt.Sprintf("start:%d", round))
 }
 func (r *recordingReviewObs) ReviewFinding(f ReviewFinding) {

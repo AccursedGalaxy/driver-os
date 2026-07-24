@@ -26,7 +26,7 @@ func noteUsage(obs Observer, iter int, u llm.Usage, budget int) {
 	if budget > 0 {
 		msg += fmt.Sprintf(" — budget %d", budget)
 	}
-	obs.Note(msg)
+	notifyNote(obs, NoteUsage, msg)
 }
 
 func usageReported(u llm.Usage) bool {

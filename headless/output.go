@@ -278,6 +278,7 @@ type (
 	evtReviewStart struct {
 		Type  string `json:"type"` // "review_start"
 		Round int    `json:"round"`
+		Model string `json:"model,omitempty"`
 	}
 	evtReviewFinding struct {
 		Type    string              `json:"type"` // "review_finding"
@@ -306,7 +307,9 @@ func (o ndjsonObserver) Done(answer string)   { writeJSON(o.w, evtDone{"done", a
 // ndjsonObserver also implements agent.ReviewObserver (discovered by
 // type-assertion, like DeltaObserver), so review-gate progress flows on the
 // event stream as typed events instead of opaque notes.
-func (o ndjsonObserver) ReviewStart(round int) { writeJSON(o.w, evtReviewStart{"review_start", round}) }
+func (o ndjsonObserver) ReviewStart(round int, model string) {
+	writeJSON(o.w, evtReviewStart{"review_start", round, model})
+}
 func (o ndjsonObserver) ReviewFinding(f agent.ReviewFinding) {
 	writeJSON(o.w, evtReviewFinding{"review_finding", f})
 }

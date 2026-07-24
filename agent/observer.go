@@ -57,6 +57,38 @@ type UsageObserver interface {
 	StepUsage(cumulative llm.Usage, ctxTokens int)
 }
 
+// NoteKind labels the loop's machine-recognizable Note lines so a front-end
+// can route them without parsing prose. Only the notes that duplicate a typed
+// event carry a kind today; everything else is NoteGeneral.
+type NoteKind string
+
+const (
+	NoteGeneral     NoteKind = ""             // an unclassified status line.
+	NoteUsage       NoteKind = "usage"        // the per-turn "tokens: …" report (typed twin: UsageObserver.StepUsage).
+	NoteReviewRound NoteKind = "review-round" // the "review: round n/m — …" summary (typed twin: ReviewObserver.ReviewVerdict).
+)
+
+// KindedNoteObserver is an OPTIONAL Observer extension, discovered by
+// type-assertion like DeltaObserver. An Observer that implements it receives
+// kinded notes through KindedNote INSTEAD of Note — the explicit opt-in that
+// lets a front-end drop the notes whose content it already renders from typed
+// events (usage, review round summaries) without string-prefix matching.
+// Implementing UsageObserver/ReviewObserver alone changes nothing: observers
+// that do not opt in keep receiving every line through Note, byte-identical.
+type KindedNoteObserver interface {
+	KindedNote(kind NoteKind, msg string)
+}
+
+// notifyNote routes one status line: observers that opted into kinds get the
+// kind alongside the text; everyone else gets the plain Note line.
+func notifyNote(obs Observer, kind NoteKind, msg string) {
+	if k, ok := obs.(KindedNoteObserver); ok {
+		k.KindedNote(kind, msg)
+		return
+	}
+	obs.Note(msg)
+}
+
 // notifyVerify forwards one VerifyCmd outcome to the observer when it opted in.
 func notifyVerify(obs Observer, cmd string, ok bool) {
 	if v, ok2 := obs.(VerifyObserver); ok2 {

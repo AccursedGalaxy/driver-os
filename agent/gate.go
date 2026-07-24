@@ -762,7 +762,13 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 	rv.resolvePending(FateRepaired) // last round's fed-back blockers were re-reviewed by reaching here.
 	rv.rounds++
 	if ro := reviewObserver(g.d.rt.Obs); ro != nil {
-		ro.ReviewStart(rv.rounds)
+		model := rv.model
+		if model == "" {
+			if n, ok := g.d.rt.Reviewer.(ReviewerModelNamer); ok {
+				model = n.ReviewerModel()
+			}
+		}
+		ro.ReviewStart(rv.rounds, model)
 	}
 	verdict, err := g.d.rt.Reviewer.Review(gctx, ReviewInput{
 		Task:       g.d.task,
@@ -884,7 +890,7 @@ func (g *gates) reviewFinish(ctx context.Context, canContinue bool) (feedback, b
 			cur.File, oneLine(cur.Quote)))
 		return "", fmt.Sprintf("confirmed review blocker recurred unresolved after repair round %d", rv.rounds)
 	}
-	g.d.rt.Obs.Note(fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
+	notifyNote(g.d.rt.Obs, NoteReviewRound, fmt.Sprintf("review: round %d/%d — %d finding(s), %d blocking, %d advisory", rv.rounds, rv.maxRounds, len(verdict.Findings), blocking, len(advisories)))
 
 	if blocking == 0 && len(advisories) == 0 {
 		g.setReviewSemanticStatus(ReviewClean)
